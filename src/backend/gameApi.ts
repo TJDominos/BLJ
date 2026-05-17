@@ -1,0 +1,463 @@
+import { Table, PlayingCard, HandStatus, SideBets, SeatResult } from '../store/gameStore';
+import { gameRules } from './gameRules';
+import { tablesDb, delay } from './db';
+
+const calculateScore = (cards: PlayingCard[]): number => {
+  let score = 0;
+  let aces = 0;
+  for (const c of cards) {
+    if (c.isHidden) continue;
+    if (c.value === 'A') {
+      aces += 1;
+      score += 11;
+    } else if (['J', 'Q', 'K'].includes(c.value)) {
+      score += 10;
+    } else {
+      score += parseInt(c.value);
+    }
+  }
+  while (score > 21 && aces > 0) {
+    score -= 10;
+    aces -= 1;
+  }
+  return score;
+};
+
+const checkPair = (c1: PlayingCard, c2: PlayingCard): number => {
+  if (c1.value !== c2.value) return 0;
+  if (c1.suit === c2.suit) return gameRules.sideBets.perfectPair.perfect;
+  const c1Color = (c1.suit === 'hearts' || c1.suit === 'diamonds') ? 'red' : 'black';
+  const c2Color = (c2.suit === 'hearts' || c2.suit === 'diamonds') ? 'red' : 'black';
+  if (c1Color === c2Color) return gameRules.sideBets.perfectPair.colored;
+  return gameRules.sideBets.perfectPair.mixed;
+}
+
+const check21Plus3 = (c1: PlayingCard, c2: PlayingCard, dealerUp: PlayingCard): number => {
+  const cards = [c1, c2, dealerUp];
+  const suits = cards.map(c => c.suit);
+  const values = cards.map(c => c.value);
+  const isFlush = suits[0] === suits[1] && suits[1] === suits[2];
+  
+  const valueMap: Record<string, number> = { '2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':10,'J':11,'Q':12,'K':13,'A':14 };
+  const sortedVals = values.map(v => valueMap[v]).sort((a,b) => a - b);
+  const isStraight = (sortedVals[0] + 1 === sortedVals[1] && sortedVals[1] + 1 === sortedVals[2]) ||
+                     (sortedVals[0] === 2 && sortedVals[1] === 3 && sortedVals[2] === 14);
+
+  const isThreeOfAKind = values[0] === values[1] && values[1] === values[2];
+
+  if (isThreeOfAKind && isFlush) return gameRules.sideBets.twentyOnePlusThree.suitedThreeOfAKind;
+  if (isStraight && isFlush) return gameRules.sideBets.twentyOnePlusThree.straightFlush;
+  if (isThreeOfAKind) return gameRules.sideBets.twentyOnePlusThree.threeOfAKind;
+  if (isStraight) return gameRules.sideBets.twentyOnePlusThree.straight;
+  if (isFlush) return gameRules.sideBets.twentyOnePlusThree.flush;
+  return 0;
+}
+
+const getVRFDeck = async (): Promise<PlayingCard[]> => {
+  await delay(800);
+  const suits: ('hearts' | 'diamonds' | 'clubs' | 'spades')[] = ['hearts', 'diamonds', 'clubs', 'spades'];
+  const values: ('2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'J' | 'Q' | 'K' | 'A')[] = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+  const deck: PlayingCard[] = [];
+  for (let i = 0; i < gameRules.deckCount; i++) {
+    for (const suit of suits) {
+      for (const value of values) {
+        deck.push({ suit, value });
+      }
+    }
+  }
+  return deck.sort(() => Math.random() - 0.5);
+};
+
+export const gameApi = {
+  async joinTable(tableId: string, userId: string, seatIndex: number): Promise<Table> {
+    await delay(300);
+    const table = tablesDb[tableId];
+    if (table.seats[seatIndex].userId === null) {
+      table.seats[seatIndex].userId = userId;
+    }
+    return JSON.parse(JSON.stringify(table));
+  },
+
+  async leaveTable(tableId: string, userId: string): Promise<Table> {
+    await delay(300);
+    const table = tablesDb[tableId];
+    if (!table) throw new Error("Not found");
+    table.seats = table.seats.map(s => s.userId === userId ? { ...s, userId: null, hand: null, isReady: false } : s);
+    return JSON.parse(JSON.stringify(table));
+  },
+
+  async placeBet(tableId: string, seatIndex: number, userId: string, amount: number, sideBets?: SideBets): Promise<{ table: Table, deducted: number }> {
+    await delay(300);
+    const table = tablesDb[tableId];
+    if (table.seats[seatIndex].userId === null || table.seats[seatIndex].userId !== userId) {
+      table.seats[seatIndex].userId = userId;
+    }
+    
+    const deducted = amount + (sideBets?.pair || 0) + (sideBets?.twentyOnePlusThree || 0);
+
+    table.seats[seatIndex] = {
+      ...table.seats[seatIndex],
+      isReady: true,
+      hand: {
+        cards: table.seats[seatIndex].hand?.cards || [],
+        bet: amount,
+        sideBets: sideBets || { pair: 0, twentyOnePlusThree: 0 },
+        status: 'playing',
+        score: table.seats[seatIndex].hand?.score || 0
+      }
+    };
+    return { table: JSON.parse(JSON.stringify(table)), deducted };
+  },
+
+  async startGame(tableId: string): Promise<Table> {
+    const table = tablesDb[tableId];
+    if (!table || table.status !== 'waiting') return JSON.parse(JSON.stringify(table));
+
+    // Remove split hands from the previous round
+    table.seats = table.seats.filter(s => !s.isSplitHand);
+
+    let discardedThisRound = 0;
+    const cardsToDiscard: PlayingCard[] = [];
+    if (table.dealerHand) {
+      discardedThisRound += table.dealerHand.cards.length;
+      cardsToDiscard.push(...table.dealerHand.cards);
+    }
+    table.seats.forEach(seat => {
+      if (seat.hand && seat.hand.cards.length > 0) {
+        discardedThisRound += seat.hand.cards.length;
+        cardsToDiscard.push(...seat.hand.cards);
+      }
+    });
+
+    table.discardCount += discardedThisRound;
+    if (!table.discardedCards) table.discardedCards = [];
+    table.discardedCards.push(...cardsToDiscard);
+
+    const totalCards = gameRules.deckCount * 52;
+    if (!table.deck || table.deck.length <= (totalCards * (1 - gameRules.shufflePenetration))) {
+      table.deck = await getVRFDeck();
+      table.discardCount = 0;
+      table.discardedCards = [];
+    }
+
+    const deck = table.deck;
+
+    table.seats = table.seats.map(seat => {
+      if (!seat.isReady) return { ...seat, hand: null };
+      if (!seat.hand) return seat;
+      return {
+        ...seat,
+        hand: {
+          ...seat.hand,
+          cards: [deck.pop()!, deck.pop()!]
+        }
+      };
+    });
+
+    table.dealerHand = {
+      cards: [deck.pop()!, { ...deck.pop()!, isHidden: true }],
+      bet: 0,
+      status: 'playing',
+      score: 0
+    };
+
+    table.seats.forEach(s => {
+      if (s.hand) s.hand.score = calculateScore(s.hand.cards);
+      if (s.hand && s.hand.score === 21) s.hand.status = 'blackjack';
+    });
+    table.dealerHand.score = calculateScore(table.dealerHand.cards);
+
+    let currentTurnIndex = -1;
+    for (let i = table.seats.length - 1; i >= 0; i--) {
+        if (table.seats[i].isReady && table.seats[i].hand?.status === 'playing') {
+          currentTurnIndex = i;
+          break;
+        }
+    }
+
+    table.status = 'playing';
+    table.deck = deck;
+    table.currentTurnIndex = currentTurnIndex;
+
+    return JSON.parse(JSON.stringify(table));
+  },
+
+  async hit(tableId: string, seatIndex: number): Promise<Table> {
+    await delay(300);
+    const table = tablesDb[tableId];
+    if (!table || table.currentTurnIndex !== seatIndex) return JSON.parse(JSON.stringify(table));
+
+    const seat = table.seats[seatIndex];
+    if (!seat.hand) return JSON.parse(JSON.stringify(table));
+
+    const newCard = table.deck.pop()!;
+    seat.hand.cards.push(newCard);
+    seat.hand.score = calculateScore(seat.hand.cards);
+    
+    if (seat.hand.score >= 21) {
+      seat.hand.status = seat.hand.score > 21 ? 'busted' : 'playing';
+      table.currentTurnIndex = -1;
+      for (let i = seatIndex - 1; i >= 0; i--) {
+        if (table.seats[i].isReady && ['playing'].includes(table.seats[i].hand?.status || '')) {
+          table.currentTurnIndex = i;
+          break;
+        }
+      }
+    }
+
+    return JSON.parse(JSON.stringify(table));
+  },
+
+  async stand(tableId: string, seatIndex: number): Promise<Table> {
+    await delay(200);
+    const table = tablesDb[tableId];
+    if (!table || table.currentTurnIndex !== seatIndex) return JSON.parse(JSON.stringify(table));
+
+    const seat = table.seats[seatIndex];
+    if (seat.hand) {
+      seat.hand.status = 'stood';
+    }
+
+    table.currentTurnIndex = -1;
+    for (let i = seatIndex - 1; i >= 0; i--) {
+      if (table.seats[i].isReady && ['playing'].includes(table.seats[i].hand?.status || '')) {
+        table.currentTurnIndex = i;
+        break;
+      }
+    }
+
+    return JSON.parse(JSON.stringify(table));
+  },
+
+  async doubleDown(tableId: string, seatIndex: number): Promise<Table> {
+    await delay(300);
+    const table = tablesDb[tableId];
+    if (!table || table.currentTurnIndex !== seatIndex) return JSON.parse(JSON.stringify(table));
+
+    const seat = table.seats[seatIndex];
+    if (!seat.hand) return JSON.parse(JSON.stringify(table));
+
+    seat.hand.bet *= 2; 
+    
+    const newCard = table.deck.pop()!;
+    seat.hand.cards.push(newCard);
+    seat.hand.score = calculateScore(seat.hand.cards);
+    
+    if (seat.hand.score > 21) {
+      seat.hand.status = 'busted';
+    } else {
+      seat.hand.status = 'stood';
+    }
+
+    table.currentTurnIndex = -1;
+    for (let i = seatIndex - 1; i >= 0; i--) {
+      if (table.seats[i].isReady && ['playing'].includes(table.seats[i].hand?.status || '')) {
+        table.currentTurnIndex = i;
+        break;
+      }
+    }
+
+    return JSON.parse(JSON.stringify(table));
+  },
+
+  async split(tableId: string, seatIndex: number): Promise<Table> {
+    await delay(200);
+    const table = tablesDb[tableId];
+    if (!table || table.currentTurnIndex !== seatIndex) return JSON.parse(JSON.stringify(table));
+
+    const seat = table.seats[seatIndex];
+    if (!seat.hand || seat.hand.cards.length !== 2 || seat.hand.cards[0].value !== seat.hand.cards[1].value) {
+      return JSON.parse(JSON.stringify(table));
+    }
+
+    const card1 = seat.hand.cards[0];
+    const card2 = seat.hand.cards[1];
+
+    // Original hand
+    seat.hand.cards = [card1];
+    const newCard1 = table.deck.pop()!;
+    seat.hand.cards.push(newCard1);
+    seat.hand.score = calculateScore(seat.hand.cards);
+    if (seat.hand.score === 21) seat.hand.status = 'blackjack';
+
+    // New split hand
+    const splitHand: any = {
+      cards: [card2],
+      bet: seat.hand.bet, // Matches the original bet (side bet does not duplicate)
+      status: 'playing',
+      score: 0
+    };
+    const newCard2 = table.deck.pop()!;
+    splitHand.cards.push(newCard2);
+    splitHand.score = calculateScore(splitHand.cards);
+    if (splitHand.score === 21) splitHand.status = 'blackjack';
+
+    const newSeat = {
+      userId: seat.userId,
+      isReady: true,
+      hand: splitHand,
+      isSplitHand: true,
+      originalSeatIndex: seatIndex
+    };
+
+    // Insert new split hand at seatIndex + 1. Original hand stays at seatIndex.
+    table.seats.splice(seatIndex + 1, 0, newSeat);
+    
+    // We update the current turn index to refer to the new split hand (which will play first)
+    table.currentTurnIndex = seatIndex + 1;
+
+    // If the split hand is blackjack (or busted/stood), pass it
+    if (newSeat.hand.status !== 'playing') {
+      let found = false;
+      for (let i = seatIndex; i >= 0; i--) { // start checking from the original hand downwards
+        if (table.seats[i].isReady && ['playing'].includes(table.seats[i].hand?.status || '')) {
+          table.currentTurnIndex = i;
+          found = true;
+          break;
+        }
+      }
+      if (!found) table.currentTurnIndex = -1;
+    }
+
+    return JSON.parse(JSON.stringify(table));
+  },
+
+  async buyInsurance(tableId: string, seatIndex: number): Promise<Table> {
+    await delay(200);
+    const table = tablesDb[tableId];
+    if (table.seats[seatIndex].hand) {
+      table.seats[seatIndex].hand!.insuranceBet = table.seats[seatIndex].hand!.bet / 2;
+    }
+    return JSON.parse(JSON.stringify(table));
+  },
+
+  async dealerPlayAndResolve(tableId: string): Promise<{ table: Table, winnings: Record<string, number>, seatResults: SeatResult[] }> {
+    await delay(600);
+    const table = tablesDb[tableId];
+    const winnings: Record<string, number> = {};
+    const seatResults: SeatResult[] = [];
+
+    if (!table || !table.dealerHand) return { table: JSON.parse(JSON.stringify(table)), winnings, seatResults };
+
+    table.dealerHand.cards = table.dealerHand.cards.map(c => ({ ...c, isHidden: false }));
+    table.dealerHand.score = calculateScore(table.dealerHand.cards);
+
+    while (table.dealerHand.score < 17) {
+      const c = table.deck.pop();
+      if (!c) break;
+      table.dealerHand.cards.push(c);
+      table.dealerHand.score = calculateScore(table.dealerHand.cards);
+    }
+
+    if (table.dealerHand.score > 21) {
+      table.dealerHand.status = 'busted';
+    } else {
+      table.dealerHand.status = 'stood';
+    }
+
+    let liquidityDelta = 0;
+    const dealerScore = table.dealerHand.score;
+    const dealerBust = table.dealerHand.status === 'busted';
+
+    table.seats.forEach(seat => {
+      if (!seat.isReady || !seat.hand || !seat.userId) return;
+      const pScore = seat.hand.score;
+      let pStatus: string = seat.hand.status;
+
+      if (pStatus === 'busted') {
+        pStatus = 'busted_lost';
+      } else if (dealerBust) {
+        pStatus = 'won';
+      } else {
+        if (pScore > dealerScore) pStatus = 'won';
+        else if (pScore < dealerScore) pStatus = 'lost';
+        else {
+          if (table.settings.winningRule === 'dealer_wins_ties') {
+            pStatus = 'lost';
+          } else {
+            pStatus = 'push';
+          }
+        }
+      }
+
+      if (pStatus === 'blackjack' && !dealerBust && dealerScore === 21) {
+         pStatus = 'push';
+      }
+
+      let wonAmount = 0;
+      if (pStatus === 'won') {
+         wonAmount = seat.hand.bet * 2;
+         liquidityDelta -= seat.hand.bet;
+      } else if (pStatus === 'blackjack') {
+         wonAmount = seat.hand.bet * (1 + gameRules.blackjackPayout);
+         liquidityDelta -= seat.hand.bet * gameRules.blackjackPayout;
+      } else if (pStatus === 'push') {
+         wonAmount = seat.hand.bet;
+      } else if (pStatus === 'lost' || pStatus === 'busted_lost') {
+         liquidityDelta += seat.hand.bet;
+      }
+      
+      if (pStatus === 'busted_lost') pStatus = 'lost';
+      
+      const dealerHasBlackjack = dealerScore === 21 && table.dealerHand.cards.length === 2;
+      let insuranceWon = 0;
+      if (seat.hand.insuranceBet) {
+         if (dealerHasBlackjack) {
+            insuranceWon = seat.hand.insuranceBet * 3; // pays 2 to 1 (win 2x + return 1x)
+            liquidityDelta -= seat.hand.insuranceBet * 2;
+         } else {
+            liquidityDelta += seat.hand.insuranceBet;
+         }
+      }
+      
+      let sideBetWon = 0;
+      if (seat.hand.sideBets) {
+        if (seat.hand.sideBets.pair > 0 && seat.hand.cards.length >= 2) {
+           const pairMult = checkPair(seat.hand.cards[0], seat.hand.cards[1]);
+           if (pairMult > 0) {
+             const win = seat.hand.sideBets.pair * (pairMult + 1);
+             sideBetWon += win;
+             liquidityDelta -= win - seat.hand.sideBets.pair;
+           } else {
+             liquidityDelta += seat.hand.sideBets.pair;
+           }
+        }
+        if (seat.hand.sideBets.twentyOnePlusThree > 0 && seat.hand.cards.length >= 2 && table.dealerHand.cards.length > 0) {
+           const plus3Mult = check21Plus3(seat.hand.cards[0], seat.hand.cards[1], table.dealerHand.cards[0]);
+           if (plus3Mult > 0) {
+             const win = seat.hand.sideBets.twentyOnePlusThree * (plus3Mult + 1);
+             sideBetWon += win;
+             liquidityDelta -= win - seat.hand.sideBets.twentyOnePlusThree;
+           } else {
+             liquidityDelta += seat.hand.sideBets.twentyOnePlusThree;
+           }
+        }
+      }
+      wonAmount += sideBetWon + insuranceWon;
+
+      seat.hand.status = pStatus as HandStatus;
+      
+      if (!winnings[seat.userId]) winnings[seat.userId] = 0;
+      winnings[seat.userId] += wonAmount;
+
+      const sideBetTotal = (seat.hand.sideBets?.pair || 0) + (seat.hand.sideBets?.twentyOnePlusThree || 0);
+      const totalBet = seat.hand.bet + sideBetTotal + (seat.hand.insuranceBet || 0);
+      const net = wonAmount - totalBet;
+
+      seatResults.push({
+        seatIndex: table.seats.indexOf(seat),
+        bet: totalBet,
+        net: net,
+        action: pStatus
+      });
+    });
+
+    table.status = 'waiting';
+    table.liquidity += liquidityDelta;
+    // Remove split hands from the table for the next round
+    table.seats = table.seats
+      .map(s => ({ ...s, isReady: false }));
+    
+    return { table: JSON.parse(JSON.stringify(table)), winnings, seatResults };
+  }
+};

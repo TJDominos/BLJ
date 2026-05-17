@@ -1,0 +1,6 @@
+{
+  "name": "Randseed Blackjack",
+  "description": "On-chain simulated Player vs Player-House Blackjack game.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
