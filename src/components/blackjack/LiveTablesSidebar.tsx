@@ -7,7 +7,8 @@ interface LiveTablesSidebarProps {
   setShowSidebar: (show: boolean) => void;
   activeTables: Table[];
   currentTableId: string;
-  joinTable: (tableId: string, seatIndex: number) => void;
+  observeTable: (tableId: string) => void;
+  onNavigate?: () => void;
 }
 
 export function LiveTablesSidebar({
@@ -15,11 +16,20 @@ export function LiveTablesSidebar({
   setShowSidebar,
   activeTables,
   currentTableId,
-  joinTable
+  observeTable,
+  onNavigate
 }: LiveTablesSidebarProps) {
   
   return (
-    <div className="fixed inset-y-0 left-0 z-[60] flex pointer-events-none">
+    <div className="fixed inset-y-0 left-0 z-[60] flex w-full pointer-events-none">
+      {/* Click outside overlay */}
+      <motion.div 
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm pointer-events-auto"
+        onClick={() => setShowSidebar(false)}
+      />
       <motion.div 
         initial={{ x: -300 }}
         animate={{ x: 0 }}
@@ -37,15 +47,29 @@ export function LiveTablesSidebar({
             activeTables.map(t => {
               const isCurrent = t.id === currentTableId;
               return (
-                <div key={t.id} className={cn("p-3 rounded-xl border transition-all cursor-pointer", isCurrent ? "bg-white/10 border-[#ffc53d]/50" : "bg-black/20 border-white/5 hover:border-white/20")} onClick={() => {
+                <div key={t.id} className={cn("p-3 rounded-xl border transition-all cursor-pointer relative", isCurrent ? "bg-white/10 border-[#ffc53d]/50" : "bg-black/20 border-white/5 hover:border-white/20")} onClick={() => {
                   if (!isCurrent) {
-                     joinTable(t.id, 0); // Might want to just observe, but joining seat 0 for simplicity or just navigating
-                     setShowSidebar(false);
+                     observeTable(t.id);
                   }
+                  if (onNavigate) onNavigate();
+                  setShowSidebar(false);
                 }}>
-                  <div className="font-bold text-white mb-1">{t.name}</div>
+                  <div className="font-bold text-white mb-1 flex items-center pr-12">
+                     <span className="truncate">{t.name}</span>
+                  </div>
+                  {t.settings.mode === 'tournament' && (
+                     <div className="absolute top-3 right-3 text-[10px] font-bold text-yellow-500 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded tracking-wider shadow-sm flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-pulse"></span>
+                        TRNMNT
+                     </div>
+                  )}
+                  {t.description && <div className="text-xs text-white/50 mb-2 truncate italic">"{t.description}"</div>}
                   <div className="text-xs text-gray-400 flex justify-between">
-                    <span>Bet: ${t.settings.minBet}-${t.settings.maxBet}</span>
+                    <span>
+                      {t.settings.mode === 'tournament' 
+                        ? `Buy-In: $${t.settings.tournament?.ticketPrice || 0}`
+                        : `Bet: $${t.settings.minBet}-${t.settings.maxBet}`}
+                    </span>
                     <span>{t.seats.filter(s => s.userId !== null).length}/{t.settings.maxSeats} Seats</span>
                   </div>
                 </div>

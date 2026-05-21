@@ -18,13 +18,15 @@ export const hostTableApi = {
     const tableId = `table_${Math.random().toString(36).substr(2, 9)}`;
     const newTable: Table = {
       id: tableId,
-      name: `${userName}'s Table`,
+      name: settings.name,
+      description: settings.description,
       houseId: userId,
       liquidity,
       initialLiquidity: liquidity,
       safeAccountAddress: `0x${Math.random().toString(16).substr(2, 40)}`,
       settings,
       seats: Array.from({ length: settings.maxSeats }).map(() => ({ userId: null, isReady: false, hand: null })),
+      userBalances: {},
       inviteLink: `https://ais-pre.run.app/t/${tableId}`,
       status: 'waiting',
       dealerHand: null,
@@ -41,8 +43,52 @@ export const hostTableApi = {
     await delay();
     const table = tablesDb[tableId];
     if (table && table.houseId === userId) {
-      table.status = 'closed';
-      table.liquidity = 0;
+      if (table.status === 'playing') {
+        table.status = 'closing'; // close after the round
+      } else {
+        table.status = 'closed';
+        table.liquidity = 0;
+      }
+    }
+    return JSON.parse(JSON.stringify(table));
+  },
+  
+  async pauseTable(tableId: string, userId: string): Promise<Table> {
+    await delay();
+    const table = tablesDb[tableId];
+    if (table && table.houseId === userId) {
+      table.status = 'paused';
+    }
+    return JSON.parse(JSON.stringify(table));
+  },
+
+  async resumeTable(tableId: string, userId: string): Promise<Table> {
+    await delay();
+    const table = tablesDb[tableId];
+    if (table && table.houseId === userId) {
+      table.status = 'waiting';
+    }
+    return JSON.parse(JSON.stringify(table));
+  },
+  
+  async withdrawLiquidity(tableId: string, userId: string, amount: number): Promise<Table> {
+    await delay();
+    const table = tablesDb[tableId];
+    if (table && table.houseId === userId) {
+        if (amount > table.liquidity) return JSON.parse(JSON.stringify(table));
+        table.liquidity -= amount;
+        if (table.liquidity <= 0) table.status = 'paused';
+    }
+    return JSON.parse(JSON.stringify(table));
+  },
+
+  async updateTableSettings(tableId: string, userId: string, settings: Partial<TableSettings>): Promise<Table> {
+    await delay();
+    const table = tablesDb[tableId];
+    if (table && table.houseId === userId) {
+        table.settings = { ...table.settings, ...settings };
+        if (settings.name) table.name = settings.name;
+        if (settings.description !== undefined) table.description = settings.description;
     }
     return JSON.parse(JSON.stringify(table));
   }

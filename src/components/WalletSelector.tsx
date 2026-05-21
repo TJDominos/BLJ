@@ -160,7 +160,7 @@ export function WalletSelector({ isOpen, onClose, depositAmount, currency, onSel
                         <button
                           key={w.id}
                           onClick={() => w.installed ? handleWalletSelect(w) : (w.url && window.open(w.url, '_blank'))}
-                          className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all ${w.installed ? 'bg-white border-black/5 hover:border-[#5f40a1] hover:shadow-md cursor-pointer' : 'bg-white/50 border-black/5 hover:bg-white/80 cursor-pointer opacity-70'}`}
+                          className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all ${w.installed ? 'bg-white border-black/5 hover:border-[#126b6f] hover:shadow-md cursor-pointer' : 'bg-white/50 border-black/5 hover:bg-white/80 cursor-pointer opacity-70'}`}
                         >
                           <div className="flex items-center gap-3">
                             <div className="w-8 h-8 flex items-center justify-center rounded-lg overflow-hidden shrink-0">
@@ -174,7 +174,7 @@ export function WalletSelector({ isOpen, onClose, depositAmount, currency, onSel
                           </div>
                           {w.installed ? (
                             <div className="flex items-center gap-2">
-                               <span className="text-[10px] uppercase font-bold text-[#5f40a1] bg-[#5f40a1]/10 px-2 py-0.5 rounded-full">Installed</span>
+                               <span className="text-[10px] uppercase font-bold text-[#126b6f] bg-[#126b6f]/10 px-2 py-0.5 rounded-full">Installed</span>
                                <ChevronRight className="w-4 h-4 text-slate-400" />
                             </div>
                           ) : (
@@ -194,7 +194,7 @@ export function WalletSelector({ isOpen, onClose, depositAmount, currency, onSel
                 <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center justify-center py-8 text-center space-y-4">
                    <div className="relative">
                      {selectedWallet?.icon && <img src={selectedWallet.icon} className="w-16 h-16 object-contain z-10 relative" alt="Wallet icon" />}
-                     <div className="absolute inset-0 bg-[#5f40a1] blur-xl opacity-20 rounded-full animate-pulse"></div>
+                     <div className="absolute inset-0 bg-[#126b6f] blur-xl opacity-20 rounded-full animate-pulse"></div>
                    </div>
                    <div>
                      <h4 className="font-bold text-lg text-slate-800">Approve transaction</h4>
@@ -205,7 +205,7 @@ export function WalletSelector({ isOpen, onClose, depositAmount, currency, onSel
 
               {step === 'PENDING' && (
                 <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center justify-center py-8 text-center space-y-4">
-                   <Loader2 className="w-16 h-16 text-[#5f40a1] animate-spin" />
+                   <Loader2 className="w-16 h-16 text-[#126b6f] animate-spin" />
                    <div>
                      <h4 className="font-bold text-lg text-slate-800">Transaction Pending</h4>
                      <p className="text-sm text-slate-500 mt-1">Waiting for on-chain confirmation. This may take a few seconds.</p>

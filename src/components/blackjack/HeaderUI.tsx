@@ -19,9 +19,9 @@ export function HeaderUI({
       <div className="w-full max-w-[1024px] h-full px-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <button 
-            disabled
-            className="w-10 h-10 flex items-center justify-center text-white/30 rounded-full cursor-not-allowed"
-            title="Exit Game (Disabled)"
+            onClick={onLeave}
+            className="w-10 h-10 flex items-center justify-center text-white/50 hover:text-white rounded-full transition-colors hover:bg-white/5"
+            title="Return / Exit"
           >
             <LogOut className="w-5 h-5 scale-x-[-1]" />
           </button>

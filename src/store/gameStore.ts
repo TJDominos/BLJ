@@ -41,9 +41,33 @@ export interface PlayerSeat {
 
 export type WinningRule = 'standard' | 'dealer_wins_ties';
 
+export type TableMode = 'regular' | 'tournament';
+
+export interface TournamentSettings {
+  ticketPrice: number;
+  startingChips: number;
+  hostFeePct: number; // max 5, default 3
+  platformFeePct: number; // fixed 2
+  minBetChips: number; // default 50
+  isForcedAnte?: boolean;
+  isScheduledEscalation?: boolean;
+  antePct?: number; 
+  escalationRounds?: number;
+  isSurvivorCap?: boolean;
+  targetSurvivors?: number;
+  isHardCapRounds?: boolean;
+  maxRounds?: number;
+  prizeDistribution: 'survivorPaytable' | 'splitByChips';
+}
+
 export interface TableSettings {
+  name?: string;
+  description?: string;
+  mode?: TableMode;
+  tournament?: TournamentSettings;
   minBet: number;
   maxBet: number;
+  minBuyIn: number;
   secretBets: boolean;
   actionTimeLimit: number;
   isPublic: boolean;
@@ -55,14 +79,16 @@ export interface TableSettings {
 export interface Table {
   id: string;
   name: string;
+  description?: string;
   houseId: string; // The user hosting the table (or "system" if auto)
   liquidity: number;
   initialLiquidity: number;
   safeAccountAddress: string;
   settings: TableSettings;
   seats: PlayerSeat[]; // array matching maxSeats
+  userBalances: Record<string, { balance: number, initialBuyIn: number }>;
   inviteLink: string;
-  status: 'waiting' | 'playing' | 'paused' | 'closed'; // paused if lack of liquidity
+  status: 'waiting' | 'playing' | 'paused' | 'closed' | 'closing'; // paused if lack of liquidity
   dealerHand: Hand | null;
   deck: PlayingCard[];
   discardCount: number;
@@ -72,6 +98,7 @@ export interface Table {
 
 export interface SeatResult {
   seatIndex: number;
+  userId?: string;
   bet: number;
   net: number;
   action: string;
@@ -95,8 +122,14 @@ interface GameStore {
   // Actions
   login: (name: string) => void;
   createTable: (settings: TableSettings, liquidity: number) => Promise<string>;
+  updateTableSettings: (tableId: string, settings: Partial<TableSettings>) => Promise<void>;
+  pauseTable: (tableId: string) => Promise<void>;
+  resumeTable: (tableId: string) => Promise<void>;
+  withdrawLiquidity: (tableId: string, amount: number) => Promise<void>;
   joinTable: (tableId: string, seatIndex: number) => Promise<void>;
-  leaveTable: (tableId: string) => Promise<void>;
+  observeTable: (tableId: string) => void;
+  leaveTable: (tableId: string, seatIndex?: number, isTimeout?: boolean) => Promise<void>;
+  unlockTableBalance: (tableId: string) => Promise<void>;
   placeBet: (tableId: string, seatIndex: number, amount: number, sideBets?: SideBets) => Promise<void>;
   closeTable: (tableId: string) => Promise<void>;
   
@@ -160,8 +193,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       settings: {
         minBet: 10,
         maxBet: 500,
+        minBuyIn: 50,
         secretBets: false,
-        actionTimeLimit: 30,
+        actionTimeLimit: 15,
         isPublic: true,
         maxSeats: 7,
         winningRule: 'standard',
@@ -176,6 +210,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         { userId: null, isReady: false, hand: null },
         { userId: null, isReady: false, hand: null }
       ],
+      userBalances: {},
       inviteLink: 'https://ais-pre.run.app/t/table_1',
       status: 'waiting',
       dealerHand: null,
@@ -211,24 +246,138 @@ export const useGameStore = create<GameStore>((set, get) => ({
     return table.id;
   },
 
+  updateTableSettings: async (tableId, settings) => {
+    const user = get().currentUser;
+    if (!user) return;
+    const { hostTableApi } = await import('../backend/hostTableApi');
+    const table = await hostTableApi.updateTableSettings(tableId, user.id, settings);
+    set((state) => ({
+      tables: { ...state.tables, [table.id]: table }
+    }));
+  },
+
+  pauseTable: async (tableId) => {
+    const user = get().currentUser;
+    if (!user) return;
+    const { hostTableApi } = await import('../backend/hostTableApi');
+    const table = await hostTableApi.pauseTable(tableId, user.id);
+    set((state) => ({
+      tables: { ...state.tables, [table.id]: table }
+    }));
+  },
+
+  resumeTable: async (tableId) => {
+    const user = get().currentUser;
+    if (!user) return;
+    const { hostTableApi } = await import('../backend/hostTableApi');
+    const table = await hostTableApi.resumeTable(tableId, user.id);
+    set((state) => ({
+      tables: { ...state.tables, [table.id]: table }
+    }));
+  },
+
+  withdrawLiquidity: async (tableId, amount) => {
+    const user = get().currentUser;
+    if (!user) return;
+    if (amount <= 0) return;
+    const { hostTableApi } = await import('../backend/hostTableApi');
+    const table = await hostTableApi.withdrawLiquidity(tableId, user.id, amount);
+    set((state) => ({
+      tables: { ...state.tables, [table.id]: table },
+      currentUser: { ...state.currentUser!, balance: state.currentUser!.balance + amount }
+    }));
+  },
+
   joinTable: async (tableId, seatIndex) => {
     const user = get().currentUser;
     if (!user) return;
     
+    // Check if user is already seated with balance at another table
+    const currentActiveId = get().activeTableId;
+    if (currentActiveId && currentActiveId !== tableId) {
+      const activeTable = get().tables[currentActiveId];
+      if (activeTable?.userBalances?.[user.id] && activeTable.userBalances[user.id].balance > 0) {
+        if (!confirm(`You have locked balance on ${activeTable.name}. Switch anyway?`)) {
+          return;
+        }
+      }
+    }
+    
+    const tableData = get().tables[tableId];
+    if (!tableData) return;
+    
+    const existingBal = tableData.userBalances[user.id]?.balance || 0;
+    let lockAmount = 0;
+    
+    if (tableData.settings.mode === 'tournament') {
+       if (existingBal === 0) {
+          lockAmount = tableData.settings.tournament?.ticketPrice || 0;
+          if (user.balance < lockAmount) {
+             console.error("Insufficient balance for tournament ticket");
+             return;
+          }
+       }
+    } else {
+       const mySeatsCount = tableData.seats.filter(s => s.userId === user.id).length;
+       const requiredMinBal = tableData.settings.minBet * (mySeatsCount + 1);
+       if (existingBal < requiredMinBal) {
+         lockAmount = tableData.settings.minBuyIn;
+         if (user.balance < lockAmount) {
+            return;
+         }
+       }
+    }
+    
+    // Optimistic deduce
+    if (lockAmount > 0) {
+      set(state => ({ currentUser: { ...state.currentUser!, balance: state.currentUser!.balance - lockAmount } }));
+    }
+
     const { gameApi } = await import('../backend/gameApi');
-    const table = await gameApi.joinTable(tableId, user.id, seatIndex);
+    const table = await gameApi.joinTable(tableId, user.id, seatIndex, lockAmount);
 
     set((state) => ({ tables: { ...state.tables, [tableId]: table }, activeTableId: tableId }));
   },
 
-  leaveTable: async (tableId) => {
+  observeTable: (tableId) => {
+    const user = get().currentUser;
+    if (!user) return;
+    const currentActiveId = get().activeTableId;
+    if (currentActiveId && currentActiveId !== tableId) {
+      const activeTable = get().tables[currentActiveId];
+      if (activeTable?.userBalances?.[user.id] && activeTable.userBalances[user.id].balance > 0) {
+        if (!confirm(`You have locked balance on ${activeTable.name}. Unlock or switch anyway?`)) {
+          return;
+        }
+      }
+    }
+    set({ activeTableId: tableId });
+  },
+
+  leaveTable: async (tableId, seatIndex, isTimeout) => {
     const user = get().currentUser;
     if (!user) return;
     
     const { gameApi } = await import('../backend/gameApi');
-    const table = await gameApi.leaveTable(tableId, user.id);
+    const { table } = await gameApi.leaveTable(tableId, user.id, seatIndex, isTimeout);
 
-    set((state) => ({ tables: { ...state.tables, [tableId]: table }, activeTableId: null }));
+    set((state) => ({ 
+      tables: { ...state.tables, [tableId]: table }, 
+      activeTableId: seatIndex === undefined ? null : state.activeTableId 
+    }));
+  },
+
+  unlockTableBalance: async (tableId) => {
+    const user = get().currentUser;
+    if (!user) return;
+    
+    const { gameApi } = await import('../backend/gameApi');
+    const { table, refundedAmount } = await gameApi.unlockTableBalance(tableId, user.id);
+
+    set((state) => ({ 
+      currentUser: { ...state.currentUser!, balance: state.currentUser!.balance + refundedAmount },
+      tables: { ...state.tables, [tableId]: table }
+    }));
   },
 
   placeBet: async (tableId, seatIndex, amount, sideBets) => {
@@ -239,7 +388,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { table, deducted } = await gameApi.placeBet(tableId, seatIndex, user.id, amount, sideBets);
     
     set((state) => ({
-      currentUser: { ...state.currentUser!, balance: state.currentUser!.balance - deducted },
       tables: { ...state.tables, [tableId]: table }
     }));
   },
@@ -253,13 +401,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }));
 
     if (table.currentTurnIndex === -1 && table.status === 'playing') {
-      get().dealerPlay(tableId);
+      const activeSeatsCount = table.seats.filter(s => s.isReady).length;
+      setTimeout(() => {
+        get().dealerPlay(tableId);
+      }, (activeSeatsCount + 1) * 400 + 500);
     }
   },
 
   hit: async (tableId, seatIndex) => {
     const { gameApi } = await import('../backend/gameApi');
-    const table = await gameApi.hit(tableId, seatIndex);
+    const table = await gameApi.hit(tableId, seatIndex, (interimTable) => {
+      set((state) => ({ tables: { ...state.tables, [tableId]: interimTable } }));
+    });
     
     set((state) => ({ tables: { ...state.tables, [tableId]: table } }));
 
@@ -270,7 +423,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   stand: async (tableId, seatIndex) => {
     const { gameApi } = await import('../backend/gameApi');
-    const table = await gameApi.stand(tableId, seatIndex);
+    const table = await gameApi.stand(tableId, seatIndex, (interimTable) => {
+      set((state) => ({ tables: { ...state.tables, [tableId]: interimTable } }));
+    });
     
     set((state) => ({ tables: { ...state.tables, [tableId]: table } }));
 
@@ -282,14 +437,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
   doubleDown: async (tableId, seatIndex) => {
     const { gameApi } = await import('../backend/gameApi');
     
-    const user = get().currentUser;
-    const initialTable = get().tables[tableId];
-    if (user && initialTable) {
-       const initialBet = initialTable.seats[seatIndex].hand?.bet || 0;
-       set(state => ({ currentUser: { ...state.currentUser!, balance: state.currentUser!.balance - initialBet } }));
-    }
-
-    const table = await gameApi.doubleDown(tableId, seatIndex);
+    const table = await gameApi.doubleDown(tableId, seatIndex, (interimTable) => {
+      set((state) => ({ tables: { ...state.tables, [tableId]: interimTable } }));
+    });
     
     set((state) => ({ tables: { ...state.tables, [tableId]: table } }));
 
@@ -301,13 +451,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
   split: async (tableId, seatIndex) => {
     const { gameApi } = await import('../backend/gameApi');
     
-    const user = get().currentUser;
-    const initialTable = get().tables[tableId];
-    if (user && initialTable) {
-       const initialBet = initialTable.seats[seatIndex].hand?.bet || 0;
-       set(state => ({ currentUser: { ...state.currentUser!, balance: state.currentUser!.balance - initialBet } }));
-    }
-
     const table = await gameApi.split(tableId, seatIndex);
     set((state) => ({ tables: { ...state.tables, [tableId]: table } }));
 
@@ -318,12 +461,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   buyInsurance: async (tableId, seatIndex) => {
     const { gameApi } = await import('../backend/gameApi');
-    const user = get().currentUser;
-    const initialTable = get().tables[tableId];
-    if (user && initialTable) {
-       const insuranceBet = (initialTable.seats[seatIndex].hand?.bet || 0) / 2;
-       set(state => ({ currentUser: { ...state.currentUser!, balance: state.currentUser!.balance - insuranceBet } }));
-    }
     const table = await gameApi.buyInsurance(tableId, seatIndex);
     set((state) => ({ tables: { ...state.tables, [tableId]: table } }));
   },
@@ -345,24 +482,24 @@ export const useGameStore = create<GameStore>((set, get) => ({
          else res = 'push';
       }
 
-      if (user && table.seats.some((s: any) => s.userId === user.id)) {
+      const mySeatResults = user ? seatResults.filter(sr => sr.userId === user.id) : [];
+
+      if (user && mySeatResults.length > 0) {
         const record: typeof state.gameRecords[0] = {
           id: Math.random().toString(36).substr(2, 9),
           tableId,
           result: res,
           amountWon,
           timestamp: Date.now(),
-          seatResults: seatResults.filter((sr: any) => table.seats[sr.seatIndex]?.userId === user.id)
+          seatResults: mySeatResults
         };
         return {
-          currentUser: { ...user, balance: user.balance + amountWon },
           tables: { ...state.tables, [tableId]: table },
           gameRecords: [record, ...state.gameRecords].slice(0, 50)
         };
       }
 
       return {
-        currentUser: user ? { ...user, balance: user.balance + amountWon } : null,
         tables: { ...state.tables, [tableId]: table }
       };
     });

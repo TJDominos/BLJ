@@ -69,31 +69,96 @@ const getVRFDeck = async (): Promise<PlayingCard[]> => {
 };
 
 export const gameApi = {
-  async joinTable(tableId: string, userId: string, seatIndex: number): Promise<Table> {
+  async joinTable(tableId: string, userId: string, seatIndex: number, lockAmount: number = 0): Promise<Table> {
     await delay(300);
     const table = tablesDb[tableId];
     if (table.seats[seatIndex].userId === null) {
       table.seats[seatIndex].userId = userId;
+      if (!table.userBalances[userId]) {
+        table.userBalances[userId] = { balance: 0, initialBuyIn: 0 };
+      }
+      
+      let chipsToAdd = lockAmount;
+      if (lockAmount > 0 && table.settings.mode === 'tournament') {
+        chipsToAdd = table.settings.tournament?.startingChips || 0;
+      }
+
+      table.userBalances[userId].balance += chipsToAdd;
+      table.userBalances[userId].initialBuyIn += chipsToAdd; // For tournament, this tracks if they bought in.
     }
     return JSON.parse(JSON.stringify(table));
   },
 
-  async leaveTable(tableId: string, userId: string): Promise<Table> {
+  async leaveTable(tableId: string, userId: string, seatIndex?: number, isTimeout?: boolean): Promise<{ table: Table, refundedAmount: number }> {
     await delay(300);
     const table = tablesDb[tableId];
     if (!table) throw new Error("Not found");
-    table.seats = table.seats.map(s => s.userId === userId ? { ...s, userId: null, hand: null, isReady: false } : s);
-    return JSON.parse(JSON.stringify(table));
+    
+    table.seats = table.seats.map((s, i) => {
+      if (s.userId === userId && (seatIndex === undefined || i === seatIndex)) {
+        // If this is a timeout-based unseat, we only do it if the user isn't actually ready.
+        if (isTimeout && s.isReady) {
+            return s;
+        }
+        
+        if (s.isReady && s.hand && table.userBalances[userId]) {
+           const refund = s.hand.bet + (s.hand.sideBets?.pair || 0) + (s.hand.sideBets?.twentyOnePlusThree || 0) + (s.hand.insuranceBet || 0);
+           table.userBalances[userId].balance += refund;
+        }
+        return { ...s, userId: null, hand: null, isReady: false };
+      }
+      return s;
+    });
+    
+    // Check if user is fully disconnected from all seats.
+    // However, user handles balance manually now, so returning 0.
+    return { table: JSON.parse(JSON.stringify(table)), refundedAmount: 0 };
+  },
+
+  async unlockTableBalance(tableId: string, userId: string): Promise<{ table: Table, refundedAmount: number }> {
+    await delay(300);
+    const table = tablesDb[tableId];
+    if (!table) throw new Error("Not found");
+
+    // Unseat from all seats first? User can still be watching?
+    // Wait, if they unlock balance, they probably can't play anymore.
+    // Unseat them from any connected seats.
+    table.seats = table.seats.map((s) => {
+      if (s.userId === userId) {
+        return { ...s, userId: null, hand: null, isReady: false };
+      }
+      return s;
+    });
+
+    let refundedAmount = 0;
+    const userBal = table.userBalances[userId];
+    if (userBal) {
+      const netWin = userBal.balance - userBal.initialBuyIn;
+      let fee = 0;
+      if (netWin > 0) fee = netWin * 0.01;
+      refundedAmount = userBal.balance - fee;
+      delete table.userBalances[userId];
+    }
+    return { table: JSON.parse(JSON.stringify(table)), refundedAmount };
   },
 
   async placeBet(tableId: string, seatIndex: number, userId: string, amount: number, sideBets?: SideBets): Promise<{ table: Table, deducted: number }> {
     await delay(300);
     const table = tablesDb[tableId];
-    if (table.seats[seatIndex].userId === null || table.seats[seatIndex].userId !== userId) {
-      table.seats[seatIndex].userId = userId;
+    if (!table || table.status !== 'waiting') throw new Error("Game already started");
+    
+    if (table.seats[seatIndex].userId !== userId) {
+      throw new Error("You are not seated at this seat. Your deal was too late.");
     }
     
     const deducted = amount + (sideBets?.pair || 0) + (sideBets?.twentyOnePlusThree || 0);
+    
+    const userBal = table.userBalances[userId];
+    if (!userBal || userBal.balance < deducted) {
+       throw new Error("Insufficient locked balance");
+    }
+    
+    userBal.balance -= deducted;
 
     table.seats[seatIndex] = {
       ...table.seats[seatIndex],
@@ -162,8 +227,10 @@ export const gameApi = {
     };
 
     table.seats.forEach(s => {
-      if (s.hand) s.hand.score = calculateScore(s.hand.cards);
-      if (s.hand && s.hand.score === 21) s.hand.status = 'blackjack';
+      if (s.hand) {
+        s.hand.score = calculateScore(s.hand.cards);
+        s.hand.status = s.hand.score === 21 ? 'blackjack' : 'playing';
+      }
     });
     table.dealerHand.score = calculateScore(table.dealerHand.cards);
 
@@ -182,7 +249,7 @@ export const gameApi = {
     return JSON.parse(JSON.stringify(table));
   },
 
-  async hit(tableId: string, seatIndex: number): Promise<Table> {
+  async hit(tableId: string, seatIndex: number, onUpdate?: (table: Table) => void): Promise<Table> {
     await delay(300);
     const table = tablesDb[tableId];
     if (!table || table.currentTurnIndex !== seatIndex) return JSON.parse(JSON.stringify(table));
@@ -196,6 +263,10 @@ export const gameApi = {
     
     if (seat.hand.score >= 21) {
       seat.hand.status = seat.hand.score > 21 ? 'busted' : 'playing';
+      
+      if (onUpdate) onUpdate(JSON.parse(JSON.stringify(table)));
+      await delay(table.seats.length * 150 + 800); // Wait for hit animation and busted text
+
       table.currentTurnIndex = -1;
       for (let i = seatIndex - 1; i >= 0; i--) {
         if (table.seats[i].isReady && ['playing'].includes(table.seats[i].hand?.status || '')) {
@@ -208,7 +279,7 @@ export const gameApi = {
     return JSON.parse(JSON.stringify(table));
   },
 
-  async stand(tableId: string, seatIndex: number): Promise<Table> {
+  async stand(tableId: string, seatIndex: number, onUpdate?: (table: Table) => void): Promise<Table> {
     await delay(200);
     const table = tablesDb[tableId];
     if (!table || table.currentTurnIndex !== seatIndex) return JSON.parse(JSON.stringify(table));
@@ -217,6 +288,9 @@ export const gameApi = {
     if (seat.hand) {
       seat.hand.status = 'stood';
     }
+
+    if (onUpdate) onUpdate(JSON.parse(JSON.stringify(table)));
+    await delay(300); // Shorter wait for stand
 
     table.currentTurnIndex = -1;
     for (let i = seatIndex - 1; i >= 0; i--) {
@@ -229,14 +303,18 @@ export const gameApi = {
     return JSON.parse(JSON.stringify(table));
   },
 
-  async doubleDown(tableId: string, seatIndex: number): Promise<Table> {
+  async doubleDown(tableId: string, seatIndex: number, onUpdate?: (table: Table) => void): Promise<Table> {
     await delay(300);
     const table = tablesDb[tableId];
     if (!table || table.currentTurnIndex !== seatIndex) return JSON.parse(JSON.stringify(table));
 
     const seat = table.seats[seatIndex];
-    if (!seat.hand) return JSON.parse(JSON.stringify(table));
-
+    if (!seat.hand || !seat.userId) return JSON.parse(JSON.stringify(table));
+    
+    // Deduct original bet amount again
+    const userBal = table.userBalances[seat.userId];
+    if (userBal) userBal.balance -= seat.hand.bet;
+    
     seat.hand.bet *= 2; 
     
     const newCard = table.deck.pop()!;
@@ -248,6 +326,9 @@ export const gameApi = {
     } else {
       seat.hand.status = 'stood';
     }
+
+    if (onUpdate) onUpdate(JSON.parse(JSON.stringify(table)));
+    await delay(table.seats.length * 150 + 800); // Wait for hit animation
 
     table.currentTurnIndex = -1;
     for (let i = seatIndex - 1; i >= 0; i--) {
@@ -266,9 +347,12 @@ export const gameApi = {
     if (!table || table.currentTurnIndex !== seatIndex) return JSON.parse(JSON.stringify(table));
 
     const seat = table.seats[seatIndex];
-    if (!seat.hand || seat.hand.cards.length !== 2 || seat.hand.cards[0].value !== seat.hand.cards[1].value) {
+    if (!seat.hand || !seat.userId || seat.hand.cards.length !== 2 || seat.hand.cards[0].value !== seat.hand.cards[1].value) {
       return JSON.parse(JSON.stringify(table));
     }
+    
+    const userBal = table.userBalances[seat.userId];
+    if (userBal) userBal.balance -= seat.hand.bet;
 
     const card1 = seat.hand.cards[0];
     const card2 = seat.hand.cards[1];
@@ -325,8 +409,12 @@ export const gameApi = {
   async buyInsurance(tableId: string, seatIndex: number): Promise<Table> {
     await delay(200);
     const table = tablesDb[tableId];
-    if (table.seats[seatIndex].hand) {
-      table.seats[seatIndex].hand!.insuranceBet = table.seats[seatIndex].hand!.bet / 2;
+    const seat = table.seats[seatIndex];
+    if (seat.hand && seat.userId) {
+      const insuranceCost = seat.hand.bet / 2;
+      const userBal = table.userBalances[seat.userId];
+      if (userBal) userBal.balance -= insuranceCost;
+      seat.hand.insuranceBet = insuranceCost;
     }
     return JSON.parse(JSON.stringify(table));
   },
@@ -437,6 +525,9 @@ export const gameApi = {
 
       seat.hand.status = pStatus as HandStatus;
       
+      const userBal = table.userBalances[seat.userId];
+      if (userBal) userBal.balance += wonAmount;
+      
       if (!winnings[seat.userId]) winnings[seat.userId] = 0;
       winnings[seat.userId] += wonAmount;
 
@@ -444,19 +535,38 @@ export const gameApi = {
       const totalBet = seat.hand.bet + sideBetTotal + (seat.hand.insuranceBet || 0);
       const net = wonAmount - totalBet;
 
-      seatResults.push({
-        seatIndex: table.seats.indexOf(seat),
-        bet: totalBet,
-        net: net,
-        action: pStatus
-      });
+      const seatIndexToRecord = seat.isSplitHand && seat.originalSeatIndex !== undefined ? seat.originalSeatIndex : table.seats.indexOf(seat);
+      const existingRes = seatResults.find(sr => sr.seatIndex === seatIndexToRecord);
+      if (existingRes) {
+        existingRes.bet += totalBet;
+        existingRes.net += net;
+        existingRes.action = `${existingRes.action} / ${pStatus}`;
+      } else {
+        seatResults.push({
+          seatIndex: seatIndexToRecord,
+          userId: seat.userId || undefined,
+          bet: totalBet,
+          net: net,
+          action: pStatus
+        });
+      }
     });
 
     table.status = 'waiting';
     table.liquidity += liquidityDelta;
     // Remove split hands from the table for the next round
     table.seats = table.seats
-      .map(s => ({ ...s, isReady: false }));
+      .filter(s => !s.isSplitHand)
+      .map(s => {
+        if (s.userId && s.userId.startsWith('bot_')) {
+          // Keep bots ready and re-bet automatically, keep old cards for viewing
+          return {
+            ...s,
+            isReady: true
+          };
+        }
+        return { ...s, isReady: false };
+      });
     
     return { table: JSON.parse(JSON.stringify(table)), winnings, seatResults };
   }

@@ -4,6 +4,7 @@ import { PlayingCard } from './PlayingCardUI';
 import { PlayingCard as PlayingCardType, Hand } from '@/store/gameStore';
 
 import { DelayedScore } from './DelayedScore';
+import { GoldCoinTray } from './GoldCoinTray';
 
 const CloverAvatar = ({ className }: { className?: string }) => {
   const heartPath = "M12 21.05C12 21.05 1.5 14.5 1.5 8.5C1.5 4.5 4.5 1.5 8 1.5C10 1.5 11.5 2.5 12 4C12.5 2.5 14 1.5 16 1.5C20.5 1.5 22.5 4.5 22.5 8.5C22.5 14.5 12 21.05 12 21.05Z";
@@ -25,18 +26,22 @@ export function DealerArea({
   houseId,
   name,
   dealerHand,
-  totalSeats
+  totalSeats,
+  recentWinAmount,
+  mode
 }: {
   houseId: string;
   name: string;
   dealerHand: Hand | null;
   totalSeats: number;
+  recentWinAmount?: any;
+  mode?: 'regular' | 'tournament';
 }) {
   return (
-    <div className="w-full flex-[4] flex flex-col items-center justify-start min-h-[200px] z-10 pt-0 shadow-none">
+    <div className="w-full flex-1 flex flex-col items-center justify-start min-h-[250px] sm:min-h-[330px] z-10 pt-0 shadow-none">
       {/* Dealer Avatar & Name */}
-      <div className="flex items-center justify-center gap-2 z-20 px-3 mt-3 ml-0 py-1 relative">
-        <div className="w-8 h-8 sm:w-10 sm:h-10 lg:w-12 lg:h-12 rounded-full overflow-hidden border-2 border-[#1e2025] shadow-lg bg-[#2a2d36] flex flex-shrink-0 items-center justify-center relative">
+      <div className="relative flex items-center justify-center gap-2 z-20 px-3 mt-3 ml-0 py-1">
+        <div id="dealer-avatar" className="w-8 h-8 sm:w-10 sm:h-10 lg:w-12 lg:h-12 rounded-full overflow-hidden border-2 border-[#1e2025] shadow-lg bg-[#2a2d36] flex flex-shrink-0 items-center justify-center relative">
           {houseId === 'system' ? (
             <CloverAvatar className="w-full h-full object-cover z-10" />
           ) : (
@@ -47,13 +52,17 @@ export function DealerArea({
             />
           )}
         </div>
-        <span className="text-white/80 font-bold text-xs sm:text-sm tracking-wide">
-          {houseId === 'system' ? 'Randseed' : name.replace("'s Table", "")}
-        </span>
-        {/* Treasure Box */}
-        <div className="absolute right-[-45px] top-1/2 -translate-y-1/2 drop-shadow-[0_0_8px_rgba(255,215,0,0.5)] cursor-pointer text-2xl sm:text-3xl hover:scale-110 transition-transform">
-          🎁
+        <div className="flex flex-col">
+          <span className="text-white/80 font-bold text-xs sm:text-sm tracking-wide">
+            {houseId === 'system' ? 'Randseed' : name.replace("'s Table", "")}
+          </span>
+          {mode === 'tournament' && (
+             <span className="text-[10px] text-yellow-400 font-bold tracking-wider uppercase flex items-center gap-1">
+               <span className="w-1 h-1 rounded-full bg-yellow-400"></span> Tournament
+             </span>
+          )}
         </div>
+        <GoldCoinTray recentWinAmount={recentWinAmount} inline={true} />
       </div>
 
       {dealerHand ? (
@@ -65,7 +74,7 @@ export function DealerArea({
               ))}
             </AnimatePresence>
           </div>
-          {dealerHand && !dealerHand.cards.some(c => c.isHidden) && (
+          {dealerHand && dealerHand.cards.length > 0 && (
             <motion.div 
               key="score"
               initial={{ opacity: 0 }}

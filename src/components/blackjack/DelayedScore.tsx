@@ -12,13 +12,15 @@ export interface DelayedScoreProps {
 }
 
 export const DelayedScore: React.FC<DelayedScoreProps> = ({ score, cardsLength, totalSeats, seatIdx = 0, isDealer = false, tableStatus = 'playing' }) => {
-  const [displayedScore, setDisplayedScore] = useState(score);
+  const [displayedScore, setDisplayedScore] = useState<number | string>(score);
 
   useEffect(() => {
     let delay = 0;
     
     // Only apply the long delay during the initial dealing phase
     if (cardsLength <= 2 && tableStatus === 'playing') {
+      // Clear score immediately while waiting for dealing animation
+      setDisplayedScore("");
       if (isDealer) {
         // Dealer receives 2nd card (hidden one) at the very end of 2nd round
         delay = ((totalSeats + 1) * 2 - 1) * 0.15 * 1000 + 400; 
@@ -38,6 +40,6 @@ export const DelayedScore: React.FC<DelayedScoreProps> = ({ score, cardsLength, 
   }, [score, cardsLength, seatIdx, totalSeats, isDealer, tableStatus]);
 
   return (
-    <>{displayedScore}</>
+    <>{displayedScore !== "" && displayedScore !== 0 ? displayedScore : ""}</>
   );
 };
