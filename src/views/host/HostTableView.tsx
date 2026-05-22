@@ -228,7 +228,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                         onClick={() => {
                            let newMaxSeats = settings.maxSeats;
                            if (newMaxSeats < 3) newMaxSeats = 3;
-                           setSettings({ ...settings, mode: 'tournament', maxSeats: newMaxSeats, tournament: { ...settings.tournament!, targetSurvivors: newMaxSeats - 1 } });
+                           setSettings({ ...settings, mode: 'tournament', maxSeats: newMaxSeats, tournament: { ...settings.tournament!, targetSurvivors: Math.max(1, Math.floor(newMaxSeats * 0.5)) } });
                         }}
                     >
                         Tournament
@@ -266,19 +266,26 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                        </div>
                      </label>
                      <Input 
-                       type="number" 
-                       value={settings.minBet || ''}
-                       onChange={e => {
-                         const val = parseInt(e.target.value);
-                         if (isNaN(val)) {
-                           setSettings({ ...settings, minBet: 0 as any });
-                         } else {
-                           setSettings({ ...settings, minBet: val, maxBet: val * 5 });
-                         }
-                       }}
-                       min="1"
-                       className="h-10 bg-white/5 border-white/10 text-white focus:border-[#126b6f]"
-                     />
+                        type="text" 
+                        value={settings.minBet === '' as any ? '' : (settings.minBet || 0).toLocaleString()}
+                        onChange={e => {
+                          const valStr = e.target.value.replace(/,/g, '');
+                          if (valStr === '') {
+                            setSettings({ ...settings, minBet: '' as any });
+                          } else {
+                            const val = parseInt(valStr);
+                            if (!isNaN(val)) {
+                              setSettings({ ...settings, minBet: val, maxBet: val * 5 });
+                            }
+                          }
+                        }}
+                        className={`h-10 bg-white/5 text-white ${settings.minBet === '' as any || settings.minBet < 1 ? 'border-red-500 focus:border-red-500 ring-1 ring-red-500' : 'border-white/10 focus:border-[#126b6f]'}`}
+                      />
+                      {settings.minBet === '' as any || settings.minBet < 1 ? (
+                        <p className="text-red-500 text-[10px] mt-1.5 font-semibold uppercase tracking-wider">
+                          Must be at least 1
+                        </p>
+                      ) : null}
                    </div>
                    <div>
                      <label className="text-xs font-semibold uppercase tracking-wider text-white/50 mb-2 flex items-center gap-1">
@@ -288,24 +295,30 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                        </div>
                      </label>
                      <Input 
-                       type="number" 
-                       value={settings.maxBet || ''}
-                       onChange={e => {
-                         const val = parseInt(e.target.value);
-                         if (isNaN(val)) {
-                           setSettings({ ...settings, maxBet: 0 as any });
-                         } else {
-                           setSettings({ ...settings, maxBet: val });
-                         }
-                       }}
-                       min={settings.minBet}
-                       className={`h-10 bg-white/5 text-white ${settings.maxBet > 0 && settings.maxBet < settings.minBet ? 'border-red-500 focus:border-red-500 ring-1 ring-red-500' : 'border-white/10 focus:border-[#126b6f]'}`}
-                     />
-                     {settings.maxBet > 0 && settings.maxBet < settings.minBet && (
-                       <p className="text-red-500 text-[10px] mt-1.5 font-semibold uppercase tracking-wider">
-                         less than min bet
-                       </p>
-                     )}
+                        type="text" 
+                        value={settings.maxBet === '' as any ? '' : (settings.maxBet || 0).toLocaleString()}
+                        onChange={e => {
+                          const valStr = e.target.value.replace(/,/g, '');
+                          if (valStr === '') {
+                            setSettings({ ...settings, maxBet: '' as any });
+                          } else {
+                            const val = parseInt(valStr);
+                            if (!isNaN(val)) {
+                              setSettings({ ...settings, maxBet: val });
+                            }
+                          }
+                        }}
+                        className={`h-10 bg-white/5 text-white ${settings.maxBet === '' as any || (settings.maxBet > 0 && settings.maxBet < (settings.minBet || 1)) ? 'border-red-500 focus:border-red-500 ring-1 ring-red-500' : 'border-white/10 focus:border-[#126b6f]'}`}
+                      />
+                      {settings.maxBet === '' as any ? (
+                        <p className="text-red-500 text-[10px] mt-1.5 font-semibold uppercase tracking-wider">
+                          Required
+                        </p>
+                      ) : settings.maxBet > 0 && settings.maxBet < (settings.minBet || 1) ? (
+                        <p className="text-red-500 text-[10px] mt-1.5 font-semibold uppercase tracking-wider">
+                          less than min bet
+                        </p>
+                      ) : null}
                    </div>
                  </div>
                  )}
@@ -320,7 +333,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                          onChange={e => {
                            const minSeats = settings.mode === 'tournament' ? 3 : 1;
                            const newSeats = Math.min(7, Math.max(minSeats, parseInt(e.target.value) || minSeats));
-                           const newTournament = settings.tournament ? { ...settings.tournament, targetSurvivors: newSeats - 1 } : undefined;
+                           const newTournament = settings.tournament ? { ...settings.tournament, targetSurvivors: Math.max(1, Math.floor(newSeats * 0.5)) } : undefined;
                            setSettings({ ...settings, maxSeats: newSeats, ...(newTournament ? { tournament: newTournament } : {}) });
                          }}
                          className="w-full h-10 rounded-xl border border-white/10 bg-[#1a1b23] px-3 py-2 text-sm text-white focus:outline-none focus:border-[#126b6f]"
@@ -439,18 +452,32 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                    <div>
                      <label className="text-xs font-semibold uppercase tracking-wider text-white/50 mb-2 flex items-center gap-1">
-                       Ticket Price (GCoins)
+                       Ticket (Gcoin)
                        <div className="w-3 h-3 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08] shadow-[0_0_2px_rgba(255,197,61,0.4)] relative overflow-hidden">
                          <div className="absolute top-0 right-0 w-1 h-1 bg-white/40 rounded-full blur-[1px]"></div>
                        </div>
                      </label>
                      <Input 
-                       type="number" 
-                       value={settings.tournament?.ticketPrice || ''}
-                       onChange={e => setSettings({ ...settings, tournament: { ...settings.tournament!, ticketPrice: parseInt(e.target.value) || 0 } })}
-                       min="0"
-                       className="h-10 bg-white/5 border-white/10 text-white focus:border-[#126b6f]"
+                       type="text" 
+                       value={settings.tournament?.ticketPrice === '' as any ? '' : (settings.tournament?.ticketPrice || 0).toLocaleString()}
+                       onChange={e => {
+                         const rawStr = e.target.value.replace(/,/g, '');
+                         if (rawStr === '') {
+                           setSettings({ ...settings, tournament: { ...settings.tournament!, ticketPrice: '' as any } });
+                         } else {
+                           const val = parseInt(rawStr);
+                           if (!isNaN(val)) {
+                             setSettings({ ...settings, tournament: { ...settings.tournament!, ticketPrice: val } });
+                           }
+                         }
+                       }}
+                       className={`h-10 bg-white/5 text-white ${settings.tournament?.ticketPrice === '' as any || settings.tournament!.ticketPrice < 0 ? 'border-red-500 focus:border-red-500' : 'border-white/10 focus:border-[#126b6f]'}`}
                      />
+                     {settings.tournament?.ticketPrice === '' as any ? (
+                        <div className="text-[10px] text-red-500 mt-1.5">Ticket price is required.</div>
+                     ) : settings.tournament!.ticketPrice < 0 ? (
+                        <div className="text-[10px] text-red-500 mt-1.5">Must be at least 0.</div>
+                     ) : null}
                    </div>
                    <div>
                      <label className="text-xs font-semibold uppercase tracking-wider text-white/50 mb-2 flex items-center gap-1">
@@ -460,17 +487,16 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                        </div>
                      </label>
                      <Input 
-                       type="number" 
-                       value={settings.tournament?.startingChips === '' as any ? '' : settings.tournament?.startingChips ?? ''}
+                       type="text" 
+                       value={settings.tournament?.startingChips === '' as any ? '' : (settings.tournament?.startingChips || 0).toLocaleString()}
                         onChange={e => {
-                          let val = e.target.value;
+                          const val = e.target.value.replace(/,/g, '');
                           setSettings({ ...settings, tournament: { ...settings.tournament!, startingChips: val === '' ? '' as any : parseInt(val) || 0 } });
                         }}
-                        min="1000"
                         className={`h-10 bg-white/5 text-white ${settings.tournament?.startingChips === '' as any || settings.tournament!.startingChips < 1000 ? 'border-red-500 focus:border-red-500' : 'border-white/10 focus:border-[#126b6f]'}`}
                       />
                       {settings.tournament?.startingChips === '' as any ? (
-                        <div className="text-[10px] text-red-500 mt-1.5">Starting chips can not be cleared.</div>
+                        <div className="text-[10px] text-red-500 mt-1.5">Starting chips is required.</div>
                       ) : settings.tournament!.startingChips < 1000 ? (
                         <div className="text-[10px] text-red-500 mt-1.5">Must be at least 1,000 chips.</div>
                       ) : null}
@@ -478,47 +504,54 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                    <div>
                      <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 mb-2 block whitespace-nowrap">Min Bet Chips</label>
                      <Input 
-                       type="number" 
-                       value={settings.tournament?.minBetChips || ''}
-                       onChange={e => setSettings({ ...settings, tournament: { ...settings.tournament!, minBetChips: parseInt(e.target.value) || 0 } })}
-                       min="0"
-                       className="h-10 bg-white/5 border-white/10 text-white focus:border-[#126b6f] text-sm"
+                       type="text" 
+                       value={settings.tournament?.minBetChips === '' as any ? '' : (settings.tournament?.minBetChips || 0).toLocaleString()}
+                       onChange={e => {
+                         const valStr = e.target.value.replace(/,/g, '');
+                         const val = valStr === '' ? '' as any : parseInt(valStr) || 0;
+                         setSettings({ ...settings, tournament: { ...settings.tournament!, minBetChips: val } });
+                       }}
+                       className={`h-10 bg-white/5 text-sm text-white ${settings.tournament?.minBetChips === '' as any || settings.tournament!.minBetChips < 0 ? 'border-red-500 focus:border-red-500' : 'border-white/10 focus:border-[#126b6f]'}`}
                      />
+                     {settings.tournament?.minBetChips === '' as any ? (
+                        <div className="text-[10px] text-red-500 mt-1.5">Min bet chips is required.</div>
+                     ) : settings.tournament!.minBetChips < 0 ? (
+                        <div className="text-[10px] text-red-500 mt-1.5">Must be at least 0.</div>
+                     ) : null}
                    </div>
                    <div className="grid grid-cols-2 gap-2">
                      <div className="group relative">
                        <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 mb-2 block whitespace-nowrap">Host Fee (%)</label>
                        <Input 
-                         type="number" 
+                         type="text" 
                          value={settings.tournament?.hostFeePct === '' as any ? '' : settings.tournament?.hostFeePct ?? ''}
                           onChange={e => {
-                            let val = e.target.value;
+                            let val = e.target.value.replace(/,/g, '');
                             if (val === '') {
                               setSettings({ ...settings, tournament: { ...settings.tournament!, hostFeePct: '' as any } });
                             } else {
-                              setSettings({ ...settings, tournament: { ...settings.tournament!, hostFeePct: Math.min(5, Math.max(0, parseInt(val) || 0)) } });
+                              setSettings({ ...settings, tournament: { ...settings.tournament!, hostFeePct: parseInt(val) || 0 } });
                             }
                           }}
-                          min="0" max="5"
-                          className={`h-10 bg-white/5 text-sm ${settings.tournament?.hostFeePct === '' as any ? 'border-red-500 text-white focus:border-red-500' : 'border-white/10 text-white focus:border-[#126b6f]'}`}
+                          className={`h-10 bg-white/5 text-sm ${settings.tournament?.hostFeePct === '' as any || settings.tournament!.hostFeePct < 0 || settings.tournament!.hostFeePct > 5 ? 'border-red-500 text-white focus:border-red-500' : 'border-white/10 text-white focus:border-[#126b6f]'}`}
                         />
                         {settings.tournament?.hostFeePct === '' as any ? (
                            <div className="text-[10px] text-red-500 mt-1.5">
-                             Host fee can not be cleared.
+                             Required.
                            </div>
-                        ) : (
+                        ) : settings.tournament!.hostFeePct < 0 || settings.tournament!.hostFeePct > 5 ? (
                            <div className="text-[10px] text-red-500 mt-1.5">
-                             Max 5%, default 3.
+                             Must be 0 to 5%.
                            </div>
-                        )}
+                        ) : null}
                      </div>
                      <div>
                        <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 mb-2 block whitespace-nowrap">Platform Fee</label>
                        <Input 
                          type="number" 
                          value="2"
-                         disabled
-                         className="h-10 bg-black/40 border-white/5 text-white/50 text-sm cursor-not-allowed"
+                         readOnly
+                         className="h-10 bg-black/40 border-white/5 text-white/50 text-sm focus:outline-none focus:ring-0 cursor-default"
                        />
                      </div>
                    </div>
@@ -547,20 +580,30 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                            <span className="text-sm font-semibold text-white whitespace-nowrap">Survivor Cap</span>
                          </label>
                          {settings.tournament?.isSurvivorCap && (
-                           <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-md px-2 py-1">
-                             <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 whitespace-nowrap">Target ({Math.max(1, settings.maxSeats - 1)})</label>
+                           <div className="flex flex-col gap-1">
+                              <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-md px-2 py-1">
+                             <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 whitespace-nowrap">Target (Max {Math.max(1, Math.floor(settings.maxSeats * 0.5))})</label>
                              <Input 
-                               type="number" 
-                               value={settings.tournament?.targetSurvivors || ''}
+                               type="text" 
+                               value={settings.tournament?.targetSurvivors === '' as any ? '' : settings.tournament?.targetSurvivors ?? ''}
                                onChange={e => {
-                                  const maxSurvs = Math.max(1, settings.maxSeats - 1);
-                                  setSettings({ ...settings, tournament: { ...settings.tournament!, targetSurvivors: Math.min(maxSurvs, Math.max(1, parseInt(e.target.value) || 1)) } })
+                                  let valStr = e.target.value.replace(/,/g, '');
+                                  if (valStr === '') {
+                                    setSettings({ ...settings, tournament: { ...settings.tournament!, targetSurvivors: '' as any } })
+                                  } else {
+                                    setSettings({ ...settings, tournament: { ...settings.tournament!, targetSurvivors: parseInt(valStr) || 0 } })
+                                  }
                                }}
-                               min="1" max={Math.max(1, settings.maxSeats - 1)}
-                               className="h-6 w-10 text-center text-sm bg-transparent border-none focus:outline-none focus:border-none p-0 !ring-0 text-white"
+                               className={`h-6 w-10 text-center text-sm bg-transparent border-none focus:outline-none focus:border-none p-0 !ring-0 ${(settings.tournament?.targetSurvivors === '' as any || settings.tournament!.targetSurvivors < 1 || settings.tournament!.targetSurvivors > Math.max(1, Math.floor(settings.maxSeats * 0.5))) ? 'text-red-500' : 'text-white'}`}
                              />
                            </div>
-                         )}
+                            {settings.tournament?.targetSurvivors === '' as any ? (
+                              <div className="text-[10px] text-red-500 mt-0.5 leading-tight">Required</div>
+                            ) : (settings.tournament!.targetSurvivors < 1 || settings.tournament!.targetSurvivors > Math.max(1, Math.floor(settings.maxSeats * 0.5))) ? (
+                              <div className="text-[10px] text-red-500 mt-0.5 leading-tight whitespace-nowrap">Must be 1 to {Math.max(1, Math.floor(settings.maxSeats * 0.5))}</div>
+                            ) : null}
+                          </div>
+                          )}
                        </div>
                      </div>
 
@@ -587,16 +630,33 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                          <span className="text-sm font-semibold text-white whitespace-nowrap">Round Cap</span>
                        </label>
                        {settings.tournament?.isHardCapRounds && (
-                         <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-md px-2 py-1">
-                           <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 whitespace-nowrap">Rounds (20-1000)</label>
-                           <Input 
-                             type="number" 
-                             value={settings.tournament?.maxRounds || ''}
-                             onChange={e => setSettings({ ...settings, tournament: { ...settings.tournament!, maxRounds: Math.min(1000, Math.max(20, parseInt(e.target.value) || 20)) } })}
-                             min="20" max="1000" placeholder="Rnds"
-                             className="h-6 w-12 text-center text-sm bg-transparent border-none focus:outline-none focus:border-none p-0 !ring-0 text-white"
-                           />
-                         </div>
+                         <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-md px-2 py-1">
+                              <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 whitespace-nowrap">Rounds (20-1000)</label>
+                              <Input 
+                                type="text" 
+                                value={settings.tournament?.maxRounds === '' as any ? '' : (settings.tournament?.maxRounds || 0).toLocaleString()}
+                                onChange={e => {
+                                  const valStr = e.target.value.replace(/,/g, '');
+                                  if (valStr === '') {
+                                    setSettings({ ...settings, tournament: { ...settings.tournament!, maxRounds: '' as any } });
+                                  } else {
+                                    const val = parseInt(valStr);
+                                    if (!isNaN(val)) {
+                                      setSettings({ ...settings, tournament: { ...settings.tournament!, maxRounds: val } });
+                                    }
+                                  }
+                                }}
+                                placeholder="Rnds"
+                                className={`h-6 w-12 text-center text-sm bg-transparent border-none focus:outline-none focus:border-none p-0 !ring-0 ${settings.tournament?.maxRounds === '' as any || settings.tournament!.maxRounds < 20 || settings.tournament!.maxRounds > 1000 ? 'text-red-500' : 'text-white'}`}
+                              />
+                            </div>
+                            {settings.tournament?.maxRounds === '' as any ? (
+                              <div className="text-[10px] text-red-500 mt-0.5 leading-tight">Required</div>
+                            ) : settings.tournament!.maxRounds < 20 || settings.tournament!.maxRounds > 1000 ? (
+                              <div className="text-[10px] text-red-500 mt-0.5 leading-tight whitespace-nowrap">Must be 20 to 1000</div>
+                            ) : null}
+                          </div>
                        )}
                      </div>
                    </div>
@@ -621,16 +681,32 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                              <span className="text-sm font-semibold text-white">Forced Ante</span>
                            </label>
                            {settings.tournament?.isForcedAnte && (
-                             <div className="flex items-center gap-2">
-                               <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 whitespace-nowrap">Ante % (Max 2)</label>
-                               <Input 
-                                 type="number" 
-                                 value={settings.tournament?.antePct || ''}
-                                 onChange={e => setSettings({ ...settings, tournament: { ...settings.tournament!, antePct: Math.min(2, Math.max(0, parseInt(e.target.value) || 0)) } })}
-                                 min="0" max="2"
-                                 className="h-8 max-w-[60px] bg-white/5 border-white/10 text-white focus:border-[#126b6f] text-sm px-2 text-center"
-                               />
-                             </div>
+                             <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-2">
+                                  <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 whitespace-nowrap">Ante % (Max 2)</label>
+                                  <Input 
+                                    type="text" 
+                                    value={settings.tournament?.antePct === '' as any ? '' : (settings.tournament?.antePct || 0).toLocaleString()}
+                                    onChange={e => {
+                                      const valStr = e.target.value.replace(/,/g, '');
+                                      if (valStr === '') {
+                                        setSettings({ ...settings, tournament: { ...settings.tournament!, antePct: '' as any } });
+                                      } else {
+                                        const val = parseInt(valStr);
+                                        if (!isNaN(val)) {
+                                          setSettings({ ...settings, tournament: { ...settings.tournament!, antePct: val } });
+                                        }
+                                      }
+                                    }}
+                                    className={`h-8 max-w-[60px] bg-white/5 text-white ${settings.tournament?.antePct === '' as any || settings.tournament!.antePct < 0 || settings.tournament!.antePct > 2 ? 'border-red-500 focus:border-red-500' : 'border-white/10 focus:border-[#126b6f]'} text-sm px-2 text-center`}
+                                  />
+                                </div>
+                                {settings.tournament?.antePct === '' as any ? (
+                                  <div className="text-[10px] text-red-500 mt-0.5 leading-tight">Required</div>
+                                ) : settings.tournament!.antePct < 0 || settings.tournament!.antePct > 2 ? (
+                                  <div className="text-[10px] text-red-500 mt-0.5 leading-tight whitespace-nowrap">Must be 0 to 2</div>
+                                ) : null}
+                              </div>
                            )}
                          </div>
 
@@ -646,16 +722,32 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                              <span className="text-sm font-semibold text-white">Escalate By Rounds</span>
                            </label>
                            {settings.tournament?.isScheduledEscalation && (
-                             <div className="flex items-center gap-2">
-                               <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 whitespace-nowrap">Every X Rounds (5-30)</label>
-                               <Input 
-                                 type="number" 
-                                 value={settings.tournament?.escalationRounds || ''}
-                                 onChange={e => setSettings({ ...settings, tournament: { ...settings.tournament!, escalationRounds: Math.min(30, Math.max(5, parseInt(e.target.value) || 5)) } })}
-                                 min="5" max="30"
-                                 className="h-8 max-w-[60px] bg-white/5 border-white/10 text-white focus:border-[#126b6f] text-sm px-2 text-center"
-                               />
-                             </div>
+                             <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-2">
+                                  <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 whitespace-nowrap">Every X Rounds (5-30)</label>
+                                  <Input 
+                                    type="text" 
+                                    value={settings.tournament?.escalationRounds === '' as any ? '' : (settings.tournament?.escalationRounds || 0).toLocaleString()}
+                                    onChange={e => {
+                                      const valStr = e.target.value.replace(/,/g, '');
+                                      if (valStr === '') {
+                                        setSettings({ ...settings, tournament: { ...settings.tournament!, escalationRounds: '' as any } });
+                                      } else {
+                                        const val = parseInt(valStr);
+                                        if (!isNaN(val)) {
+                                          setSettings({ ...settings, tournament: { ...settings.tournament!, escalationRounds: val } });
+                                        }
+                                      }
+                                    }}
+                                    className={`h-8 max-w-[60px] bg-white/5 text-white ${settings.tournament?.escalationRounds === '' as any || settings.tournament!.escalationRounds < 5 || settings.tournament!.escalationRounds > 30 ? 'border-red-500 focus:border-red-500' : 'border-white/10 focus:border-[#126b6f]'} text-sm px-2 text-center`}
+                                  />
+                                </div>
+                                {settings.tournament?.escalationRounds === '' as any ? (
+                                  <div className="text-[10px] text-red-500 mt-0.5 leading-tight">Required</div>
+                                ) : settings.tournament!.escalationRounds < 5 || settings.tournament!.escalationRounds > 30 ? (
+                                  <div className="text-[10px] text-red-500 mt-0.5 leading-tight whitespace-nowrap">Must be 5 to 30</div>
+                                ) : null}
+                              </div>
                            )}
                          </div>
                        </div>

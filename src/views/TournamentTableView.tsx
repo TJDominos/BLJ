@@ -313,7 +313,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar }: { onNavigat
                joinTable(table.id, seatIndex);
            } else {
                setConfirmAction({
-                 message: `Do you want to pay ${table.settings.tournament?.ticketPrice} GCoins ticket to enter this tournament and get ${table.settings.tournament?.startingChips} starting chips?`,
+                 message: `Do you want to pay ${table.settings.tournament?.ticketPrice} Gcoin ticket to enter this tournament and get ${table.settings.tournament?.startingChips} starting chips?`,
                  onConfirm: () => joinTable(table.id, seatIndex)
                });
            }
@@ -323,7 +323,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar }: { onNavigat
              joinTable(table.id, seatIndex);
            } else {
              setConfirmAction({
-               message: `Do you want to lock ${table.settings.minBuyIn} GCoins to sit at this seat?`,
+               message: `Do you want to lock ${table.settings.minBuyIn} Gcoin to sit at this seat?`,
                onConfirm: () => joinTable(table.id, seatIndex)
              });
            }
