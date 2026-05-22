@@ -14,6 +14,7 @@ import { GoldCoinTray } from '@/components/blackjack/GoldCoinTray';
 import { GoldenWreath } from '@/components/blackjack/GoldenWreath';
 import { HeaderUI } from '@/components/blackjack/HeaderUI';
 import { LiveTablesSidebar } from '@/components/blackjack/LiveTablesSidebar';
+import { CommentsWidget } from '@/components/blackjack/CommentsWidget';
 
 // Further down, replace the dealer area:
 
@@ -35,6 +36,8 @@ export function BlackjackTable({ onNavigate, onToggleSidebar }: { onNavigate: (v
   const [shakeSeats, setShakeSeats] = useState(false);
   const [isShuffling, setIsShuffling] = useState(false);
   const [showDiscardStats, setShowDiscardStats] = useState(false);
+  const [showFloatingComments, setShowFloatingComments] = useState(true);
+  const [isCommentsOpen, setIsCommentsOpen] = useState(false);
 
   const table = tables[activeTableId || ''];
   const mySeats = React.useMemo(() => table?.seats.map((s, i) => s.userId === currentUser?.id ? i : -1).filter(i => i >= 0) || [], [table?.seats?.map(s => s.userId)?.join(), currentUser?.id]);
@@ -578,6 +581,14 @@ export function BlackjackTable({ onNavigate, onToggleSidebar }: { onNavigate: (v
         onToggleSidebar={() => onToggleSidebar && onToggleSidebar()}
       />
 
+      <CommentsWidget 
+        unreadCount={15} 
+        showFloatingComments={showFloatingComments}
+        setShowFloatingComments={setShowFloatingComments}
+        isOpen={isCommentsOpen}
+        setIsOpen={setIsCommentsOpen}
+      />
+
       <div className="w-full max-w-[1024px] flex flex-col items-center gap-1 z-40 px-2 sm:px-4 pt-1 sm:pt-2 pb-1 relative pointer-events-none shrink-0">
         <div className="flex flex-row items-center justify-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-[420px] mx-auto mt-[-2px]">
           <div className="relative flex flex-row items-center border-[2px] border-[#6b4c2a] rounded-full bg-gradient-to-b from-[#eac574] via-[#d0a758] to-[#997027] p-1 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8),inset_0_-1px_2px_rgba(0,0,0,0.4),0_4px_10px_rgba(0,0,0,0.5)] justify-between flex-1 h-[40px] sm:h-[44px] min-w-[240px]">
@@ -797,6 +808,9 @@ export function BlackjackTable({ onNavigate, onToggleSidebar }: { onNavigate: (v
       <div className="flex-1 w-full max-w-[1024px] flex flex-col items-center justify-between pb-0 pt-0 mt-0 ml-0 relative bg-gradient-to-b from-[#134226] via-[#1a5b33] to-[#0f341d] flex-1 min-h-0 shadow-[inset_0_0_100px_rgba(0,0,0,0.8)] overflow-hidden z-10 md:border-t lg:border-x border-white/5">
         <div className="absolute inset-0 pointer-events-none opacity-40 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')] mix-blend-overlay z-0"></div>
 
+        {/* Target anchor for floating comments, positioned relative to the overall game board wrapper */}
+        <div id="floating-comments-root" className="absolute top-[50px] md:top-[65px] left-0 right-0 pointer-events-none z-40 flex flex-col gap-1.5 justify-start items-start overflow-visible" />
+
 <AnimatePresence>
              {isShuffling && (
                <motion.div 
@@ -851,7 +865,7 @@ export function BlackjackTable({ onNavigate, onToggleSidebar }: { onNavigate: (v
            />
 
            {/* Base curved lines decoration */}
-           <div className="absolute top-[48%] sm:top-[50%] left-0 right-0 bottom-0 w-full overflow-hidden pointer-events-none flex justify-center items-start z-0 mt-[10px] sm:mt-[20px] md:mt-[30px]">
+           <div className="absolute top-[35%] sm:top-[40%] left-0 right-0 bottom-0 w-full overflow-hidden pointer-events-none flex justify-center items-start z-0 mt-[10px] sm:mt-[20px] md:mt-[30px]">
              {/* Outer golden line */}
              <div className="w-[240%] sm:w-[140%] md:w-[110%] aspect-[2/1] border-t-[8px] sm:border-t-[10px] border-[#c6a364] opacity-70 rounded-[100%] absolute top-0 shadow-[0_-2px_4px_rgba(0,0,0,0.8),inset_0_2px_2px_rgba(255,255,255,0.3)]"></div>
              {/* Inner thin golden line */}
@@ -861,7 +875,7 @@ export function BlackjackTable({ onNavigate, onToggleSidebar }: { onNavigate: (v
            </div>
 
            {/* Game Rules Center Area */}
-           <div className="absolute top-[48%] sm:top-[50%] left-1/2 -translate-x-1/2 -translate-y-[100%] sm:-translate-y-[110%] md:-translate-y-[120%] z-10 px-2 sm:px-4 whitespace-nowrap scale-[0.6] sm:scale-[0.8] md:scale-100 flex flex-col items-center gap-1.5 sm:gap-2 pointer-events-none">
+           <div className="absolute top-[35%] sm:top-[40%] left-1/2 -translate-x-1/2 -translate-y-[100%] sm:-translate-y-[110%] md:-translate-y-[120%] z-10 px-2 sm:px-4 whitespace-nowrap scale-[0.6] sm:scale-[0.8] md:scale-100 flex flex-col items-center gap-1.5 sm:gap-2 pointer-events-none">
               <span className="text-[#c6a364] text-[18px] md:text-[24px] font-black tracking-[0.3em] uppercase opacity-90" style={{ textShadow: '0px 1px 1px rgba(0,0,0,1), 0px -1px 1px rgba(0,0,0,0.8), 0px 0px 3px rgba(176,142,85,0.4)' }}>
                 Blackjack Pays 3 to 2
               </span>
@@ -1019,7 +1033,7 @@ export function BlackjackTable({ onNavigate, onToggleSidebar }: { onNavigate: (v
            </div>
 
            {/* Player Area */}
-           <div className="w-full flex-1 flex flex-col items-center justify-center relative z-20 mt-2 sm:mt-4 md:mt-0 lg:mb-4">
+           <div className="w-full flex-[6] flex flex-col items-center justify-center relative z-20 mt-2 sm:mt-4 md:mt-0 lg:mb-4">
              
              <div className="relative w-full z-10 flex items-center justify-center group/seats h-full max-h-full">
                <div ref={seatsContainerRef} className={cn("flex w-full md:w-auto h-full pt-12 mt-auto pb-[130px] sm:pb-[120px] lg:pb-[110px] justify-start gap-[4px] sm:gap-2 md:gap-4 lg:gap-8 items-end px-4 md:px-8 z-10 transition-transform duration-300 overflow-x-auto snap-x snap-mandatory md:snap-none hide-scrollbar-custom")}>
@@ -1440,13 +1454,13 @@ export function BlackjackTable({ onNavigate, onToggleSidebar }: { onNavigate: (v
          </div>
 
            {/* Bottom Bar: RTP */}
-           <div className="w-full flex justify-center text-[12px] sm:text-[13px] font-bold tracking-wide py-2 sm:py-3 shrink-0 mt-0 z-10 relative bg-black/80 backdrop-blur-md border-t border-white/20 shadow-[0_-10px_20px_rgba(0,0,0,0.8)]">
+           <div className="w-full max-w-[1024px] flex justify-center text-[12px] sm:text-[13px] font-bold tracking-wide py-1.5 sm:py-2.5 z-20 relative bg-black shrink-0 border-t border-white/10 md:border-x">
              <div className="flex items-center gap-4 sm:gap-6 px-4">
-               <button onClick={() => setShowRules(true)} className="hover:text-white text-[#ffc53d] transition-colors uppercase cursor-pointer border-b border-[#ffc53d]/50 hover:border-[#ffc53d] pb-0.5 pointer-events-auto flex items-center gap-1.5 px-2 bg-[#ffc53d]/10 rounded-sm">
+               <button onClick={() => setShowRules(true)} className="hover:text-white text-[#ffc53d] transition-colors uppercase cursor-pointer border-b border-[#ffc53d]/50 hover:border-[#ffc53d] pb-0.5 flex items-center gap-1.5 px-2 bg-[#ffc53d]/10 rounded-sm">
                   <span className="drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">RTP {calculateBaseRTP(table.settings.winningRule)}</span>
                </button>
                <div className="w-1.5 h-1.5 rounded-full bg-white/40"></div>
-               <div className="flex items-center gap-2 cursor-help backdrop-blur-md bg-white/10 py-1.5 px-3 rounded-md border border-white/20 text-white/90" title="On-Chain Randomness verified">
+               <div className="flex items-center gap-2 text-white/90 drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)] pointer-events-none">
                  <span className="relative flex h-2 w-2">
                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500 shadow-[0_0_5px_rgba(52,211,153,0.8)]"></span>
