@@ -1,10 +1,12 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { X, ShieldCheck } from 'lucide-react';
-import { WinningRule } from '@/store/gameStore';
+import { X, ShieldCheck, Trophy } from 'lucide-react';
+import { WinningRule, TableSettings } from '@/store/gameStore';
 import { calculateBaseRTP, gameRules } from '@/backend/gameRules';
 
-export function RulesModal({ onClose, winningRule }: { onClose: () => void, winningRule: WinningRule }) {
+export function RulesModal({ onClose, winningRule, settings }: { onClose: () => void, winningRule: WinningRule, settings?: TableSettings }) {
+  const isTournament = settings?.mode === 'tournament';
+  const prizePool = isTournament ? (settings.tournament?.ticketPrice || 0) * (settings.maxSeats || 3) : 0;
   return (
     <div 
       className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm pointer-events-auto"
@@ -16,10 +18,10 @@ export function RulesModal({ onClose, winningRule }: { onClose: () => void, winn
         exit={{ opacity: 0, scale: 0.95, y: 20 }}
         className="w-full max-w-md bg-[#1e2025] border border-white/10 shadow-2xl rounded-2xl overflow-hidden flex flex-col max-h-[85vh]"
       >
-        <div className="flex justify-between items-center p-4 border-b border-white/5">
+        <div className="flex justify-between items-center p-4 border-b border-white/5 bg-black/20">
           <div className="flex items-center gap-2">
-            <ShieldCheck className="w-5 h-5 text-emerald-400" />
-            <h2 className="text-lg font-bold text-white tracking-wider uppercase">Game Rules</h2>
+            {isTournament ? <Trophy className="w-5 h-5 text-yellow-400" /> : <ShieldCheck className="w-5 h-5 text-emerald-400" />}
+            <h2 className="text-lg font-bold text-white tracking-wider uppercase">{isTournament ? "Tournament Prizes & Rules" : "Game Rules"}</h2>
           </div>
           <button onClick={onClose} className="text-white/50 hover:text-white transition-colors p-1">
             <X className="w-5 h-5" />
@@ -31,6 +33,55 @@ export function RulesModal({ onClose, winningRule }: { onClose: () => void, winn
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
         >
           <style>{`.hide-scrollbar::-webkit-scrollbar { display: none; }`}</style>
+          
+          {isTournament && (
+             <div className="space-y-4 mb-6 bg-yellow-500/10 border border-yellow-500/20 p-4 rounded-xl">
+               <h3 className="text-yellow-400 font-bold uppercase tracking-widest text-xs flex items-center gap-2"><Trophy className="w-3.5 h-3.5" /> Prize Pool: Gcoin {prizePool.toLocaleString()}</h3>
+               <div className="space-y-2 mt-3">
+                 <div className="flex justify-between text-xs border-b border-white/5 pb-1">
+                   <span className="text-white/60">Ticket Price</span>
+                   <span className="font-mono text-white">Gcoin {settings.tournament?.ticketPrice || 0}</span>
+                 </div>
+                 <div className="flex justify-between text-xs border-b border-white/5 pb-1">
+                   <span className="text-white/60">Starting Chips</span>
+                   <span className="font-mono text-white">{settings.tournament?.startingChips || 0} CHIPS</span>
+                 </div>
+                 <div className="flex justify-between text-xs border-b border-white/5 pb-1">
+                   <span className="text-white/60">Prize Distribution</span>
+                   <span className="font-mono text-white text-right">
+                     {settings.tournament?.targetSurvivors === 1 ? '🥇 Winner takes all' : '🏆 Proportional Split'}
+                   </span>
+                 </div>
+                 <div className="flex justify-between text-xs border-b border-white/5 pb-1">
+                   <span className="text-white/60">Target Winners</span>
+                   <span className="font-mono text-white text-right">
+                     {settings.tournament?.targetSurvivors === 1 ? '1 Winner' : (settings.tournament?.targetSurvivors ? `${settings.tournament.targetSurvivors} Survivors` : 'All Survivors')}
+                   </span>
+                 </div>
+                 <div className="flex justify-between text-xs border-b border-white/5 pb-1">
+                   <span className="text-white/60">Max Rounds</span>
+                   <span className="font-mono text-white text-right">
+                     {settings.tournament?.maxRounds || 'Unlimited'}
+                   </span>
+                 </div>
+                 <div className="flex justify-between text-xs border-b border-white/5 pb-1">
+                   <span className="text-white/60">Escalation</span>
+                   <span className="font-mono text-white text-right">
+                     {settings.tournament?.isScheduledEscalation ? `Ante Multiplier per ${settings.tournament.escalationRounds} Rounds` : 'No Scheduled Escalation'}
+                   </span>
+                 </div>
+                 {settings.tournament?.isForcedAnte && (
+                   <div className="flex justify-between text-xs border-b border-white/5 pb-1">
+                     <span className="text-white/60">Forced Ante</span>
+                     <span className="font-mono text-white text-right">
+                       {settings.tournament.antePct}% (of Player's Chip Stack)
+                     </span>
+                   </div>
+                 )}
+               </div>
+             </div>
+          )}
+
           <div className="space-y-2">
             <h3 className="text-white font-semibold uppercase tracking-wider text-xs">Payouts</h3>
             <ul className="space-y-1.5 font-mono text-xs">

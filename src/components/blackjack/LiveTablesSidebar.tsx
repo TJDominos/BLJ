@@ -1,4 +1,5 @@
 import { motion } from 'motion/react';
+import { Trophy } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Table } from '@/store/gameStore';
 
@@ -54,12 +55,19 @@ export function LiveTablesSidebar({
                   if (onNavigate) onNavigate();
                   setShowSidebar(false);
                 }}>
-                  <div className="font-bold text-white mb-1 flex items-center pr-12">
-                     <span className="truncate">{t.name}</span>
+                  <div className="font-bold text-white mb-1 flex flex-col pr-12">
+                     <span className="truncate flex items-center gap-2">
+                        {t.settings.mode === 'tournament' && <Trophy className="w-3.5 h-3.5 text-yellow-500" />}
+                        {t.name}
+                     </span>
+                     {t.houseId !== 'system' && t.settings.mode !== 'tournament' && t.liquidity !== undefined && (
+                        <span className="text-[10px] text-[#20a37c] font-mono tracking-widest uppercase mt-0.5">
+                           LIQ: ${t.liquidity.toLocaleString()}
+                        </span>
+                     )}
                   </div>
                   {t.settings.mode === 'tournament' && (
                      <div className="absolute top-3 right-3 text-[10px] font-bold text-yellow-500 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded tracking-wider shadow-sm flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-pulse"></span>
                         TRNMNT
                      </div>
                   )}

@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { PlayingCard } from './PlayingCardUI';
+import { Trophy } from 'lucide-react';
 import { PlayingCard as PlayingCardType, Hand } from '@/store/gameStore';
 
 import { DelayedScore } from './DelayedScore';
@@ -28,7 +29,8 @@ export function DealerArea({
   dealerHand,
   totalSeats,
   recentWinAmount,
-  mode
+  mode,
+  liquidity
 }: {
   houseId: string;
   name: string;
@@ -36,6 +38,7 @@ export function DealerArea({
   totalSeats: number;
   recentWinAmount?: any;
   mode?: 'regular' | 'tournament';
+  liquidity?: number;
 }) {
   return (
     <div className="w-full flex-[4] flex flex-col items-center justify-start min-h-[200px] sm:min-h-[250px] z-10 pt-0 shadow-none">
@@ -53,12 +56,18 @@ export function DealerArea({
           )}
         </div>
         <div className="flex flex-col">
-          <span className="text-white/80 font-bold text-xs sm:text-sm tracking-wide">
+          <span className="text-white/80 font-bold text-xs sm:text-sm tracking-wide flex items-center gap-1">
+            {mode === 'tournament' && <Trophy className="w-3.5 h-3.5 text-yellow-500" />}
             {houseId === 'system' ? 'Randseed' : name.replace("'s Table", "")}
           </span>
           {mode === 'tournament' && (
              <span className="text-[10px] text-yellow-400 font-bold tracking-wider uppercase flex items-center gap-1">
-               <span className="w-1 h-1 rounded-full bg-yellow-400"></span> Tournament
+               Tournament
+             </span>
+          )}
+          {houseId !== 'system' && mode !== 'tournament' && liquidity !== undefined && (
+             <span className="text-[10px] text-[#20a37c] font-mono tracking-wider uppercase flex items-center gap-1">
+                LIQ: ${liquidity.toLocaleString()}
              </span>
           )}
         </div>

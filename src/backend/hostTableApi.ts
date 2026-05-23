@@ -21,6 +21,8 @@ export const hostTableApi = {
       name: settings.name,
       description: settings.description,
       houseId: userId,
+      createdAt: Date.now(),
+      visits: 0,
       liquidity,
       initialLiquidity: liquidity,
       safeAccountAddress: `0x${Math.random().toString(16).substr(2, 40)}`,
@@ -39,18 +41,19 @@ export const hostTableApi = {
     return JSON.parse(JSON.stringify(newTable));
   },
 
-  async closeTable(tableId: string, userId: string): Promise<Table> {
+  async closeTable(tableId: string, userId: string): Promise<{table: Table, returnedLiquidity: number}> {
     await delay();
     const table = tablesDb[tableId];
     if (table && table.houseId === userId) {
       if (table.status === 'playing') {
-        table.status = 'closing'; // close after the round
+          table.status = 'closing'; // close after the round
+          return { table: JSON.parse(JSON.stringify(table)) };
       } else {
         table.status = 'closed';
-        table.liquidity = 0;
+        return { table: JSON.parse(JSON.stringify(table)) };
       }
     }
-    return JSON.parse(JSON.stringify(table));
+    return { table: JSON.parse(JSON.stringify(table || {})) };
   },
   
   async pauseTable(tableId: string, userId: string): Promise<Table> {
@@ -60,6 +63,12 @@ export const hostTableApi = {
       table.status = 'paused';
     }
     return JSON.parse(JSON.stringify(table));
+  },
+
+  async recordVisit(tableId: string): Promise<void> {
+    if (tablesDb[tableId]) {
+      tablesDb[tableId].visits = (tablesDb[tableId].visits || 0) + 1;
+    }
   },
 
   async resumeTable(tableId: string, userId: string): Promise<Table> {
@@ -89,6 +98,20 @@ export const hostTableApi = {
         table.settings = { ...table.settings, ...settings };
         if (settings.name) table.name = settings.name;
         if (settings.description !== undefined) table.description = settings.description;
+    }
+    return JSON.parse(JSON.stringify(table));
+  },
+
+  async depositLiquidity(tableId: string, userId: string, amount: number): Promise<Table> {
+    await delay();
+    const table = tablesDb[tableId];
+    if (table && table.houseId === userId) {
+      table.liquidity += amount;
+      
+      const req = table.settings.maxBet * table.settings.maxSeats;
+      if (table.liquidity >= req && table.status === 'closed') {
+        table.status = 'waiting';
+      }
     }
     return JSON.parse(JSON.stringify(table));
   }

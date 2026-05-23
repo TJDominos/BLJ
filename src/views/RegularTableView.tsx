@@ -15,6 +15,9 @@ import { GoldenWreath } from '@/components/blackjack/GoldenWreath';
 import { HeaderUI } from '@/components/blackjack/HeaderUI';
 import { LiveTablesSidebar } from '@/components/blackjack/LiveTablesSidebar';
 import { CommentsWidget } from '@/components/blackjack/CommentsWidget';
+import { ConfirmModal } from '@/components/blackjack/ConfirmModal';
+import { DealControlHUD } from '@/components/blackjack/DealControlHUD';
+import { ActiveTurnHUD } from '@/components/blackjack/ActiveTurnHUD';
 
 // Further down, replace the dealer area:
 
@@ -25,6 +28,15 @@ export function RegularTableView({ onNavigate, onToggleSidebar }: { onNavigate: 
 
   const userHostedTables = Object.values(tables).filter(t => t.houseId === currentUser?.id);
   const hasHostedTables = userHostedTables.length > 0;
+  
+  const hasLowLiquidityAlert = React.useMemo(() => {
+     return userHostedTables.some(t => {
+         if (t.status === 'closed') return false;
+         if (t.settings.mode === 'tournament') return false;
+         const req = t.settings.maxBet * t.settings.maxSeats;
+         return t.liquidity < req * 0.5;
+     });
+  }, [userHostedTables]);
 
   const [betAmountStr, setBetAmountStr] = useState<string>('0');
   const [sideBetsEnabled, setSideBetsEnabled] = useState(false);
@@ -50,6 +62,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar }: { onNavigate: 
   const previousStatus = React.useRef(table?.status);
   const seatsContainerRef = React.useRef<HTMLDivElement>(null);
   const isResolvingRef = React.useRef(false);
+  const isFirstLoadRef = React.useRef(true);
 
   if (table?.status === 'playing') {
     isResolvingRef.current = false;
@@ -59,6 +72,13 @@ export function RegularTableView({ onNavigate, onToggleSidebar }: { onNavigate: 
   } else if (recentWinAmount !== null) {
      isResolvingRef.current = false;
   }
+
+  useEffect(() => {
+    if (table && isFirstLoadRef.current) {
+        setBetAmountStr((table.settings.minBet || 50).toString());
+        isFirstLoadRef.current = false;
+    }
+  }, [table]);
 
   useEffect(() => {
     if (table?.status === 'waiting') {
@@ -516,32 +536,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar }: { onNavigate: 
       {showRules && <RulesModal onClose={() => setShowRules(false)} winningRule={table.settings.winningRule} />}
       
       {confirmAction && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-auto bg-black/60 backdrop-blur-sm px-4">
-          <div className="bg-[#1a120b] border border-[#3a2510] rounded-xl p-6 flex flex-col items-center shadow-[0_10px_40px_rgba(0,0,0,0.8)] max-w-xs w-full">
-            <h3 className="text-[#eac574] text-lg font-bold mb-4 text-center">{confirmAction.title || 'Confirm Action'}</h3>
-            <p className="text-white/80 text-sm mb-6 text-center">{confirmAction.message}</p>
-            <div className="flex w-full gap-4">
-              <button 
-                onClick={() => {
-                  if (confirmAction.onCancel) confirmAction.onCancel();
-                  setConfirmAction(null);
-                }}
-                className="flex-1 py-3 px-2 rounded-lg bg-white/10 text-white text-xs font-bold uppercase tracking-wider hover:bg-white/20 transition-colors"
-              >
-                {confirmAction.cancelText || 'Cancel'}
-              </button>
-              <button 
-                onClick={() => {
-                  confirmAction.onConfirm();
-                  setConfirmAction(null);
-                }}
-                className="flex-1 py-3 px-2 rounded-lg bg-gradient-to-b from-[#28a19b] to-[#126b6f] text-white text-xs font-bold uppercase tracking-wider hover:from-[#2ebaba] hover:to-[#178287] transition-colors"
-              >
-                {confirmAction.confirmText || 'Confirm'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmModal action={confirmAction} onClose={() => setConfirmAction(null)} />
       )}
 
       {/* Invisible global header placeholder or minimal top nav if needed */}
@@ -707,8 +702,11 @@ export function RegularTableView({ onNavigate, onToggleSidebar }: { onNavigate: 
                     processNavigate();
                 }
             }}
-            className={cn("flex text-[10px] sm:text-[11px] font-black uppercase tracking-wider text-white px-2 sm:px-2.5 py-1.5 sm:py-2 rounded-[12px] sm:rounded-[14px] items-center gap-1 shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border transition-transform whitespace-nowrap shrink-0 group", isPlayerDealt ? "bg-black/50 border-white/10 opacity-50 cursor-not-allowed" : "bg-gradient-to-b from-[#28a19b] to-[#126b6f] hover:from-[#2ebaba] hover:to-[#178287] border-[#0d4f52] hover:scale-105 active:scale-95")}
+            className={cn("flex text-[10px] sm:text-[11px] font-black uppercase tracking-wider text-white px-2 sm:px-2.5 py-1.5 sm:py-2 rounded-[12px] sm:rounded-[14px] items-center gap-1 shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border transition-transform whitespace-nowrap shrink-0 group relative", isPlayerDealt ? "bg-black/50 border-white/10 opacity-50 cursor-not-allowed" : "bg-gradient-to-b from-[#28a19b] to-[#126b6f] hover:from-[#2ebaba] hover:to-[#178287] border-[#0d4f52] hover:scale-105 active:scale-95")}
           >
+            {hasLowLiquidityAlert && (
+               <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-pulse border border-white/20 shadow-[0_0_8px_rgba(239,68,68,0.8)] z-10" />
+            )}
             <span className="drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">{hasHostedTables ? "Manage Tables" : "Host Tables"}</span>
           </button>
         </div>
@@ -854,6 +852,22 @@ export function RegularTableView({ onNavigate, onToggleSidebar }: { onNavigate: 
            </AnimatePresence>
 
 
+          {/* Table Closing Notification */}
+          <AnimatePresence>
+            {(table?.status === 'closing' || table?.status === 'closed') && (
+               <motion.div
+                 initial={{ opacity: 0, y: -20 }}
+                 animate={{ opacity: 1, y: 0 }}
+                 exit={{ opacity: 0, scale: 0.9 }}
+                 className="absolute top-1/4 left-1/2 -translate-x-1/2 z-50 pointer-events-none"
+               >
+                 <div className="bg-red-500/90 backdrop-blur-sm border border-red-400 text-white font-bold uppercase tracking-widest px-6 py-2 rounded-full shadow-[0_0_20px_rgba(239,68,68,0.5)]">
+                   {table?.status === 'closed' ? 'Table Closed' : 'Closing After This Round'}
+                 </div>
+               </motion.div>
+            )}
+          </AnimatePresence>
+
        {/* Dealer Area */}
            <DealerArea 
              houseId={table.houseId}
@@ -862,6 +876,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar }: { onNavigate: 
              totalSeats={table.seats.length}
              recentWinAmount={recentWinAmount}
              mode={table.settings.mode}
+             liquidity={table.liquidity}
            />
 
            {/* Base curved lines decoration */}
@@ -1036,7 +1051,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar }: { onNavigate: 
            <div className="w-full flex-[6] flex flex-col items-center justify-center relative z-20 mt-2 sm:mt-4 md:mt-0 lg:mb-4">
              
              <div className="relative w-full z-10 flex items-center justify-center group/seats h-full max-h-full">
-               <div ref={seatsContainerRef} className={cn("flex w-full md:w-auto h-full pt-12 mt-auto pb-[130px] sm:pb-[120px] lg:pb-[110px] justify-start gap-[4px] sm:gap-2 md:gap-4 lg:gap-8 items-end px-4 md:px-8 z-10 transition-transform duration-300 overflow-x-auto snap-x snap-mandatory md:snap-none hide-scrollbar-custom")}>
+               <div ref={seatsContainerRef} className={cn("flex w-full md:w-[94%] mx-auto h-full pt-12 mt-auto pb-[160px] sm:pb-[140px] md:pb-[130px] justify-start gap-[2%] sm:gap-[1%] items-center px-[4%] md:px-0 z-10 transition-transform duration-300 overflow-x-auto snap-x snap-mandatory md:snap-none hide-scrollbar-custom")}>
                  <style>{`.hide-scrollbar-custom::-webkit-scrollbar { display: none; }`}</style>
                  {table.seats.map((seat, seatIdx) => {
                      const isThisSeatTurn = table.status === 'playing' && table.currentTurnIndex === seatIdx;
@@ -1065,7 +1080,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar }: { onNavigate: 
                    // if (isEmptyInPlaying) return null;
   
                    return (
-                     <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-0 pb-[100px] sm:pb-[100px] md:pb-[110px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[180px] sm:h-[220px] md:h-[260px]  rounded-[16px] sm:rounded-[24px] flex-1 min-w-[95px] max-w-[170px] shrink snap-center", isThisSeatTurn ? "scale-110 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent"))}>
+                     <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-0 pb-[100px] sm:pb-[100px] md:pb-[110px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[180px] sm:h-[220px] md:h-[260px] rounded-[16px] sm:rounded-[24px] min-w-[31%] max-w-[31%] md:min-w-[13.5%] md:max-w-[13.5%] shrink-0 snap-center mx-auto", isThisSeatTurn ? "scale-110 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent"))}>
                      
                      {/* YOU indicator label for played cards */}
 
@@ -1236,8 +1251,8 @@ export function RegularTableView({ onNavigate, onToggleSidebar }: { onNavigate: 
                  );
                })}
              </div>
-             {/* Left/Right scroll indicators for mobile */}
-             <div className="absolute left-0 right-0 top-1/2 -translate-y-[20%] flex justify-between pointer-events-none px-1 md:hidden z-20">
+             {/* Left/Right scroll indicators */}
+             <div className="absolute left-0 right-0 top-[35%] sm:top-[40%] -translate-y-1/2 flex justify-between pointer-events-none px-1 z-20">
                 <button onClick={() => scrollSeats('left')} className="pointer-events-auto opacity-50 bg-black/40 rounded-full p-2 hover:bg-black/60 active:opacity-100 transition-opacity">
                   <ChevronLeft className="w-6 h-6 text-white drop-shadow-md" />
                 </button>
@@ -1246,207 +1261,46 @@ export function RegularTableView({ onNavigate, onToggleSidebar }: { onNavigate: 
                 </button>
              </div>
            </div>
-         </div>
+                {/* Bottom Control Overlay (HUD) */}
+         {table.status === 'waiting' && table.seats.some(s => s.userId === currentUser.id || s.userId === null) && (
+            <DealControlHUD 
+              table={table}
+              mySeats={mySeats}
+              betAmountStr={betAmountStr}
+              onBetChange={handleBetChange}
+              onBetBlur={handleBetBlur}
+              onMinus={handleMinus}
+              onPlus={handlePlus}
+              sideBetsEnabled={sideBetsEnabled}
+              pairBetStr={pairBetStr}
+              onPairChange={handlePairChange}
+              onPairBlur={handlePairBlur}
+              onPairMinus={handlePairMinus}
+              onPairPlus={handlePairPlus}
+              plus3BetStr={plus3BetStr}
+              onPlus3Change={handlePlus3Change}
+              onPlus3Blur={handlePlus3Blur}
+              onPlus3Minus={handlePlus3Minus}
+              onPlus3Plus={handlePlus3Plus}
+              onDeal={handleStartGame}
+              dealCountdown={dealCountdown}
+              isTournament={false}
+              onSideBetsToggle={() => setSideBetsEnabled(!sideBetsEnabled)}
+            />
+         )}
 
-         {/* Bottom Control Overlay (HUD) */}
+         {table.status === 'playing' && isMyTurn && (
            <div className="absolute bottom-1 sm:bottom-4 w-full flex flex-col items-center z-30 px-4 pointer-events-none">
-           {table.status === 'waiting' && table.seats.some(s => s.userId === currentUser.id || s.userId === null) && (
-              <div className="relative flex flex-col pointer-events-auto z-10 w-[96%] sm:w-auto drop-[0_10px_20px_rgba(0,0,0,0.6)]">
-                <div 
-                  className="relative flex flex-row items-center border-[2px] border-[#6b4c2a] rounded-full bg-gradient-to-b from-[#eac574] via-[#d0a758] to-[#997027] p-1 md:p-2 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8),inset_0_-1px_2px_rgba(0,0,0,0.4)] max-w-full w-full sm:w-[420px] h-[44px] sm:h-[60px]"
-                >
-                  <div className="absolute left-1 right-1 inset-y-1 bg-[url('https://www.transparenttextures.com/patterns/dark-matter.png')] opacity-20 pointer-events-none rounded-full"></div>
-
-                  {/* Left Filigree */}
-                  <div className="hidden sm:flex w-6 sm:w-10 items-center justify-center text-[#5c3e1b] opacity-80 z-10 mr-1">
-                    <svg viewBox="0 0 60 120" className="h-8 w-auto">
-                        <path d="M60 0 C30 0 20 20 10 40 C0 55 0 65 10 80 C20 100 30 120 60 120 Z" fill="#d0a758" stroke="currentColor" strokeWidth="2" />
-                        <path d="M50 15 C30 15 25 30 30 40 C35 50 45 45 45 35" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
-                        <path d="M55 45 C40 45 35 55 40 65 C45 75 55 70 55 60" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
-                        <path d="M50 105 C30 105 25 90 30 80 C35 70 45 75 45 85" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
-                    </svg>
-                  </div>
-
-                  <div className="flex-1 flex flex-row gap-2 sm:gap-4 items-center z-10 mx-auto justify-center w-full max-w-full">
-                      {/* Bet Input Body */}
-                      <div className="flex items-center bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full w-[110px] sm:w-[150px] shrink-0 h-[32px] sm:h-[44px] p-1 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6),0_1px_1px_rgba(255,255,255,0.4)] border border-[#3a2510]">
-                          <button 
-                            onClick={handleMinus}
-                            className="w-[24px] h-[24px] sm:w-[36px] sm:h-[36px] rounded-[8px] sm:rounded-xl bg-gradient-to-b from-[#bd945d] to-[#987241] flex justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold text-xl">
-                            <Minus className="w-4 h-4 sm:w-5 sm:h-5" />
-                          </button>
-                          <input 
-                              type="text"
-                              className="flex-1 bg-transparent border-none outline-none text-white font-black text-[12px] sm:text-[18px] min-w-[20px] text-center px-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]"
-                              value={betAmountStr}
-                              onChange={handleBetChange}
-                              onBlur={handleBetBlur}
-                          />
-                          <button 
-                            onClick={handlePlus}
-                            className="w-[24px] h-[24px] sm:w-[36px] sm:h-[36px] rounded-[8px] sm:rounded-xl bg-gradient-to-b from-[#bd945d] to-[#987241] flex justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold text-xl">
-                            <Plus className="w-4 h-4 sm:w-5 sm:h-5" />
-                          </button>
-                      </div>
-
-                      {/* SIDE Toggles */}
-                      <div className="flex flex-col items-center justify-center shrink-0">
-                        <span className="text-[9px] sm:text-xs text-white/90 font-black uppercase tracking-wider drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] mb-[1px]" style={{WebkitTextStroke: '0.5px rgba(0,0,0,0.5)'}}>Side</span>
-                        <button 
-                          onClick={() => setSideBetsEnabled(!sideBetsEnabled)}
-                          className={cn("w-8 h-4 sm:w-12 sm:h-6 rounded-full p-0.5 sm:p-1 transition-colors relative shadow-[inset_0_2px_4px_rgba(0,0,0,0.7)] border border-black/30", sideBetsEnabled ? "bg-[#32d5a4]" : "bg-[#454746]")}>
-                            <div className={cn("w-3 h-3 sm:w-4 sm:h-4 rounded-full transition-transform shadow-md", sideBetsEnabled ? "bg-white translate-x-4 sm:translate-x-6" : "bg-[#c0c0c0] translate-x-0")} />
-                        </button>
-                      </div>
-
-                      {/* DEAL Button */}
-                      {(() => {
-                        const isAnySeatNotReady = mySeats.some(sIdx => !table.seats[sIdx].isReady);
-                        if (!isAnySeatNotReady && mySeats.length > 0) {
-                          return (
-                            <div className="relative w-[70px] sm:w-[120px] h-[32px] sm:h-[44px] flex items-center justify-center">
-                               <span className="text-white/60 font-bold text-xs sm:text-sm tracking-widest uppercase">Ready</span>
-                            </div>
-                          );
-                        }
-                        
-                        return (
-                          <button 
-                            onClick={() => handleStartGame()}
-                            className={cn(
-                              "relative overflow-hidden min-w-[70px] sm:min-w-[120px] h-[32px] sm:h-[44px] bg-gradient-to-b from-[#28a19b] to-[#126b6f] text-white rounded-[12px] sm:rounded-[20px] px-2 font-black tracking-widest text-[12px] sm:text-[16px] uppercase transition-all shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border border-[#0d4f52] flex items-center justify-center shrink-0 group hover:from-[#2ebaba] hover:to-[#178287]",
-                              dealCountdown !== null ? "animate-pulse shadow-[0_0_15px_rgba(40,161,155,0.8)]" : "active:scale-95"
-                            )}>
-                            <span className="drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] z-10 mr-1 sm:mr-3">
-                              {dealCountdown !== null && dealCountdown > 0 ? (
-                                <>Deal <span className="text-yellow-400">{dealCountdown}</span></>
-                              ) : 'Deal'}
-                            </span>
-                          </button>
-                        );
-                      })()}
-                  </div>
-                  
-                  {/* Right Filigree */}
-                  <div className="hidden sm:flex w-6 sm:w-10 items-center justify-center text-[#5c3e1b] opacity-80 z-10 ml-1">
-                    <svg viewBox="0 0 60 120" className="h-8 w-auto scale-x-[-1]">
-                        <path d="M60 0 C30 0 20 20 10 40 C0 55 0 65 10 80 C20 100 30 120 60 120 Z" fill="#d0a758" stroke="currentColor" strokeWidth="2" />
-                        <path d="M50 15 C30 15 25 30 30 40 C35 50 45 45 45 35" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
-                        <path d="M55 45 C40 45 35 55 40 65 C45 75 55 70 55 60" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
-                        <path d="M50 105 C30 105 25 90 30 80 C35 70 45 75 45 85" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
-                    </svg>
-                  </div>
-                </div>
-
-                {/* Sidebets */}
-                {sideBetsEnabled && (
-                  <div 
-                    className="bg-gradient-to-b from-[#2b1c0e] to-[#1a1005] border border-t-0 border-[#513518] rounded-b-2xl pb-1.5 sm:pb-3 shadow-[0_10px_20px_rgba(0,0,0,0.6)] flex flex-row gap-2 sm:gap-4 justify-center items-center z-0 relative w-[90%] max-w-[360px] mx-auto -mt-6 sm:-mt-6"
-                    style={{ paddingTop: '26px' }}
-                  >
-                      <div className="flex flex-col gap-0.5 items-center">
-                        <span className="text-[10px] sm:text-[12px] text-[#eac574] font-bold tracking-wide text-center drop-shadow-md leading-none whitespace-nowrap">
-                          Pair <span className="text-white/60 text-[9px] sm:text-[10px] font-mono">(25:1)</span>
-                        </span>
-                        <div className="flex items-center bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full w-[95px] sm:w-[130px] h-[30px] sm:h-[40px] p-0.5 sm:p-1 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6)] border border-[#3a2510]">
-                            <button 
-                              onClick={handlePairMinus}
-                              className="flex w-[24px] h-[24px] sm:w-[32px] sm:h-[32px] rounded-full bg-gradient-to-b from-[#bd945d] to-[#987241] justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
-                            >
-                              <Minus className="w-3 h-3 sm:w-4 sm:h-4" />
-                            </button>
-                            <input 
-                              type="text"
-                              className="flex-1 bg-transparent border-none outline-none text-white font-black text-[11px] sm:text-[14px] min-w-0 text-center px-0.5 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]"
-                              value={pairBetStr}
-                              onChange={handlePairChange}
-                              onBlur={handlePairBlur}
-                              placeholder="10"
-                            />
-                            <button 
-                              onClick={handlePairPlus}
-                              className="flex w-[24px] h-[24px] sm:w-[32px] sm:h-[32px] rounded-full bg-gradient-to-b from-[#bd945d] to-[#987241] justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
-                            >
-                              <Plus className="w-3 h-3 sm:w-4 sm:h-4" />
-                            </button>
-                        </div>
-                      </div>
-                      
-                      <div className="flex flex-col gap-0.5 items-center">
-                        <span className="text-[10px] sm:text-[12px] text-[#eac574] font-bold tracking-wide text-center drop-shadow-md leading-none whitespace-nowrap">
-                          21+3 <span className="text-white/60 text-[9px] sm:text-[10px] font-mono">(100:1)</span>
-                        </span>
-                        <div className="flex items-center bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full w-[95px] sm:w-[130px] h-[30px] sm:h-[40px] p-0.5 sm:p-1 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6)] border border-[#3a2510]">
-                            <button 
-                              onClick={handlePlus3Minus}
-                              className="flex w-[24px] h-[24px] sm:w-[32px] sm:h-[32px] rounded-full bg-gradient-to-b from-[#bd945d] to-[#987241] justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
-                            >
-                              <Minus className="w-3 h-3 sm:w-4 sm:h-4" />
-                            </button>
-                            <input 
-                              type="text"
-                              className="flex-1 bg-transparent border-none outline-none text-white font-black text-[11px] sm:text-[14px] min-w-0 text-center px-0.5 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]"
-                              value={plus3BetStr}
-                              onChange={handlePlus3Change}
-                              onBlur={handlePlus3Blur}
-                              placeholder="10"
-                            />
-                            <button 
-                              onClick={handlePlus3Plus}
-                              className="flex w-[24px] h-[24px] sm:w-[32px] sm:h-[32px] rounded-full bg-gradient-to-b from-[#bd945d] to-[#987241] justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
-                            >
-                              <Plus className="w-3 h-3 sm:w-4 sm:h-4" />
-                            </button>
-                        </div>
-                      </div>
-                  </div>
-                )}
-              </div>
-           )}
-
-             {table.status === 'playing' && isMyTurn && (
-               <div className="flex gap-1.5 sm:gap-4 pointer-events-auto flex-wrap justify-center mb-[6px] shrink-0">
-                  {canBuyInsurance && (
-                    <button
-                      className="bg-purple-600 hover:bg-purple-500 text-white font-bold uppercase tracking-wider text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg sm:rounded-xl shadow-xl transition-transform active:scale-95 shadow-purple-500/20"
-                      onClick={() => { soundManager.playClick(); buyInsurance(table.id, activeSeatIndex); }}
-                    >
-                      Insurance
-                    </button>
-                  )}
-                  {canSplit && (
-                    <button
-                      className="bg-blue-600 hover:bg-blue-500 text-white font-bold uppercase tracking-wider text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg sm:rounded-xl shadow-xl transition-transform active:scale-95 shadow-blue-500/20"
-                      onClick={() => { soundManager.playClick(); split(table.id, activeSeatIndex); }}
-                    >
-                      Split
-                    </button>
-                  )}
-                  {canDouble && (
-                    <button
-                      className="bg-yellow-600 hover:bg-yellow-500 text-white font-bold uppercase tracking-wider text-xs sm:text-sm px-3 sm:px-4 py-2 rounded-lg sm:rounded-xl shadow-xl transition-transform active:scale-95 shadow-yellow-500/20"
-                      onClick={() => { soundManager.playClick(); doubleDown(table.id, activeSeatIndex); }}
-                    >
-                      Double
-                    </button>
-                  )}
-                  <button
-                    className="bg-[#33a852] hover:bg-[#2c9646] text-white font-bold uppercase tracking-wider text-xs sm:text-sm px-5 sm:px-8 py-2 rounded-lg sm:rounded-xl shadow-xl transition-transform active:scale-95 shadow-green-500/20"
-                    onClick={() => { soundManager.playClick(); hit(table.id, activeSeatIndex); }}
-                  >
-                    Hit
-                  </button>
-                  <button
-                    className="bg-[#ea4335] hover:bg-[#d63a2d] text-white font-bold uppercase tracking-wider text-xs sm:text-sm px-5 sm:px-8 py-2 rounded-lg sm:rounded-xl shadow-xl transition-transform active:scale-95 shadow-red-500/20"
-                    onClick={() => { soundManager.playClick(); stand(table.id, activeSeatIndex); }}
-                  >
-                    Stand
-                  </button>
-               </div>
-             )}
+             <ActiveTurnHUD 
+               tableId={table.id}
+               activeSeatIndex={activeSeatIndex}
+               canBuyInsurance={canBuyInsurance}
+               canSplit={canSplit}
+               canDouble={canDouble}
+             />
            </div>
-
-         </div>
+         )}
+       </div>    </div>
 
            {/* Bottom Bar: RTP */}
            <div className="w-full max-w-[1024px] flex justify-center text-[12px] sm:text-[13px] font-bold tracking-wide py-1.5 sm:py-2.5 z-20 relative bg-black shrink-0 border-t border-white/10 md:border-x">

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams, useLocation } from 'react-router-dom';
 import { BlackjackTable } from './views/BlackjackTable';
 import { HostTableView } from './views/host/HostTableView';
 import { ManageTablesView } from './views/host/ManageTablesView';
@@ -6,34 +7,56 @@ import { useGameStore } from './store/gameStore';
 import { LiveTablesSidebar } from './components/blackjack/LiveTablesSidebar';
 import { AnimatePresence } from 'motion/react';
 
-type ViewState = 'table' | 'host_table' | 'manage_tables';
-
-export default function App() {
-  const [currentView, setCurrentView] = useState<ViewState>('table');
-  const [editTableId, setEditTableId] = useState<string | null>(null);
+function GameLayout() {
   const [showSidebar, setShowSidebar] = useState(false);
-  const { currentUser, login, joinTable, observeTable, tables, activeTableId } = useGameStore();
+  const [closedRedirectMessage, setClosedRedirectMessage] = useState<string | null>(null);
+  const { currentUser, login, observeTable, tables, activeTableId } = useGameStore();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
     if (!currentUser) {
       login('Player');
-      observeTable('table_1');
-    } else if (!activeTableId || tables[activeTableId]?.status === 'closed') {
-      observeTable('table_1');
     }
-  }, [currentUser, login, observeTable, activeTableId, tables]);
+  }, [currentUser, login]);
 
-  const handleNavigate = (view: ViewState | string, tableId?: string): boolean => {
-    setCurrentView(view as ViewState);
-    if (tableId !== undefined) {
-      setEditTableId(tableId);
+  // Sync activeTableId with URL param if on a table view
+  useEffect(() => {
+    const pathMatch = location.pathname.match(/^\/t\/([\w_-]+)/);
+    if (pathMatch && pathMatch[1]) {
+      const tableId = pathMatch[1];
+      if (tables[tableId] && activeTableId !== tableId) {
+        observeTable(tableId);
+      }
+    }
+  }, [location.pathname, tables, observeTable, activeTableId]);
+
+  useEffect(() => {
+    if (activeTableId && tables[activeTableId]?.status === 'closed' && activeTableId !== 'table_1' && location.pathname.startsWith('/t/')) {
+        if (!closedRedirectMessage) {
+            setClosedRedirectMessage('This table is closed. You will be directed to the default official table in a few seconds.');
+            setTimeout(() => {
+               setClosedRedirectMessage(null);
+               navigate('/t/table_1');
+            }, 3000);
+        }
+    }
+  }, [activeTableId, tables, closedRedirectMessage, navigate, location.pathname]);
+
+  const handleNavigate = (view: string, tableId?: string): boolean => {
+    if (view === 'table') {
+       navigate(`/t/${tableId || activeTableId || 'table_1'}`);
+    } else if (view === 'host_table') {
+       navigate(tableId ? `/host/${tableId}` : `/host`);
+    } else if (view === 'manage_tables') {
+       navigate(tableId ? `/manage/${tableId}` : `/manage`);
     } else {
-      setEditTableId(null);
+       navigate('/');
     }
     return true;
   };
 
-  const activeTables = Object.values(tables).filter(t => t.status !== 'closed' && t.settings.isPublic);
+  const activeTables = Object.values(tables).filter(t => t.status !== 'closed' && t.status !== 'closing' && t.settings.isPublic);
 
   return (
     <div className="w-full h-[100dvh] flex flex-col relative overflow-hidden bg-gradient-to-br from-[#1a0f0a] via-[#0d0905] to-[#140b08] text-slate-200 font-sans selection:bg-[#c6a364]/30 selection:text-amber-200">
@@ -55,6 +78,14 @@ export default function App() {
       </div>
 
       <div className="relative z-10 w-full h-full flex flex-col">
+        {closedRedirectMessage && (
+           <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm px-4">
+             <div className="bg-[#1a1c23] border border-red-500/30 text-white p-6 rounded-2xl shadow-2xl max-w-md text-center">
+                <h3 className="text-xl font-bold text-red-500 mb-2">Table Closed</h3>
+                <p className="text-white/80">{closedRedirectMessage}</p>
+             </div>
+           </div>
+        )}
         <AnimatePresence>
           {showSidebar && (
             <LiveTablesSidebar 
@@ -62,15 +93,40 @@ export default function App() {
               setShowSidebar={setShowSidebar} 
               activeTables={activeTables} 
               currentTableId={activeTableId || ''} 
-              observeTable={observeTable} 
+              observeTable={(id) => navigate(`/t/${id}`)} 
               onNavigate={() => handleNavigate('table')}
             />
           )}
         </AnimatePresence>
-        {currentView === 'table' && <BlackjackTable onNavigate={handleNavigate as any} onToggleSidebar={() => setShowSidebar(true)} />}
-        {currentView === 'host_table' && <HostTableView onNavigate={handleNavigate as any} onToggleSidebar={() => setShowSidebar(true)} editTableId={editTableId} />}
-        {currentView === 'manage_tables' && <ManageTablesView onNavigate={handleNavigate as any} onToggleSidebar={() => setShowSidebar(true)} />}
+        
+        <Routes>
+          <Route path="/t/:id" element={<BlackjackTable onNavigate={handleNavigate} onToggleSidebar={() => setShowSidebar(true)} />} />
+          <Route path="/host" element={<HostTableView onNavigate={handleNavigate} onToggleSidebar={() => setShowSidebar(true)} editTableId={null} />} />
+          <Route path="/host/:id" element={<HostTableViewWrapper onNavigate={handleNavigate} onToggleSidebar={() => setShowSidebar(true)} />} />
+          <Route path="/manage" element={<ManageTablesView onNavigate={handleNavigate} onToggleSidebar={() => setShowSidebar(true)} initialTableId={null} />} />
+          <Route path="/manage/:id" element={<ManageTableViewWrapper onNavigate={handleNavigate} onToggleSidebar={() => setShowSidebar(true)} />} />
+          <Route path="*" element={<Navigate to={`/t/table_1`} replace />} />
+        </Routes>
       </div>
     </div>
   );
 }
+
+function HostTableViewWrapper(props: any) {
+  const { id } = useParams();
+  return <HostTableView {...props} editTableId={id} />;
+}
+
+function ManageTableViewWrapper(props: any) {
+  const { id } = useParams();
+  return <ManageTablesView {...props} initialTableId={id} />;
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <GameLayout />
+    </BrowserRouter>
+  );
+}
+

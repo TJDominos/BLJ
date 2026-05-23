@@ -41,7 +41,9 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
        targetSurvivors: 2, // Default max seats is 3, so survivors is 2
        isHardCapRounds: false,
        maxRounds: 30,
-       prizeDistribution: 'survivorPaytable'
+       prizeDistribution: 'survivorPaytable',
+       minSeats: 3,
+       autoCloseAndRefundTimeHours: 1
   };
 
   const [settings, setSettings] = useState<TableSettings>(editingTable?.settings ? {
@@ -326,21 +328,45 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                  <div className="grid grid-cols-2 gap-4">
                     <div>
                        <label className="text-xs font-semibold uppercase tracking-wider text-white/50 mb-2 block">
-                         Seats ({settings.mode === 'tournament' ? '3-7' : '1-7'})
+                         Max Seats ({settings.mode === 'tournament' ? '3-15' : '1-7'})
                        </label>
                        <select 
                          value={settings.maxSeats.toString()}
                          onChange={e => {
-                           const minSeats = settings.mode === 'tournament' ? 3 : 1;
-                           const newSeats = Math.min(7, Math.max(minSeats, parseInt(e.target.value) || minSeats));
-                           const newTournament = settings.tournament ? { ...settings.tournament, targetSurvivors: Math.max(1, Math.floor(newSeats * 0.5)) } : undefined;
-                           setSettings({ ...settings, maxSeats: newSeats, ...(newTournament ? { tournament: newTournament } : {}) });
+                           const minSeatsAllowed = settings.mode === 'tournament' ? 3 : 1;
+                           const maxSeatsAllowed = settings.mode === 'tournament' ? 15 : 7;
+                           const newSeats = Math.min(maxSeatsAllowed, Math.max(minSeatsAllowed, parseInt(e.target.value) || minSeatsAllowed));
+                           
+                           let newSettings = { ...settings, maxSeats: newSeats };
+                           if (settings.mode === 'tournament' && newSettings.tournament) {
+                             const newTournament = { ...newSettings.tournament };
+                             newTournament.targetSurvivors = Math.max(1, Math.min(newTournament.targetSurvivors || 1, Math.floor(newSeats * 0.5)));
+                             if (newTournament.minSeats && newTournament.minSeats > newSeats) {
+                               newTournament.minSeats = newSeats;
+                             }
+                             newSettings.tournament = newTournament;
+                           }
+                           setSettings(newSettings);
                          }}
                          className="w-full h-10 rounded-xl border border-white/10 bg-[#1a1b23] px-3 py-2 text-sm text-white focus:outline-none focus:border-[#126b6f]"
                        >
-                         {(settings.mode === 'tournament' ? [3,4,5,6,7] : [1,2,3,4,5,6,7]).map(n => <option key={n} value={n}>{n}</option>)}
+                         {(settings.mode === 'tournament' ? [3,4,5,6,7,8,9,10,11,12,13,14,15] : [1,2,3,4,5,6,7]).map(n => <option key={n} value={n}>{n}</option>)}
                        </select>
                     </div>
+                    {settings.mode === 'tournament' && (
+                       <div>
+                         <label className="text-[10px] sm:text-xs font-semibold uppercase tracking-wider text-white/50 mb-2 block whitespace-nowrap">
+                           Min Seats (to start)
+                         </label>
+                         <select 
+                           value={settings.tournament?.minSeats?.toString() || '3'}
+                           onChange={e => setSettings({ ...settings, tournament: { ...settings.tournament!, minSeats: parseInt(e.target.value) } })}
+                           className="w-full h-10 rounded-xl border border-white/10 bg-[#1a1b23] px-3 py-2 text-sm text-white focus:outline-none focus:border-[#126b6f]"
+                         >
+                           {Array.from({ length: settings.maxSeats - 2 }, (_, i) => i + 3).map(n => <option key={n} value={n}>{n}</option>)}
+                         </select>
+                       </div>
+                    )}
                     <div>
                        <label className="text-xs font-semibold uppercase tracking-wider text-white/50 mb-2 block">
                          Action Time
@@ -355,6 +381,20 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                          <option value="30">Slow (30s)</option>
                        </select>
                     </div>
+                    {settings.mode === 'tournament' && (
+                       <div>
+                         <label className="text-[10px] sm:text-xs font-semibold uppercase tracking-wider text-white/50 mb-2 block whitespace-nowrap overflow-hidden text-ellipsis" title="Auto Cancel (Timeout)">
+                           Auto Cancel (Timeout)
+                         </label>
+                         <select 
+                           value={settings.tournament?.autoCloseAndRefundTimeHours?.toString() || '1'}
+                           onChange={e => setSettings({ ...settings, tournament: { ...settings.tournament!, autoCloseAndRefundTimeHours: parseInt(e.target.value) } })}
+                           className="w-full h-10 rounded-xl border border-white/10 bg-[#1a1b23] px-3 py-2 text-sm text-white focus:outline-none focus:border-[#126b6f]"
+                         >
+                           {[1, 2, 4, 8, 12, 24].map(h => <option key={h} value={h}>{h} Hour{h > 1 ? 's' : ''}</option>)}
+                         </select>
+                       </div>
+                    )}
                  </div>
 
 
@@ -501,23 +541,43 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                         <div className="text-[10px] text-red-500 mt-1.5">Must be at least 1,000 chips.</div>
                       ) : null}
                    </div>
-                   <div>
-                     <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 mb-2 block whitespace-nowrap">Min Bet Chips</label>
-                     <Input 
-                       type="text" 
-                       value={settings.tournament?.minBetChips === '' as any ? '' : (settings.tournament?.minBetChips || 0).toLocaleString()}
-                       onChange={e => {
-                         const valStr = e.target.value.replace(/,/g, '');
-                         const val = valStr === '' ? '' as any : parseInt(valStr) || 0;
-                         setSettings({ ...settings, tournament: { ...settings.tournament!, minBetChips: val } });
-                       }}
-                       className={`h-10 bg-white/5 text-sm text-white ${settings.tournament?.minBetChips === '' as any || settings.tournament!.minBetChips < 0 ? 'border-red-500 focus:border-red-500' : 'border-white/10 focus:border-[#126b6f]'}`}
-                     />
-                     {settings.tournament?.minBetChips === '' as any ? (
-                        <div className="text-[10px] text-red-500 mt-1.5">Min bet chips is required.</div>
-                     ) : settings.tournament!.minBetChips < 0 ? (
-                        <div className="text-[10px] text-red-500 mt-1.5">Must be at least 0.</div>
-                     ) : null}
+                   <div className="grid grid-cols-2 gap-2">
+                     <div>
+                       <label className="text-[10px] sm:text-xs font-semibold uppercase tracking-wider text-white/50 mb-2 block whitespace-nowrap">Min Bet Chips</label>
+                       <Input 
+                         type="text" 
+                         value={settings.tournament?.minBetChips === '' as any ? '' : (settings.tournament?.minBetChips || 0).toLocaleString()}
+                         onChange={e => {
+                           const valStr = e.target.value.replace(/,/g, '');
+                           const val = valStr === '' ? '' as any : parseInt(valStr) || 0;
+                           setSettings({ ...settings, tournament: { ...settings.tournament!, minBetChips: val } });
+                         }}
+                         className={`h-10 bg-white/5 text-sm text-white ${settings.tournament?.minBetChips === '' as any || settings.tournament!.minBetChips < 0 ? 'border-red-500 focus:border-red-500' : 'border-white/10 focus:border-[#126b6f]'}`}
+                       />
+                       {settings.tournament?.minBetChips === '' as any ? (
+                          <div className="text-[10px] text-red-500 mt-1.5">Min bet chips is required.</div>
+                       ) : settings.tournament!.minBetChips < 0 ? (
+                          <div className="text-[10px] text-red-500 mt-1.5">Must be at least 0.</div>
+                       ) : null}
+                     </div>
+                     <div>
+                       <label className="text-[10px] sm:text-xs font-semibold uppercase tracking-wider text-white/50 mb-2 block whitespace-nowrap">Min Side Bet Chips</label>
+                       <Input 
+                         type="text" 
+                         value={settings.tournament?.minSideBetChips === '' as any ? '' : (settings.tournament?.minSideBetChips || 0).toLocaleString()}
+                         onChange={e => {
+                           const valStr = e.target.value.replace(/,/g, '');
+                           const val = valStr === '' ? '' as any : parseInt(valStr) || 0;
+                           setSettings({ ...settings, tournament: { ...settings.tournament!, minSideBetChips: val } });
+                         }}
+                         className={`h-10 bg-white/5 text-sm text-white ${settings.tournament?.minSideBetChips === '' as any || (settings.tournament!.minSideBetChips !== undefined && settings.tournament!.minSideBetChips < 0) ? 'border-red-500 focus:border-red-500' : 'border-white/10 focus:border-[#126b6f]'}`}
+                       />
+                       {settings.tournament?.minSideBetChips === '' as any ? (
+                          <div className="text-[10px] text-red-500 mt-1.5">Required.</div>
+                       ) : (settings.tournament!.minSideBetChips !== undefined && settings.tournament!.minSideBetChips < 0) ? (
+                          <div className="text-[10px] text-red-500 mt-1.5">Must be at least 0.</div>
+                       ) : null}
+                     </div>
                    </div>
                    <div className="grid grid-cols-2 gap-2">
                      <div className="group relative">
@@ -570,8 +630,11 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                                const newT = { ...settings.tournament!, isSurvivorCap: checked };
                                if (checked) {
                                  newT.prizeDistribution = 'survivorPaytable';
-                               } else if (!newT.isHardCapRounds) {
+                               } else {
+                                 if (!newT.isHardCapRounds) {
                                   newT.isHardCapRounds = true; 
+                                 }
+                                 newT.prizeDistribution = 'splitByChips';
                                }
                                setSettings({ ...settings, tournament: newT });
                              }}
@@ -767,7 +830,9 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                            onChange={e => setSettings({ ...settings, tournament: { ...settings.tournament!, prizeDistribution: e.target.value as any } })}
                            className="w-full h-10 rounded-xl border border-white/10 bg-[#1a1b23] px-3 py-2 text-sm text-white focus:outline-none focus:border-[#126b6f]"
                          >
-                           <option value="survivorPaytable">Survivor Paytable</option>
+                           <option value="survivorPaytable" disabled={!settings.tournament?.isSurvivorCap} className={!settings.tournament?.isSurvivorCap ? 'opacity-30' : ''}>
+                              Survivor Paytable {!settings.tournament?.isSurvivorCap ? '(Requires Survivor Cap)' : ''}
+                           </option>
                            <option value="splitByChips" disabled={settings.tournament?.isSurvivorCap} className={settings.tournament?.isSurvivorCap ? 'opacity-30' : ''}>
                              Split By Chips {settings.tournament?.isSurvivorCap ? '(Disabled: Survivor Cap)' : ''}
                            </option>
@@ -794,7 +859,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
       </Card>
 
         {/* 2. Add Liquidity */}
-        {!editTableId && settings.mode !== 'tournament' && (
+        {settings.mode !== 'tournament' && (
         <Card className="overflow-hidden bg-white/5 shadow-sm rounded-3xl border border-white/10 p-3">
           <button 
             onClick={() => setExpandedSection(expandedSection === 'liquidity' ? null : 'liquidity')}
@@ -963,7 +1028,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
             size="lg"
             variant="outline"
             className="w-full h-14 text-sm font-black uppercase tracking-widest bg-transparent border border-white/20 text-white hover:bg-white/5 rounded-full"
-            onClick={() => onNavigate('manage_tables')}
+            onClick={() => onNavigate('manage_tables', editTableId || undefined)}
           >
             Cancel
           </Button>
@@ -976,7 +1041,12 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
       onClose={() => setShowWalletSelector(false)}
       depositAmount={depositAmount}
       currency={currency}
-      onSelect={() => setExpandedSection('settings')}
+      onSelect={() => {
+         if (editTableId) {
+             useGameStore.getState().depositLiquidity(editTableId, Number(depositAmount) * 10); // Since 1 USDC = 10 Gcoin as per UI label
+         }
+         setExpandedSection('settings')
+      }}
     />
 
     <AnimatePresence>

@@ -7,6 +7,8 @@ export const tablesDb: Record<string, Table> = {
     id: 'table_1',
     name: 'System Table',
     houseId: 'system',
+    createdAt: Date.now() - 100000000,
+    visits: 0,
     liquidity: 100000,
     initialLiquidity: 100000,
     safeAccountAddress: '0x1234...5678',

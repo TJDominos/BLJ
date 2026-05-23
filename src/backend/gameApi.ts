@@ -133,10 +133,15 @@ export const gameApi = {
     let refundedAmount = 0;
     const userBal = table.userBalances[userId];
     if (userBal) {
-      const netWin = userBal.balance - userBal.initialBuyIn;
-      let fee = 0;
-      if (netWin > 0) fee = netWin * 0.01;
-      refundedAmount = userBal.balance - fee;
+      if (table.settings.mode === 'tournament') {
+        // Tournament chips have no real $ value to be refunded
+        refundedAmount = 0; 
+      } else {
+        const netWin = userBal.balance - userBal.initialBuyIn;
+        let fee = 0;
+        if (netWin > 0) fee = netWin * 0.01;
+        refundedAmount = userBal.balance - fee;
+      }
       delete table.userBalances[userId];
     }
     return { table: JSON.parse(JSON.stringify(table)), refundedAmount };
@@ -419,13 +424,14 @@ export const gameApi = {
     return JSON.parse(JSON.stringify(table));
   },
 
-  async dealerPlayAndResolve(tableId: string): Promise<{ table: Table, winnings: Record<string, number>, seatResults: SeatResult[] }> {
+  async dealerPlayAndResolve(tableId: string): Promise<{ table: Table, winnings: Record<string, number>, seatResults: SeatResult[], returnedLiquidity: number }> {
     await delay(600);
     const table = tablesDb[tableId];
     const winnings: Record<string, number> = {};
     const seatResults: SeatResult[] = [];
+    let returnedLiquidity = 0;
 
-    if (!table || !table.dealerHand) return { table: JSON.parse(JSON.stringify(table)), winnings, seatResults };
+    if (!table || !table.dealerHand) return { table: JSON.parse(JSON.stringify(table)), winnings, seatResults, returnedLiquidity };
 
     table.dealerHand.cards = table.dealerHand.cards.map(c => ({ ...c, isHidden: false }));
     table.dealerHand.score = calculateScore(table.dealerHand.cards);
@@ -540,20 +546,37 @@ export const gameApi = {
       if (existingRes) {
         existingRes.bet += totalBet;
         existingRes.net += net;
+        if (existingRes.sideBet !== undefined) existingRes.sideBet += sideBetTotal;
+        if (existingRes.win !== undefined) existingRes.win += wonAmount;
         existingRes.action = `${existingRes.action} / ${pStatus}`;
       } else {
         seatResults.push({
           seatIndex: seatIndexToRecord,
           userId: seat.userId || undefined,
-          bet: totalBet,
+          bet: seat.hand.bet,
+          sideBet: sideBetTotal + (seat.hand.insuranceBet || 0),
+          win: wonAmount,
           net: net,
           action: pStatus
         });
       }
     });
 
-    table.status = 'waiting';
     table.liquidity += liquidityDelta;
+
+    if (table.status === 'closing') {
+      table.status = 'closed';
+    } else {
+      table.status = 'waiting';
+    }
+
+    if (table.settings.mode !== 'tournament' && table.houseId !== 'system') {
+       const requiredLiquidity = table.settings.minBet * table.settings.maxSeats;
+       if (table.liquidity < requiredLiquidity * 0.3) {
+          table.status = 'closed';
+       }
+    }
+    
     // Remove split hands from the table for the next round
     table.seats = table.seats
       .filter(s => !s.isSplitHand)
@@ -568,6 +591,6 @@ export const gameApi = {
         return { ...s, isReady: false };
       });
     
-    return { table: JSON.parse(JSON.stringify(table)), winnings, seatResults };
+    return { table: JSON.parse(JSON.stringify(table)), winnings, seatResults, returnedLiquidity };
   }
 };

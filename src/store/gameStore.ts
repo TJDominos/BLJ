@@ -49,6 +49,7 @@ export interface TournamentSettings {
   hostFeePct: number; // max 5, default 3
   platformFeePct: number; // fixed 2
   minBetChips: number; // default 50
+  minSideBetChips?: number;
   isForcedAnte?: boolean;
   isScheduledEscalation?: boolean;
   antePct?: number; 
@@ -58,6 +59,8 @@ export interface TournamentSettings {
   isHardCapRounds?: boolean;
   maxRounds?: number;
   prizeDistribution: 'survivorPaytable' | 'splitByChips';
+  minSeats?: number;
+  autoCloseAndRefundTimeHours?: number;
 }
 
 export interface TableSettings {
@@ -81,6 +84,8 @@ export interface Table {
   name: string;
   description?: string;
   houseId: string; // The user hosting the table (or "system" if auto)
+  createdAt: number;
+  visits: number;
   liquidity: number;
   initialLiquidity: number;
   safeAccountAddress: string;
@@ -100,6 +105,8 @@ export interface SeatResult {
   seatIndex: number;
   userId?: string;
   bet: number;
+  sideBet?: number;
+  win?: number;
   net: number;
   action: string;
 }
@@ -123,11 +130,13 @@ interface GameStore {
   login: (name: string) => void;
   createTable: (settings: TableSettings, liquidity: number) => Promise<string>;
   updateTableSettings: (tableId: string, settings: Partial<TableSettings>) => Promise<void>;
+  depositLiquidity: (tableId: string, amount: number) => Promise<void>;
   pauseTable: (tableId: string) => Promise<void>;
   resumeTable: (tableId: string) => Promise<void>;
   withdrawLiquidity: (tableId: string, amount: number) => Promise<void>;
   joinTable: (tableId: string, seatIndex: number) => Promise<void>;
   observeTable: (tableId: string) => void;
+  recordVisit: (tableId: string) => Promise<void>;
   leaveTable: (tableId: string, seatIndex?: number, isTimeout?: boolean) => Promise<void>;
   unlockTableBalance: (tableId: string) => Promise<void>;
   placeBet: (tableId: string, seatIndex: number, amount: number, sideBets?: SideBets) => Promise<void>;
@@ -231,11 +240,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const user = get().currentUser;
     if (!user) return '';
     
-    // Deduct liquidity locally for immediate feedback
-    set((state) => ({
-      currentUser: { ...state.currentUser!, balance: state.currentUser!.balance - liquidity }
-    }));
-    
     const { hostTableApi } = await import('../backend/hostTableApi');
     const table = await hostTableApi.createTable(user.id, user.name, settings, liquidity);
     
@@ -251,6 +255,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!user) return;
     const { hostTableApi } = await import('../backend/hostTableApi');
     const table = await hostTableApi.updateTableSettings(tableId, user.id, settings);
+    set((state) => ({
+      tables: { ...state.tables, [table.id]: table }
+    }));
+  },
+
+  depositLiquidity: async (tableId, amount) => {
+    const user = get().currentUser;
+    if (!user) return;
+    const { hostTableApi } = await import('../backend/hostTableApi');
+    const table = await hostTableApi.depositLiquidity(tableId, user.id, amount);
     set((state) => ({
       tables: { ...state.tables, [table.id]: table }
     }));
@@ -283,8 +297,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { hostTableApi } = await import('../backend/hostTableApi');
     const table = await hostTableApi.withdrawLiquidity(tableId, user.id, amount);
     set((state) => ({
-      tables: { ...state.tables, [table.id]: table },
-      currentUser: { ...state.currentUser!, balance: state.currentUser!.balance + amount }
+      tables: { ...state.tables, [table.id]: table }
     }));
   },
 
@@ -336,6 +349,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { gameApi } = await import('../backend/gameApi');
     const table = await gameApi.joinTable(tableId, user.id, seatIndex, lockAmount);
 
+    if (currentActiveId !== tableId) {
+      // Async so we don't await
+      get().recordVisit(tableId);
+    }
+
     set((state) => ({ tables: { ...state.tables, [tableId]: table }, activeTableId: tableId }));
   },
 
@@ -351,7 +369,28 @@ export const useGameStore = create<GameStore>((set, get) => ({
         }
       }
     }
+    if (currentActiveId !== tableId) {
+      get().recordVisit(tableId);
+    }
     set({ activeTableId: tableId });
+  },
+
+  recordVisit: async (tableId) => {
+    const { hostTableApi } = await import('../backend/hostTableApi');
+    await hostTableApi.recordVisit(tableId);
+    // Ideally we fetch the table to update it visually, but since we have periodic refresh or other means, it's fine.
+    // Or we can increment locally:
+    set(state => {
+      if (state.tables[tableId]) {
+        return {
+          tables: {
+            ...state.tables,
+            [tableId]: { ...state.tables[tableId], visits: (state.tables[tableId].visits || 0) + 1 }
+          }
+        };
+      }
+      return {};
+    });
   },
 
   leaveTable: async (tableId, seatIndex, isTimeout) => {
@@ -467,10 +506,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   dealerPlay: async (tableId) => {
     const { gameApi } = await import('../backend/gameApi');
-    const { table, winnings, seatResults } = await gameApi.dealerPlayAndResolve(tableId);
+    const { table, winnings, seatResults, returnedLiquidity } = await gameApi.dealerPlayAndResolve(tableId);
     
     set((state) => {
-      const user = state.currentUser;
+      let user = state.currentUser;
       const amountWon = user ? (winnings[user.id] || 0) : 0;
       
       let res: 'win' | 'lose' | 'push' | 'blackjack' = 'push';
@@ -494,13 +533,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
           seatResults: mySeatResults
         };
         return {
+          currentUser: user,
           tables: { ...state.tables, [tableId]: table },
-          gameRecords: [record, ...state.gameRecords].slice(0, 50)
+          gameRecords: [record, ...state.gameRecords].slice(0, 50),
+          activeTableId: state.activeTableId === tableId && table.status === 'closed' ? null : state.activeTableId
         };
       }
 
       return {
-        tables: { ...state.tables, [tableId]: table }
+        currentUser: user,
+        tables: { ...state.tables, [tableId]: table },
+        activeTableId: state.activeTableId === tableId && table.status === 'closed' ? null : state.activeTableId
       };
     });
   },
@@ -518,12 +561,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!user) return;
     
     const { hostTableApi } = await import('../backend/hostTableApi');
-    const table = await hostTableApi.closeTable(tableId, user.id);
+    const { table } = await hostTableApi.closeTable(tableId, user.id);
     
     set((state) => ({
-      currentUser: { ...user, balance: user.balance + table.liquidity }, // Should ideally return delta from API
+      currentUser: user,
       tables: { ...state.tables, [tableId]: table },
-      activeTableId: state.activeTableId === tableId ? null : state.activeTableId
+      activeTableId: state.activeTableId === tableId && table.status === 'closed' ? null : state.activeTableId
     }));
   }
 }));

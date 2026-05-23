@@ -1,16 +1,30 @@
 import React, { useState, useMemo } from 'react';
 import { useGameStore } from '@/store/gameStore';
 import { ChevronLeft, Plus, XCircle, Users, Activity, Loader2, Play, Settings } from 'lucide-react';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { HeaderUI } from '@/components/blackjack/HeaderUI';
 
-export function ManageTablesView({ onNavigate, onToggleSidebar }: { onNavigate: (view: 'lobby' | 'create' | 'table' | 'host_table' | 'manage_tables', editId?: string) => boolean | void, onToggleSidebar?: () => void }) {
+export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }: { onNavigate: (view: 'lobby' | 'create' | 'table' | 'host_table' | 'manage_tables', editId?: string) => boolean | void, onToggleSidebar?: () => void, initialTableId?: string | null }) {
   const { tables, currentUser, gameRecords, closeTable } = useGameStore();
-  const [selectedTableId, setSelectedTableId] = useState<string | 'all'>('all');
+  const [selectedTableId, setSelectedTableId] = useState<string | 'all'>(initialTableId || 'all');
   const [activeTab, setActiveTab] = useState<'players' | 'rounds'>('players');
+  const [sortField, setSortField] = useState<'time'|'rounds'|'tournaments'|'wager'|'win'|'profit'>('profit');
+  const [sortAsc, setSortAsc] = useState<boolean>(false);
+  const [page, setPage] = useState<number>(0);
+  const [roundsPage, setRoundsPage] = useState<number>(0);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  
+  const [showWithdrawPopup, setShowWithdrawPopup] = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [withdrawAddress, setWithdrawAddress] = useState('');
+  const [withdrawCurrency, setWithdrawCurrency] = useState<'USDC' | 'USDT'>('USDC');
+  const [withdrawNetwork, setWithdrawNetwork] = useState<'Solana' | 'Ethereum' | 'BSC'>('Solana');
+  const [isWithdrawing, setIsWithdrawing] = useState(false);
+  
+  const rowsPerPage = 50;
 
-  const myTables = Object.values(tables).filter(t => t.houseId === currentUser?.id);
+  const myTables = Object.values(tables).filter(t => t.houseId === currentUser?.id).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
 
   const selectedTables = useMemo(() => {
     if (selectedTableId === 'all') return myTables;
@@ -24,13 +38,14 @@ export function ManageTablesView({ onNavigate, onToggleSidebar }: { onNavigate: 
   }, [gameRecords, selectedTableIds]);
 
   const playerStats = useMemo(() => {
-    const stats: Record<string, { userId: string, name: string, firstSeen: number, totalRounds: number, wager: number, win: number, profit: number }> = {};
+    const stats: Record<string, { userId: string, name: string, firstSeen: number, totalRounds: number, wager: number, win: number, profit: number, tournaments: Set<string> }> = {};
     
     // We don't have user names in game records directly, but we can guess it or use the userId 
     // In db, we have usersDb but we don't have access to it directly from store unless we fetch it.
     // For now we will just use userId as name if actual user objects are not available.
     
     relevantRecords.forEach(record => {
+      const isTournament = tables[record.tableId]?.settings.mode === 'tournament';
       record.seatResults.forEach(sr => {
         if (sr.userId && !sr.userId.startsWith('bot_')) { // ignore bots? Or include them? Include for now
           if (!stats[sr.userId]) {
@@ -41,7 +56,8 @@ export function ManageTablesView({ onNavigate, onToggleSidebar }: { onNavigate: 
               totalRounds: 0,
               wager: 0,
               win: 0,
-              profit: 0
+              profit: 0,
+              tournaments: new Set<string>()
             };
           }
           const p = stats[sr.userId];
@@ -49,14 +65,33 @@ export function ManageTablesView({ onNavigate, onToggleSidebar }: { onNavigate: 
           p.wager += sr.bet;
           const winAmount = sr.bet + sr.net;
           p.win += winAmount > 0 ? winAmount : 0;
-          p.profit += sr.net;
+          if (!isTournament) {
+            p.profit += sr.net;
+          } else {
+            p.tournaments.add(record.tableId);
+          }
           if (record.timestamp < p.firstSeen) p.firstSeen = record.timestamp;
         }
       });
     });
     
     return Object.values(stats);
-  }, [relevantRecords]);
+  }, [relevantRecords, tables]);
+
+  const sortedPlayerStats = useMemo(() => {
+    return [...playerStats].sort((a, b) => {
+      let diff = 0;
+      switch (sortField) {
+        case 'time': diff = a.firstSeen - b.firstSeen; break;
+        case 'rounds': diff = a.totalRounds - b.totalRounds; break;
+        case 'tournaments': diff = a.tournaments.size - b.tournaments.size; break;
+        case 'wager': diff = a.wager - b.wager; break;
+        case 'win': diff = a.win - b.win; break;
+        case 'profit': diff = a.profit - b.profit; break;
+      }
+      return sortAsc ? diff : -diff;
+    });
+  }, [playerStats, sortField, sortAsc]);
 
   const handleCloseTable = async (tableId: string) => {
     if (window.confirm('Are you sure you want to close this table? Remaining liquidity will be returned to your balance.')) {
@@ -83,6 +118,92 @@ export function ManageTablesView({ onNavigate, onToggleSidebar }: { onNavigate: 
 
   return (
     <div className="w-full h-full flex flex-col bg-[#0f1118]">
+      <AnimatePresence>
+         {toastMessage && (
+            <motion.div initial={{ opacity: 0, y: -50 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -50 }} className="fixed top-20 left-1/2 -translate-x-1/2 bg-[#1a1c23] border border-red-500/50 shadow-[0_0_20px_rgba(239,68,68,0.2)] text-white px-6 py-3 rounded-full z-[100] font-bold">
+               {toastMessage}
+            </motion.div>
+         )}
+         
+         {showWithdrawPopup && (
+           <motion.div 
+             initial={{ opacity: 0 }}
+             animate={{ opacity: 1 }}
+             exit={{ opacity: 0 }}
+             className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+           >
+             <motion.div 
+               initial={{ scale: 0.95, opacity: 0 }}
+               animate={{ scale: 1, opacity: 1 }}
+               exit={{ scale: 0.95, opacity: 0 }}
+               className="bg-[#1a1c23] border border-white/10 rounded-3xl p-6 w-full max-w-md shadow-2xl flex flex-col gap-4"
+             >
+               <h2 className="text-xl font-bold text-white uppercase tracking-wider">Withdraw Liquidity</h2>
+               <div className="bg-white/5 rounded-xl p-4 text-center">
+                   <div className="text-white/50 text-xs uppercase font-bold tracking-wider mb-1">Available to Withdraw</div>
+                   <div className="text-2xl font-mono text-[#2ebaba]">${Number(withdrawAmount).toLocaleString()}</div>
+               </div>
+               
+               <div className="flex flex-col gap-3">
+                   <label className="text-sm font-bold text-white/70 uppercase">Select Network</label>
+                   <div className="flex bg-white/5 rounded-xl p-1">
+                      {['Solana', 'Ethereum', 'BSC'].map((net) => (
+                         <button key={net} onClick={() => setWithdrawNetwork(net as 'Solana' | 'Ethereum' | 'BSC')} className={cn("flex-1 py-2 text-sm font-bold rounded-lg transition-colors", withdrawNetwork === net ? "bg-white/10 text-white" : "text-white/50 hover:text-white/80")}>
+                            {net}
+                         </button>
+                      ))}
+                   </div>
+               </div>
+               
+               <div className="flex flex-col gap-3">
+                   <label className="text-sm font-bold text-white/70 uppercase">Select Currency</label>
+                   <div className="flex bg-white/5 rounded-xl p-1">
+                      {['USDC', 'USDT'].map((cur) => (
+                         <button key={cur} onClick={() => setWithdrawCurrency(cur as 'USDC' | 'USDT')} className={cn("flex-1 py-2 text-sm font-bold rounded-lg transition-colors", withdrawCurrency === cur ? "bg-[#126b6f] text-white" : "text-white/50 hover:text-white/80")}>
+                            {cur}
+                         </button>
+                      ))}
+                   </div>
+               </div>
+               
+               <div className="flex flex-col gap-3">
+                   <label className="text-sm font-bold text-white/70 uppercase">Withdraw Address</label>
+                   <input type="text" value={withdrawAddress} onChange={(e) => setWithdrawAddress(e.target.value)} placeholder={`Enter ${withdrawNetwork} address...`} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-white/30 outline-none focus:border-[#2ebaba] font-mono text-sm transition-colors" />
+               </div>
+
+               <div className="flex gap-3 mt-2">
+                  <button className="flex-1 bg-white/5 py-3 rounded-xl text-white font-bold hover:bg-white/10 transition-colors" onClick={() => setShowWithdrawPopup(false)}>CANCEL</button>
+                  <button className="flex-1 bg-[#20a37c] py-3 rounded-xl text-white font-bold hover:bg-[#1b8c6a] transition-colors flex items-center justify-center gap-2" onClick={() => {
+                        let isValid = false;
+                        if (withdrawNetwork === 'Solana') {
+                            isValid = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(withdrawAddress);
+                        } else {
+                            isValid = /^0x[a-fA-F0-9]{40}$/.test(withdrawAddress);
+                        }
+                        
+                        if (!isValid) {
+                             setToastMessage(`Invalid ${withdrawNetwork} address format.`);
+                             setTimeout(() => setToastMessage(null), 3000);
+                             return;
+                        }
+                        
+                        setIsWithdrawing(true);
+                        // Mock withdrawal delay
+                        setTimeout(() => {
+                           useGameStore.getState().withdrawLiquidity(selectedTableId, Number(withdrawAmount));
+                           setIsWithdrawing(false);
+                           setShowWithdrawPopup(false);
+                           setToastMessage('Withdrawal successful.');
+                           setTimeout(() => setToastMessage(null), 3000);
+                        }, 1500);
+                  }}>
+                     {isWithdrawing ? <Loader2 className="w-5 h-5 animate-spin" /> : 'CONFIRM WITHDRAW'}
+                  </button>
+               </div>
+             </motion.div>
+           </motion.div>
+         )}
+      </AnimatePresence>
       <HeaderUI onLeave={() => onNavigate('table')} onToggleSidebar={onToggleSidebar} isMuted={false} setIsMuted={() => {}} />
 
       <main className="flex-1 overflow-y-auto px-4 py-8">
@@ -132,7 +253,7 @@ export function ManageTablesView({ onNavigate, onToggleSidebar }: { onNavigate: 
             >
               All My Tables
             </button>
-            {myTables.filter(t => t.status !== 'closed').map(table => (
+            {myTables.map(table => (
               <button
                 key={table.id}
                 onClick={() => setSelectedTableId(table.id)}
@@ -145,14 +266,41 @@ export function ManageTablesView({ onNavigate, onToggleSidebar }: { onNavigate: 
               >
                 {table.settings.mode === 'tournament' && <span className="text-yellow-400 text-xs px-1.5 py-0.5 rounded border border-yellow-400/30 bg-yellow-400/10 mr-1">T</span>}
                 {table.name}
-                <div className={cn("w-2 h-2 rounded-full", table.status === 'playing' ? "bg-emerald-400" : "bg-yellow-400")}></div>
+                <div className={cn("w-2 h-2 rounded-full", table.status === 'playing' ? "bg-emerald-400" : table.status === 'closed' ? "bg-red-500" : "bg-yellow-400")}></div>
               </button>
             ))}
           </div>
 
+          {selectedTableId === 'all' && myTables.length > 0 && (
+             <div className="flex flex-col gap-4">
+               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="bg-[#1a1c23] border border-white/5 rounded-xl p-4 flex flex-col items-center justify-center">
+                      <span className="text-white/40 text-xs font-bold uppercase tracking-wider mb-1 text-center">Total Visits</span>
+                      <span className="text-white font-mono font-bold text-lg">{myTables.reduce((sum, t) => sum + (t.visits || 0), 0)}</span>
+                  </div>
+                  <div className="bg-[#1a1c23] border border-white/5 rounded-xl p-4 flex flex-col items-center justify-center">
+                      <span className="text-white/40 text-xs font-bold uppercase tracking-wider mb-1 text-center">Total Players</span>
+                      <span className="text-white font-mono font-bold text-lg">{playerStats.length}</span>
+                  </div>
+                  <div className="bg-[#1a1c23] border border-white/5 rounded-xl p-4 flex flex-col items-center justify-center">
+                      <span className="text-white/40 text-xs font-bold uppercase tracking-wider mb-1 text-center">Total Profit</span>
+                      <span className="text-emerald-400 font-mono font-bold text-lg">
+                        ${playerStats.reduce((sum, p) => sum + (p.profit > 0 ? p.profit : 0), 0).toLocaleString()}
+                      </span>
+                  </div>
+                  <div className="bg-[#1a1c23] border border-white/5 rounded-xl p-4 flex flex-col items-center justify-center">
+                      <span className="text-white/40 text-xs font-bold uppercase tracking-wider mb-1 text-center">Total Fees</span>
+                      <span className="text-yellow-400 font-mono font-bold text-lg">
+                        ${myTables.filter(t => t.settings.mode === 'tournament').reduce((sum, t) => sum + (t.liquidity || 0), 0).toLocaleString()}
+                      </span>
+                  </div>
+               </div>
+             </div>
+          )}
+
           {selectedTables.length > 0 && selectedTableId !== 'all' && (
              <div className="flex flex-col gap-4">
-               <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+               <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
                   <div className="bg-[#1a1c23] border border-white/5 rounded-xl p-4 flex flex-col items-center justify-center">
                       <span className="text-white/40 text-xs font-bold uppercase tracking-wider mb-1">Mode</span>
                       <span className={cn("font-mono text-sm uppercase tracking-wider", selectedTables[0].settings.mode === 'tournament' ? 'text-yellow-400' : 'text-blue-400')}>{selectedTables[0].settings.mode || 'REGULAR'}</span>
@@ -162,16 +310,16 @@ export function ManageTablesView({ onNavigate, onToggleSidebar }: { onNavigate: 
                       <span className="text-white font-mono">{selectedTables[0].status.toUpperCase()}</span>
                   </div>
                   <div className="bg-[#1a1c23] border border-white/5 rounded-xl p-4 flex flex-col items-center justify-center">
-                      <span className="text-white/40 text-xs font-bold uppercase tracking-wider mb-1">Liquidity</span>
+                      <span className="text-white/40 text-xs font-bold uppercase tracking-wider mb-1">{selectedTables[0].settings.mode === 'tournament' ? 'Fees' : 'Liquidity'}</span>
                       <span className="text-yellow-400 font-mono font-bold">
-                        {selectedTables[0].settings.mode === 'tournament' ? 'N/A' : `$${selectedTables[0].liquidity.toLocaleString()}`}
+                        {selectedTables[0].settings.mode === 'tournament' ? `$${selectedTables[0].liquidity.toLocaleString()}` : `$${selectedTables[0].liquidity.toLocaleString()}`}
                       </span>
                   </div>
                   <div className="bg-[#1a1c23] border border-white/5 rounded-xl p-4 flex flex-col items-center justify-center">
-                      <span className="text-white/40 text-[10px] sm:text-xs font-bold uppercase tracking-wider mb-1 text-center truncate">{selectedTables[0].settings.mode === 'tournament' ? 'Ticket/Chips' : 'Min/Max Bet'}</span>
+                      <span className="text-white/40 text-[10px] sm:text-xs font-bold uppercase tracking-wider mb-1 text-center truncate">{selectedTables[0].settings.mode === 'tournament' ? 'Ticket Rev/Chips' : 'Min/Max Bet'}</span>
                       <span className="text-white font-mono text-sm max-w-full text-center">
                         {selectedTables[0].settings.mode === 'tournament' 
-                          ? `$${selectedTables[0].settings.tournament?.ticketPrice} / ${selectedTables[0].settings.tournament?.startingChips}` 
+                          ? `$${(selectedTables[0].settings.tournament?.ticketPrice || 0) * playerStats.length} / ${Object.values(selectedTables[0].userBalances).reduce((sum, ub) => sum + ub.balance, 0)}` 
                           : `$${selectedTables[0].settings.minBet} / $${selectedTables[0].settings.maxBet}`}
                       </span>
                   </div>
@@ -179,21 +327,33 @@ export function ManageTablesView({ onNavigate, onToggleSidebar }: { onNavigate: 
                       <span className="text-white/40 text-xs font-bold uppercase tracking-wider mb-1">Players</span>
                       <span className="text-white font-mono">{selectedTables[0].seats.filter(s => s.userId).length} / {selectedTables[0].settings.maxSeats}</span>
                   </div>
+                  <div className="bg-[#1a1c23] border border-white/5 rounded-xl p-4 flex flex-col items-center justify-center">
+                      <span className="text-white/40 text-[10px] sm:text-xs font-bold uppercase tracking-wider mb-1">Total Visits</span>
+                      <span className="text-white font-mono">{selectedTables[0].visits || 0}</span>
+                  </div>
                </div>
                <div className="flex flex-wrap gap-2 w-full">
                   <button 
                     onClick={() => onNavigate('host_table', selectedTableId)}
-                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border border-blue-500/30"
+                    disabled={selectedTables[0].settings.mode === 'tournament' && selectedTables[0].status !== 'waiting'}
+                    className={cn(
+                      "flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border",
+                      selectedTables[0].settings.mode === 'tournament' && selectedTables[0].status !== 'waiting'
+                        ? "bg-white/5 text-white/30 border-white/10 cursor-not-allowed"
+                        : "bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 border-blue-500/30"
+                    )}
                   >
                     <Settings className="w-4 h-4" /> Edit
                   </button>
-                  <button 
-                    onClick={() => handleCloseTable(selectedTableId)}
-                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border border-red-500/30"
-                  >
-                    <XCircle className="w-4 h-4" /> Close
-                  </button>
-                  {selectedTables[0].status === 'paused' ? (
+                  
+                  {selectedTables[0].settings.mode === 'tournament' ? (
+                    <button 
+                      onClick={() => onNavigate('host_table')}
+                      className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border border-emerald-500/30"
+                    >
+                      <Plus className="w-4 h-4" /> New Tournament
+                    </button>
+                  ) : selectedTables[0].status === 'closed' ? (
                     <button 
                       onClick={() => useGameStore.getState().resumeTable(selectedTableId)}
                       className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border border-emerald-500/30"
@@ -202,66 +362,89 @@ export function ManageTablesView({ onNavigate, onToggleSidebar }: { onNavigate: 
                     </button>
                   ) : (
                     <button 
-                      onClick={() => useGameStore.getState().pauseTable(selectedTableId)}
-                      className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border border-yellow-500/30"
+                      onClick={() => handleCloseTable(selectedTableId)}
+                      className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border border-red-500/30"
                     >
-                      <XCircle className="w-4 h-4" /> Pause
+                      <XCircle className="w-4 h-4" /> Close
                     </button>
                   )}
+                  
                   <button 
-                    onClick={() => useGameStore.getState().withdrawLiquidity(selectedTableId, Number(prompt('Amount to withdraw:', '0') || 0))}
+                    onClick={() => {
+                      if (selectedTables[0].status !== 'closed') {
+                        setToastMessage('Close the table before withdrawing.');
+                        setTimeout(() => setToastMessage(null), 3000);
+                        return;
+                      }
+                      setWithdrawAmount(selectedTables[0].liquidity.toString());
+                      setShowWithdrawPopup(true);
+                    }}
                     className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border border-indigo-500/30"
                   >
-                    Withdraw Liquidity
+                    {selectedTables[0].settings.mode === 'tournament' ? 'Withdraw Fees' : 'Withdraw Liquidity'}
                   </button>
                </div>
              </div>
           )}
 
           <div className="bg-[#1a1c23] border border-white/5 rounded-2xl overflow-hidden flex flex-col">
-            <div className="flex border-b border-white/5">
-              <button
-                onClick={() => setActiveTab('players')}
-                className={cn(
-                  "flex-1 py-4 flex items-center justify-center gap-2 font-bold uppercase tracking-wider text-xs transition-colors",
-                  activeTab === 'players' ? "bg-white/5 text-emerald-400 border-b-2 border-emerald-400" : "text-white/50 hover:text-white/80 hover:bg-white/5"
-                )}
-              >
-                <Users className="w-4 h-4" /> Player List
-              </button>
-              <button
-                onClick={() => setActiveTab('rounds')}
-                className={cn(
-                  "flex-1 py-4 flex items-center justify-center gap-2 font-bold uppercase tracking-wider text-xs transition-colors",
-                  activeTab === 'rounds' ? "bg-white/5 text-emerald-400 border-b-2 border-emerald-400" : "text-white/50 hover:text-white/80 hover:bg-white/5"
-                )}
-              >
-                <Activity className="w-4 h-4" /> Round Data
-              </button>
-            </div>
+            {selectedTableId === 'all' ? (
+              <div className="flex border-b border-white/5">
+                <div className="flex-1 py-4 flex items-center justify-center gap-2 font-bold uppercase tracking-wider text-xs text-emerald-400 border-b-2 border-emerald-400">
+                  <Users className="w-4 h-4" /> Player List
+                </div>
+              </div>
+            ) : (
+              <div className="flex border-b border-white/5">
+                <button
+                  onClick={() => setActiveTab('players')}
+                  className={cn(
+                    "flex-1 py-4 flex items-center justify-center gap-2 font-bold uppercase tracking-wider text-xs transition-colors",
+                    activeTab === 'players' ? "bg-white/5 text-emerald-400 border-b-2 border-emerald-400" : "text-white/50 hover:text-white/80 hover:bg-white/5"
+                  )}
+                >
+                  <Users className="w-4 h-4" /> Player List
+                </button>
+                <button
+                  onClick={() => setActiveTab('rounds')}
+                  className={cn(
+                    "flex-1 py-4 flex items-center justify-center gap-2 font-bold uppercase tracking-wider text-xs transition-colors",
+                    activeTab === 'rounds' ? "bg-white/5 text-emerald-400 border-b-2 border-emerald-400" : "text-white/50 hover:text-white/80 hover:bg-white/5"
+                  )}
+                >
+                  <Activity className="w-4 h-4" /> {selectedTables[0]?.settings.mode === 'tournament' ? 'Tournament Data' : 'Round Data'}
+                </button>
+              </div>
+            )}
 
             <div className="p-4">
-              {activeTab === 'players' ? (
+              {selectedTableId === 'all' || activeTab === 'players' ? (
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm text-white/80">
                     <thead className="text-xs uppercase text-white/40 border-b border-white/10">
                       <tr>
                         <th className="px-4 py-3 font-semibold">Avatar</th>
                         <th className="px-4 py-3 font-semibold">Name</th>
-                        <th className="px-4 py-3 font-semibold">Time</th>
-                        <th className="px-4 py-3 font-semibold text-right">Total Rounds</th>
-                        <th className="px-4 py-3 font-semibold text-right">Wager</th>
-                        <th className="px-4 py-3 font-semibold text-right">Win</th>
-                        <th className="px-4 py-3 font-semibold text-right">Profit</th>
+                        <th className="px-4 py-3 font-semibold cursor-pointer hover:text-white" onClick={() => { setSortField('time'); setSortAsc(!sortAsc); }}>Time {sortField==='time' && (sortAsc ? '↑' : '↓')}</th>
+                        {selectedTableId !== 'all' && selectedTables[0]?.settings.mode === 'tournament' ? (
+                          <th className="px-4 py-3 font-semibold text-right cursor-pointer hover:text-white" onClick={() => { setSortField('tournaments'); setSortAsc(!sortAsc); }}>Tournament X {sortField==='tournaments' && (sortAsc ? '↑' : '↓')}</th>
+                        ) : (
+                          <th className="px-4 py-3 font-semibold text-right cursor-pointer hover:text-white" onClick={() => { setSortField('rounds'); setSortAsc(!sortAsc); }}>Total Rounds {sortField==='rounds' && (sortAsc ? '↑' : '↓')}</th>
+                        )}
+                        <th className="px-4 py-3 font-semibold text-right cursor-pointer hover:text-white" onClick={() => { setSortField('wager'); setSortAsc(!sortAsc); }}>Wager {sortField==='wager' && (sortAsc ? '↑' : '↓')}</th>
+                        <th className="px-4 py-3 font-semibold text-right cursor-pointer hover:text-white" onClick={() => { setSortField('win'); setSortAsc(!sortAsc); }}>Win {sortField==='win' && (sortAsc ? '↑' : '↓')}</th>
+                        {!(selectedTableId !== 'all' && selectedTables[0]?.settings.mode === 'tournament') && (
+                          <th className="px-4 py-3 font-semibold text-right cursor-pointer hover:text-white" onClick={() => { setSortField('profit'); setSortAsc(!sortAsc); }}>Profit {sortField==='profit' && (sortAsc ? '↑' : '↓')}</th>
+                        )}
                       </tr>
                     </thead>
                     <tbody>
-                      {playerStats.length === 0 && (
+                      {sortedPlayerStats.length === 0 && (
                         <tr>
                           <td colSpan={7} className="text-center py-8 text-white/40">No players have joined yet.</td>
                         </tr>
                       )}
-                      {playerStats.map(p => (
+                      {sortedPlayerStats.slice(page * rowsPerPage, (page + 1) * rowsPerPage).map(p => (
                         <tr key={p.userId} className="border-b border-white/5 hover:bg-white/5 transition-colors">
                           <td className="px-4 py-3">
                             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#126b6f] to-[#0d4f52] flex items-center justify-center font-bold text-white shadow-inner text-xs">
@@ -270,14 +453,62 @@ export function ManageTablesView({ onNavigate, onToggleSidebar }: { onNavigate: 
                           </td>
                           <td className="px-4 py-3 font-bold text-white">{p.name}</td>
                           <td className="px-4 py-3 text-white/60">{new Date(p.firstSeen).toLocaleString()}</td>
-                          <td className="px-4 py-3 text-right font-mono">{p.totalRounds}</td>
+                          {selectedTableId !== 'all' && selectedTables[0]?.settings.mode === 'tournament' ? (
+                            <td className="px-4 py-3 text-right font-mono">{p.tournaments.size}</td>
+                          ) : (
+                            <td className="px-4 py-3 text-right font-mono">{p.totalRounds}</td>
+                          )}
                           <td className="px-4 py-3 text-right font-mono text-yellow-400/80">${p.wager.toLocaleString()}</td>
                           <td className="px-4 py-3 text-right font-mono text-emerald-400/80">${p.win.toLocaleString()}</td>
-                          <td className={cn("px-4 py-3 text-right font-mono font-bold", p.profit > 0 ? "text-emerald-400" : p.profit < 0 ? "text-red-400" : "text-white/60")}>
-                            {p.profit > 0 ? '+' : ''}{p.profit}
-                          </td>
+                          {!(selectedTableId !== 'all' && selectedTables[0]?.settings.mode === 'tournament') && (
+                            <td className={cn("px-4 py-3 text-right font-mono font-bold", p.profit > 0 ? "text-emerald-400" : p.profit < 0 ? "text-red-400" : "text-white/60")}>
+                              {p.profit > 0 ? '+' : ''}{p.profit}
+                            </td>
+                          )}
                         </tr>
                       ))}
+                    </tbody>
+                  </table>
+                  {sortedPlayerStats.length > rowsPerPage && (
+                    <div className="flex justify-between items-center p-4 text-white/50 text-xs">
+                      <span>Showing {page * rowsPerPage + 1} to {Math.min((page + 1) * rowsPerPage, sortedPlayerStats.length)} of {sortedPlayerStats.length}</span>
+                      <div className="flex gap-2">
+                        <button disabled={page === 0} onClick={() => setPage(page-1)} className="px-3 py-1 bg-white/5 disabled:opacity-30 rounded">Prev</button>
+                        <button disabled={(page + 1) * rowsPerPage >= sortedPlayerStats.length} onClick={() => setPage(page+1)} className="px-3 py-1 bg-white/5 disabled:opacity-30 rounded">Next</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : selectedTables[0]?.settings.mode === 'tournament' ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm text-white/80">
+                    <thead className="text-xs uppercase text-white/40 border-b border-white/10">
+                      <tr>
+                        <th className="px-4 py-3 font-semibold">Start Time</th>
+                        <th className="px-4 py-3 font-semibold">Status</th>
+                        <th className="px-4 py-3 font-semibold">Seats</th>
+                        <th className="px-4 py-3 font-semibold">Duration (min)</th>
+                        <th className="px-4 py-3 font-semibold">Rounds Played</th>
+                        <th className="px-4 py-3 font-semibold">Prize / Winners</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                        <td className="px-4 py-3 text-white/60 whitespace-nowrap">{new Date(selectedTables[0].createdAt || Date.now()).toLocaleString()}</td>
+                        <td className="px-4 py-3 text-white/80 font-mono uppercase">{selectedTables[0].status}</td>
+                        <td className="px-4 py-3 font-mono">{selectedTables[0].seats.filter(s => s.userId).length} / {selectedTables[0].settings.maxSeats}</td>
+                        <td className="px-4 py-3 font-mono">
+                          {selectedTables[0].status === 'waiting' ? 0 : Math.floor((Date.now() - (selectedTables[0].createdAt || Date.now())) / 60000)}
+                        </td>
+                        <td className="px-4 py-3 font-mono">{relevantRecords.length}</td>
+                        <td className="px-4 py-3 text-emerald-400 font-mono text-xs">
+                          {selectedTables[0].status === 'closed' ? (
+                             [...playerStats].sort((a,b) => b.win - a.win).slice(0, 3).map((w, idx) => (
+                               <div key={w.userId}>{idx+1}. {w.name} (${w.win})</div>
+                             ))
+                          ) : 'TBD'}
+                        </td>
+                      </tr>
                     </tbody>
                   </table>
                 </div>
@@ -286,34 +517,51 @@ export function ManageTablesView({ onNavigate, onToggleSidebar }: { onNavigate: 
                   <table className="w-full text-left text-sm text-white/80">
                     <thead className="text-xs uppercase text-white/40 border-b border-white/10">
                       <tr>
+                        <th className="px-4 py-3 font-semibold">Round</th>
                         <th className="px-4 py-3 font-semibold">Time</th>
+                        <th className="px-4 py-3 font-semibold">Avatar</th>
                         <th className="px-4 py-3 font-semibold">User Name</th>
-                        <th className="px-4 py-3 font-semibold text-right">Bet Amount</th>
-                        <th className="px-4 py-3 font-semibold text-right">Win Amount</th>
-                        <th className="px-4 py-3 font-semibold">Action</th>
+                        <th className="px-4 py-3 font-semibold text-right">Bet</th>
+                        <th className="px-4 py-3 font-semibold text-right">Side Bet</th>
+                        <th className="px-4 py-3 font-semibold text-right">Win</th>
+                        <th className="px-4 py-3 font-semibold text-right">Profit</th>
                       </tr>
                     </thead>
                     <tbody>
                       {relevantRecords.length === 0 && (
                         <tr>
-                          <td colSpan={5} className="text-center py-8 text-white/40">No rounds played yet.</td>
+                          <td colSpan={8} className="text-center py-8 text-white/40">No rounds played yet.</td>
                         </tr>
                       )}
-                      {relevantRecords.flatMap(r => r.seatResults.map((sr, idx) => ({ ...sr, recordId: r.id, time: r.timestamp }))).map((sr, i) => (
+                      {relevantRecords.flatMap((r, rIndex) => r.seatResults.map((sr, idx) => ({ ...sr, recordId: r.id, time: r.timestamp, roundNum: relevantRecords.length - rIndex })))
+                        .slice(roundsPage * rowsPerPage, (roundsPage + 1) * rowsPerPage)
+                        .map((sr, i) => (
                         <tr key={`${sr.recordId}-${i}`} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                          <td className="px-4 py-3 text-white/60 font-mono">#{sr.roundNum}</td>
                           <td className="px-4 py-3 text-white/60 whitespace-nowrap">{new Date(sr.time).toLocaleTimeString()}</td>
-                          <td className="px-4 py-3 font-bold text-white">{sr.userId?.startsWith('bot_') ? `Bot ${sr.userId.split('_')[1]}` : sr.userId || 'Empty'}</td>
-                          <td className="px-4 py-3 text-right font-mono text-yellow-400/80">${sr.bet.toLocaleString()}</td>
-                          <td className={cn("px-4 py-3 text-right font-mono font-bold", sr.net > 0 ? "text-emerald-400" : "text-white/60")}>
-                            ${(sr.net > 0 ? sr.bet + sr.net : 0).toLocaleString()}
-                          </td>
                           <td className="px-4 py-3">
-                            <span className="bg-white/10 text-white/80 px-2 py-1 rounded text-xs font-mono uppercase tracking-wider">{sr.action}</span>
+                             <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${sr.userId}`} alt="Avatar" className="w-6 h-6 rounded-full bg-white/10" />
+                          </td>
+                          <td className="px-4 py-3 font-bold text-white">{sr.userId?.startsWith('bot_') ? `Bot ${sr.userId.split('_')[1]}` : sr.userId || 'Empty'}</td>
+                          <td className="px-4 py-3 text-right font-mono text-white/80">${sr.bet.toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-mono text-white/60">${(sr.sideBet || 0).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-mono text-emerald-400">${(sr.win || 0).toLocaleString()}</td>
+                          <td className={cn("px-4 py-3 text-right font-mono font-bold", sr.net > 0 ? "text-emerald-400" : sr.net < 0 ? "text-red-400" : "text-white/60")}>
+                            {sr.net > 0 ? '+' : ''}{sr.net.toLocaleString()}
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                  {relevantRecords.flatMap(r => r.seatResults).length > rowsPerPage && (
+                    <div className="flex justify-between items-center p-4 text-white/50 text-xs">
+                      <span>Showing {roundsPage * rowsPerPage + 1} to {Math.min((roundsPage + 1) * rowsPerPage, relevantRecords.flatMap(r => r.seatResults).length)} of {relevantRecords.flatMap(r => r.seatResults).length}</span>
+                      <div className="flex gap-2">
+                        <button disabled={roundsPage === 0} onClick={() => setRoundsPage(roundsPage-1)} className="px-3 py-1 bg-white/5 disabled:opacity-30 rounded">Prev</button>
+                        <button disabled={(roundsPage + 1) * rowsPerPage >= relevantRecords.flatMap(r => r.seatResults).length} onClick={() => setRoundsPage(roundsPage+1)} className="px-3 py-1 bg-white/5 disabled:opacity-30 rounded">Next</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
