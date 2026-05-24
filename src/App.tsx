@@ -7,12 +7,15 @@ import { useGameStore } from './store/gameStore';
 import { LiveTablesSidebar } from './components/blackjack/LiveTablesSidebar';
 import { AnimatePresence } from 'motion/react';
 
+import { ConfirmModal } from './components/blackjack/ConfirmModal';
+
 function GameLayout() {
   const [showSidebar, setShowSidebar] = useState(false);
   const [closedRedirectMessage, setClosedRedirectMessage] = useState<string | null>(null);
-  const { currentUser, login, observeTable, tables, activeTableId } = useGameStore();
+  const { currentUser, login, observeTable, tables, activeTableId, unlockTableBalance, leaveTable } = useGameStore();
   const navigate = useNavigate();
   const location = useLocation();
+  const [confirmAction, setConfirmAction] = useState<any>(null);
 
   useEffect(() => {
     if (!currentUser) {
@@ -44,7 +47,10 @@ function GameLayout() {
   }, [activeTableId, tables, closedRedirectMessage, navigate, location.pathname]);
 
   const handleNavigate = (view: string, tableId?: string): boolean => {
-    if (view === 'table') {
+    if (view === 'lobby') {
+       setShowSidebar(true);
+       return false;
+    } else if (view === 'table') {
        navigate(`/t/${tableId || activeTableId || 'table_1'}`);
     } else if (view === 'host_table') {
        navigate(tableId ? `/host/${tableId}` : `/host`);
@@ -57,6 +63,55 @@ function GameLayout() {
   };
 
   const activeTables = Object.values(tables).filter(t => t.status !== 'closed' && t.status !== 'closing' && t.settings.isPublic);
+
+  const handleTableSelect = (id: string) => {
+    if (activeTableId && tables[activeTableId] && currentUser) {
+        const table = tables[activeTableId];
+        const userBal = table.userBalances?.[currentUser.id];
+        if (userBal) {
+            const isTournament = table.settings.mode === 'tournament';
+            const hasStarted = table.status !== 'waiting';
+            
+            let message = "You have locked chips on your current table. Do you want to unlock your funds before switching?";
+            let confirmText = "Unlock & Switch";
+            
+            if (isTournament) {
+                if (hasStarted) {
+                    message = "The tournament is underway. If you unlock your funds now, your ticket is non-refundable and you will lose your tournament progress. If you just switch, your seat will be given up but your funds remain locked here for you to return.";
+                    confirmText = "Unlock & Forfeit";
+                } else {
+                    message = "Since the tournament hasn't started yet, your entry ticket will be refunded if you unlock your funds.";
+                    confirmText = "Unlock & Refund";
+                }
+            }
+            
+            setConfirmAction({
+                title: isTournament ? "Leave Tournament" : "Choose Action",
+                message,
+                confirmText,
+                cancelText: "Just Switch",
+                onConfirm: async () => {
+                    await unlockTableBalance(activeTableId);
+                    leaveTable(activeTableId);
+                    setConfirmAction(null);
+                    setShowSidebar(false);
+                    navigate(`/t/${id}`);
+                },
+                onCancel: () => {
+                    leaveTable(activeTableId);
+                    setConfirmAction(null);
+                    setShowSidebar(false);
+                    navigate(`/t/${id}`);
+                }
+            });
+            return;
+        } else {
+            leaveTable(activeTableId);
+        }
+    }
+    setShowSidebar(false);
+    navigate(`/t/${id}`);
+  };
 
   return (
     <div className="w-full h-[100dvh] flex flex-col relative overflow-hidden bg-gradient-to-br from-[#1a0f0a] via-[#0d0905] to-[#140b08] text-slate-200 font-sans selection:bg-[#c6a364]/30 selection:text-amber-200">
@@ -86,6 +141,9 @@ function GameLayout() {
              </div>
            </div>
         )}
+        {confirmAction && (
+          <ConfirmModal action={confirmAction} onClose={() => setConfirmAction(null)} />
+        )}
         <AnimatePresence>
           {showSidebar && (
             <LiveTablesSidebar 
@@ -93,14 +151,13 @@ function GameLayout() {
               setShowSidebar={setShowSidebar} 
               activeTables={activeTables} 
               currentTableId={activeTableId || ''} 
-              observeTable={(id) => navigate(`/t/${id}`)} 
-              onNavigate={() => handleNavigate('table')}
+              observeTable={handleTableSelect} 
             />
           )}
         </AnimatePresence>
         
         <Routes>
-          <Route path="/t/:id" element={<BlackjackTable onNavigate={handleNavigate} onToggleSidebar={() => setShowSidebar(true)} />} />
+          <Route path="/t/:id" element={<BlackjackTable onNavigate={handleNavigate} onToggleSidebar={() => setShowSidebar(true)} isSidebarOpen={showSidebar} />} />
           <Route path="/host" element={<HostTableView onNavigate={handleNavigate} onToggleSidebar={() => setShowSidebar(true)} editTableId={null} />} />
           <Route path="/host/:id" element={<HostTableViewWrapper onNavigate={handleNavigate} onToggleSidebar={() => setShowSidebar(true)} />} />
           <Route path="/manage" element={<ManageTablesView onNavigate={handleNavigate} onToggleSidebar={() => setShowSidebar(true)} initialTableId={null} />} />

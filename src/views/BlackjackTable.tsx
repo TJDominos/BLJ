@@ -4,7 +4,7 @@ import { RegularTableView } from './RegularTableView';
 import { TournamentTableView } from './TournamentTableView';
 import { Loader2 } from 'lucide-react';
 
-export function BlackjackTable({ onNavigate, onToggleSidebar }: { onNavigate: (view: 'lobby' | 'create' | 'table' | 'host_table' | 'manage_tables') => boolean | void, onToggleSidebar?: () => void }) {
+export function BlackjackTable({ onNavigate, onToggleSidebar, isSidebarOpen }: { onNavigate: (view: 'lobby' | 'create' | 'table' | 'host_table' | 'manage_tables') => boolean | void, onToggleSidebar?: () => void, isSidebarOpen?: boolean }) {
   const { tables, activeTableId } = useGameStore();
   const table = tables[activeTableId || ''];
 
@@ -17,8 +17,8 @@ export function BlackjackTable({ onNavigate, onToggleSidebar }: { onNavigate: (v
   }
 
   if (table.settings.mode === 'tournament') {
-    return <TournamentTableView onNavigate={onNavigate} onToggleSidebar={onToggleSidebar} />;
+    return <TournamentTableView onNavigate={onNavigate} onToggleSidebar={onToggleSidebar} isSidebarOpen={isSidebarOpen} />;
   }
 
-  return <RegularTableView onNavigate={onNavigate} onToggleSidebar={onToggleSidebar} />;
+  return <RegularTableView onNavigate={onNavigate} onToggleSidebar={onToggleSidebar} isSidebarOpen={isSidebarOpen} />;
 }

@@ -134,8 +134,11 @@ export const gameApi = {
     const userBal = table.userBalances[userId];
     if (userBal) {
       if (table.settings.mode === 'tournament') {
-        // Tournament chips have no real $ value to be refunded
-        refundedAmount = 0; 
+        if (table.status === 'waiting') {
+          refundedAmount = table.settings.tournament?.ticketPrice || 0;
+        } else {
+          refundedAmount = 0; 
+        }
       } else {
         const netWin = userBal.balance - userBal.initialBuyIn;
         let fee = 0;
@@ -154,6 +157,11 @@ export const gameApi = {
     
     if (table.seats[seatIndex].userId !== userId) {
       throw new Error("You are not seated at this seat. Your deal was too late.");
+    }
+
+    if (table.seats[seatIndex].isReady) {
+      // Already bet
+      return { table: JSON.parse(JSON.stringify(table)), deducted: 0 };
     }
     
     const deducted = amount + (sideBets?.pair || 0) + (sideBets?.twentyOnePlusThree || 0);
@@ -235,6 +243,26 @@ export const gameApi = {
       if (s.hand) {
         s.hand.score = calculateScore(s.hand.cards);
         s.hand.status = s.hand.score === 21 ? 'blackjack' : 'playing';
+        
+        // Evaluate side bets immediately, so that splits don't destroy original pair data
+        if (s.hand.sideBets) {
+          if (s.hand.sideBets.pair > 0 && s.hand.cards.length >= 2) {
+             const pairMult = checkPair(s.hand.cards[0], s.hand.cards[1]);
+             if (pairMult > 0) {
+               s.hand.sideBetPairWon = s.hand.sideBets.pair * (pairMult + 1);
+             } else {
+               s.hand.sideBetPairWon = 0;
+             }
+          }
+          if (s.hand.sideBets.twentyOnePlusThree > 0 && s.hand.cards.length >= 2 && table.dealerHand?.cards.length > 0) {
+             const plus3Mult = check21Plus3(s.hand.cards[0], s.hand.cards[1], table.dealerHand.cards[0]);
+             if (plus3Mult > 0) {
+               s.hand.sideBetPlus3Won = s.hand.sideBets.twentyOnePlusThree * (plus3Mult + 1);
+             } else {
+               s.hand.sideBetPlus3Won = 0;
+             }
+          }
+        }
       }
     });
     table.dealerHand.score = calculateScore(table.dealerHand.cards);
@@ -424,14 +452,14 @@ export const gameApi = {
     return JSON.parse(JSON.stringify(table));
   },
 
-  async dealerPlayAndResolve(tableId: string): Promise<{ table: Table, winnings: Record<string, number>, seatResults: SeatResult[], returnedLiquidity: number }> {
+  async dealerPlayAndResolve(tableId: string): Promise<{ table: Table, winnings: Record<string, number>, seatResults: SeatResult[], returnedLiquidity: number, dealerScore: number }> {
     await delay(600);
     const table = tablesDb[tableId];
     const winnings: Record<string, number> = {};
     const seatResults: SeatResult[] = [];
     let returnedLiquidity = 0;
-
-    if (!table || !table.dealerHand) return { table: JSON.parse(JSON.stringify(table)), winnings, seatResults, returnedLiquidity };
+    
+    if (!table || !table.dealerHand) return { table: JSON.parse(JSON.stringify(table)), winnings, seatResults, returnedLiquidity, dealerScore: 0 };
 
     table.dealerHand.cards = table.dealerHand.cards.map(c => ({ ...c, isHidden: false }));
     table.dealerHand.score = calculateScore(table.dealerHand.cards);
@@ -456,25 +484,29 @@ export const gameApi = {
     table.seats.forEach(seat => {
       if (!seat.isReady || !seat.hand || !seat.userId) return;
       const pScore = seat.hand.score;
+      const dealerHasBlackjack = dealerScore === 21 && table.dealerHand.cards.length === 2;
+
       let pStatus: string = seat.hand.status;
 
       if (pStatus === 'busted') {
         pStatus = 'busted_lost';
-      } else if (dealerBust) {
-        pStatus = 'won';
-      } else {
-        if (pScore > dealerScore) pStatus = 'won';
-        else if (pScore < dealerScore) pStatus = 'lost';
-        else {
-          if (table.settings.winningRule === 'dealer_wins_ties') {
-            pStatus = 'lost';
-          } else {
-            pStatus = 'push';
+      } else if (pStatus !== 'blackjack') {
+        if (dealerBust) {
+          pStatus = 'won';
+        } else {
+          if (pScore > dealerScore) pStatus = 'won';
+          else if (pScore < dealerScore) pStatus = 'lost';
+          else {
+            if (table.settings.winningRule === 'dealer_wins_ties') {
+              pStatus = 'lost';
+            } else {
+              pStatus = 'push';
+            }
           }
         }
       }
 
-      if (pStatus === 'blackjack' && !dealerBust && dealerScore === 21) {
+      if (pStatus === 'blackjack' && dealerHasBlackjack) {
          pStatus = 'push';
       }
 
@@ -493,7 +525,6 @@ export const gameApi = {
       
       if (pStatus === 'busted_lost') pStatus = 'lost';
       
-      const dealerHasBlackjack = dealerScore === 21 && table.dealerHand.cards.length === 2;
       let insuranceWon = 0;
       if (seat.hand.insuranceBet) {
          if (dealerHasBlackjack) {
@@ -506,20 +537,18 @@ export const gameApi = {
       
       let sideBetWon = 0;
       if (seat.hand.sideBets) {
-        if (seat.hand.sideBets.pair > 0 && seat.hand.cards.length >= 2) {
-           const pairMult = checkPair(seat.hand.cards[0], seat.hand.cards[1]);
-           if (pairMult > 0) {
-             const win = seat.hand.sideBets.pair * (pairMult + 1);
+        if (seat.hand.sideBets.pair > 0) {
+           if (seat.hand.sideBetPairWon !== undefined && seat.hand.sideBetPairWon > 0) {
+             const win = seat.hand.sideBetPairWon;
              sideBetWon += win;
              liquidityDelta -= win - seat.hand.sideBets.pair;
            } else {
              liquidityDelta += seat.hand.sideBets.pair;
            }
         }
-        if (seat.hand.sideBets.twentyOnePlusThree > 0 && seat.hand.cards.length >= 2 && table.dealerHand.cards.length > 0) {
-           const plus3Mult = check21Plus3(seat.hand.cards[0], seat.hand.cards[1], table.dealerHand.cards[0]);
-           if (plus3Mult > 0) {
-             const win = seat.hand.sideBets.twentyOnePlusThree * (plus3Mult + 1);
+        if (seat.hand.sideBets.twentyOnePlusThree > 0) {
+           if (seat.hand.sideBetPlus3Won !== undefined && seat.hand.sideBetPlus3Won > 0) {
+             const win = seat.hand.sideBetPlus3Won;
              sideBetWon += win;
              liquidityDelta -= win - seat.hand.sideBets.twentyOnePlusThree;
            } else {
@@ -542,27 +571,32 @@ export const gameApi = {
       const net = wonAmount - totalBet;
 
       const seatIndexToRecord = seat.isSplitHand && seat.originalSeatIndex !== undefined ? seat.originalSeatIndex : table.seats.indexOf(seat);
-      const existingRes = seatResults.find(sr => sr.seatIndex === seatIndexToRecord);
-      if (existingRes) {
-        existingRes.bet += totalBet;
-        existingRes.net += net;
-        if (existingRes.sideBet !== undefined) existingRes.sideBet += sideBetTotal;
-        if (existingRes.win !== undefined) existingRes.win += wonAmount;
-        existingRes.action = `${existingRes.action} / ${pStatus}`;
-      } else {
-        seatResults.push({
-          seatIndex: seatIndexToRecord,
-          userId: seat.userId || undefined,
-          bet: seat.hand.bet,
-          sideBet: sideBetTotal + (seat.hand.insuranceBet || 0),
-          win: wonAmount,
-          net: net,
-          action: pStatus
-        });
-      }
+      seatResults.push({
+        seatIndex: seatIndexToRecord,
+        isSplit: !!seat.isSplitHand,
+        userId: seat.userId || undefined,
+        bet: seat.hand.bet,
+        sideBet: sideBetTotal,
+        sideBetWin: sideBetWon,
+        insuranceBet: seat.hand.insuranceBet || 0,
+        insuranceWin: insuranceWon,
+        win: wonAmount,
+        net: net,
+        action: pStatus,
+        score: pScore
+      });
     });
 
     table.liquidity += liquidityDelta;
+    
+    table.roundsPlayed = (table.roundsPlayed || 0) + 1;
+    if (table.settings.mode === 'tournament' && table.settings.tournament?.isScheduledEscalation) {
+        const escRounds = table.settings.tournament.escalationRounds || 2;
+        if (table.roundsPlayed % escRounds === 0) {
+            table.settings.minBet *= 2;
+            // Optionally increase maxBet too? The settings just escalate the blinds/minBet usually.
+        }
+    }
 
     if (table.status === 'closing') {
       table.status = 'closed';
@@ -591,6 +625,6 @@ export const gameApi = {
         return { ...s, isReady: false };
       });
     
-    return { table: JSON.parse(JSON.stringify(table)), winnings, seatResults, returnedLiquidity };
+    return { table: JSON.parse(JSON.stringify(table)), winnings, seatResults, returnedLiquidity, dealerScore };
   }
 };

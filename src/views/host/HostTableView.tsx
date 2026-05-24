@@ -100,13 +100,14 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
     }
     setIsHosting(true);
     await new Promise(resolve => setTimeout(resolve, 1500)); // mock checking liquidity
-    setIsHosting(false);
     if (editingTable) {
-        updateTableSettings(editingTable.id, settings);
+        await updateTableSettings(editingTable.id, settings);
+        setIsHosting(false);
         onNavigate('manage_tables');
     } else {
-        createTable(settings, settings.mode === 'tournament' ? 0 : minLiquidity);
-        onNavigate('table'); 
+        const newTableId = await createTable(settings, settings.mode === 'tournament' ? 0 : minLiquidity);
+        setIsHosting(false);
+        onNavigate('table', newTableId); 
     }
   };
 
@@ -118,7 +119,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
   if (!currentUser) return null;
 
   return (
-    <div className="w-full h-full flex flex-col items-center relative overflow-y-auto overflow-x-hidden bg-transparent font-sans [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+    <div className="absolute inset-0 flex flex-col bg-transparent font-sans overflow-hidden">
       
       <HeaderUI 
         onLeave={() => onNavigate('table')}
@@ -127,33 +128,54 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
         onToggleSidebar={() => onToggleSidebar && onToggleSidebar()}
       />
 
-      <div className="w-full max-w-[1024px] flex flex-col items-center gap-2 z-40 px-2 sm:px-4 pt-2 sm:pt-3 pb-1 relative pointer-events-none">
-        <div className="flex flex-row items-center justify-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-[420px] mx-auto mt-[-2px]">
-          <div className="bg-[#1e2025]/90 backdrop-blur-sm border border-white/10 rounded-full px-3 sm:px-6 shadow-2xl flex items-center justify-center flex-1 h-[36px] min-w-[240px]">
-             <div className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider">
-               <span className="text-white/40 uppercase">Balance</span>
-               <div className="w-3.5 h-3.5 rounded-full bg-[#ffc53d] border-[2px] border-[#eaaa08] shadow-[0_0_4px_rgba(255,197,61,0.4)] relative overflow-hidden">
-                  <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/40 rounded-full blur-[1px]"></div>
+      <div className="flex-1 w-full overflow-y-auto overflow-x-hidden flex flex-col items-center [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+        <div className="w-full max-w-[1024px] flex flex-col items-center gap-2 z-40 px-2 sm:px-4 pt-2 sm:pt-3 pb-1 relative pointer-events-none">
+          <div className="flex flex-row items-center justify-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-[420px] mx-auto mt-[-2px]">
+            <div className="bg-[#1e2025]/90 backdrop-blur-sm border border-white/10 rounded-full px-3 sm:px-6 shadow-2xl flex items-center justify-center flex-1 h-[36px] min-w-[240px]">
+               <div className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider">
+                 <span className="text-white/40 uppercase">Balance</span>
+                 <div className="w-3.5 h-3.5 rounded-full bg-[#ffc53d] border-[2px] border-[#eaaa08] shadow-[0_0_4px_rgba(255,197,61,0.4)] relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/40 rounded-full blur-[1px]"></div>
+                 </div>
+                 <span className="text-[#32d5a4] text-sm">{currentUser.balance.toLocaleString('en-US', {minimumFractionDigits: currentUser.balance % 1 !== 0 ? 2 : 0, maximumFractionDigits: 2})}</span>
                </div>
-               <span className="text-[#32d5a4] text-sm">{currentUser.balance.toLocaleString('en-US', {minimumFractionDigits: currentUser.balance % 1 !== 0 ? 2 : 0, maximumFractionDigits: 2})}</span>
-             </div>
+            </div>
+            <button 
+              onClick={() => onNavigate('table')}
+              className="flex text-[10px] sm:text-xs font-bold uppercase tracking-wider text-white px-3 sm:px-4 py-2 sm:py-2.5 rounded-full bg-[#126b6f] hover:bg-[#0d4f52] items-center gap-1 shadow-lg transition-transform hover:scale-105 active:scale-95 whitespace-nowrap shrink-0"
+            >
+              <Play className="w-3.5 h-3.5 sm:w-4 sm:h-4 fill-current" /> Back to Table
+            </button>
           </div>
-          <button 
-            onClick={() => onNavigate('table')}
-            className="flex text-[10px] sm:text-xs font-bold uppercase tracking-wider text-white px-3 sm:px-4 py-2 sm:py-2.5 rounded-full bg-[#126b6f] hover:bg-[#0d4f52] items-center gap-1 shadow-lg transition-transform hover:scale-105 active:scale-95 whitespace-nowrap shrink-0"
-          >
-            <Play className="w-3.5 h-3.5 sm:w-4 sm:h-4 fill-current" /> Back to Table
-          </button>
         </div>
-      </div>
 
-      <div className="w-full max-w-[1024px] flex flex-col p-[12px] sm:p-[24px] gap-[12px] mx-auto z-10 pointer-events-auto bg-[#1a1b23] sm:rounded-[32px] sm:mb-[24px] mb-[24px] border border-x-0 border-white/5 sm:border-x shadow-2xl shrink-0">
+        <div className="w-full max-w-[1024px] flex flex-col min-h-[500px] pl-[24px] py-[12px] pr-[12px] sm:pr-[24px] gap-[12px] mx-auto z-10 pointer-events-auto bg-[#1a1b23] sm:rounded-[32px] sm:mb-[48px] mb-[48px] pb-12 border border-x-0 border-white/5 sm:border-x shadow-2xl shrink-0">
         
         {/* Title */}
         <div className="flex flex-col items-center gap-2 py-4 text-center px-4">
           <p className="text-white/60 text-sm w-full leading-relaxed">
             Create private games for friends or public high-roller tables with user-hosted blackjack, fully backed by on-chain verifiable randomness.
           </p>
+        </div>
+
+        {/* Table Mode Switcher */}
+        <div className="flex bg-black/40 rounded-xl p-1 border border-white/5 w-full md:w-fit self-center">
+            <button
+                className={`flex-1 px-8 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${settings.mode === 'regular' || !settings.mode ? 'bg-[#126b6f] text-white shadow-md' : 'text-white/50 hover:text-white'}`}
+                onClick={() => setSettings({ ...settings, mode: 'regular' })}
+            >
+                Regular
+            </button>
+            <button
+                className={`flex-1 px-8 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${settings.mode === 'tournament' ? 'bg-[#126b6f] text-white shadow-md' : 'text-white/50 hover:text-white'}`}
+                onClick={() => {
+                   let newMaxSeats = settings.maxSeats;
+                   if (newMaxSeats < 3) newMaxSeats = 3;
+                   setSettings({ ...settings, mode: 'tournament', maxSeats: newMaxSeats, tournament: { ...settings.tournament!, targetSurvivors: Math.max(1, (settings.tournament?.minSeats || 3) - 1) } });
+                }}
+            >
+                Tournament
+            </button>
         </div>
 
         {/* 1. Set the table */}
@@ -217,26 +239,6 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                className="overflow-hidden bg-black/20 text-white"
             >
               <div className="p-3 border-t border-white/5 flex flex-col gap-4">
-                 {/* Table Mode Switcher */}
-                 <div className="flex bg-black/40 rounded-xl p-1 border border-white/5 w-full md:w-fit self-center">
-                    <button
-                        className={`flex-1 px-8 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${settings.mode === 'regular' || !settings.mode ? 'bg-[#126b6f] text-white shadow-md' : 'text-white/50 hover:text-white'}`}
-                        onClick={() => setSettings({ ...settings, mode: 'regular' })}
-                    >
-                        Regular
-                    </button>
-                    <button
-                        className={`flex-1 px-8 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${settings.mode === 'tournament' ? 'bg-[#126b6f] text-white shadow-md' : 'text-white/50 hover:text-white'}`}
-                        onClick={() => {
-                           let newMaxSeats = settings.maxSeats;
-                           if (newMaxSeats < 3) newMaxSeats = 3;
-                           setSettings({ ...settings, mode: 'tournament', maxSeats: newMaxSeats, tournament: { ...settings.tournament!, targetSurvivors: Math.max(1, Math.floor(newMaxSeats * 0.5)) } });
-                        }}
-                    >
-                        Tournament
-                    </button>
-                 </div>
-
                  <div className="flex flex-col md:flex-row gap-6">
                 <div className="flex-1 space-y-4">
                    <div>
@@ -259,6 +261,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                    </div>
                   
                   {settings.mode !== 'tournament' && (
+                  <>
                   <div className="grid grid-cols-2 gap-4">
                    <div>
                      <label className="text-xs font-semibold uppercase tracking-wider text-white/50 mb-2 flex items-center gap-1">
@@ -277,7 +280,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                           } else {
                             const val = parseInt(valStr);
                             if (!isNaN(val)) {
-                              setSettings({ ...settings, minBet: val, maxBet: val * 5 });
+                              setSettings({ ...settings, minBet: val, maxBet: val * 5, minBuyIn: val * 5 });
                             }
                           }
                         }}
@@ -323,6 +326,41 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                       ) : null}
                    </div>
                  </div>
+                 
+                 <div className="mt-4">
+                   <label className="text-xs font-semibold uppercase tracking-wider text-white/50 mb-2 flex items-center gap-1">
+                     Min Buy-In To Sit
+                     <div className="w-3 h-3 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08] shadow-[0_0_2px_rgba(255,197,61,0.4)] relative overflow-hidden">
+                       <div className="absolute top-0 right-0 w-1 h-1 bg-white/40 rounded-full blur-[1px]"></div>
+                     </div>
+                   </label>
+                   <Input 
+                      type="text" 
+                      value={settings.minBuyIn === '' as any ? '' : (settings.minBuyIn || (settings.minBet * 5)).toLocaleString()}
+                      onChange={e => {
+                        const valStr = e.target.value.replace(/,/g, '');
+                        if (valStr === '') {
+                          setSettings({ ...settings, minBuyIn: '' as any });
+                        } else {
+                          const val = parseInt(valStr);
+                          if (!isNaN(val)) {
+                            setSettings({ ...settings, minBuyIn: val });
+                          }
+                        }
+                      }}
+                      className={`h-10 bg-white/5 text-white ${settings.minBuyIn === '' as any || (settings.minBuyIn > 0 && settings.minBuyIn < (settings.minBet || 1)) ? 'border-red-500 focus:border-red-500 ring-1 ring-red-500' : 'border-white/10 focus:border-[#126b6f]'}`}
+                    />
+                    {settings.minBuyIn === '' as any ? (
+                      <p className="text-red-500 text-[10px] mt-1.5 font-semibold uppercase tracking-wider">
+                        Required
+                      </p>
+                    ) : settings.minBuyIn > 0 && settings.minBuyIn < (settings.minBet || 1) ? (
+                      <p className="text-red-500 text-[10px] mt-1.5 font-semibold uppercase tracking-wider">
+                        less than min bet
+                      </p>
+                    ) : null}
+                 </div>
+                 </>
                  )}
 
                  <div className="grid grid-cols-2 gap-4">
@@ -340,7 +378,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                            let newSettings = { ...settings, maxSeats: newSeats };
                            if (settings.mode === 'tournament' && newSettings.tournament) {
                              const newTournament = { ...newSettings.tournament };
-                             newTournament.targetSurvivors = Math.max(1, Math.min(newTournament.targetSurvivors || 1, Math.floor(newSeats * 0.5)));
+                             newTournament.targetSurvivors = Math.max(1, Math.min(newTournament.targetSurvivors || 1, (newTournament.minSeats || 3) - 1));
                              if (newTournament.minSeats && newTournament.minSeats > newSeats) {
                                newTournament.minSeats = newSeats;
                              }
@@ -360,10 +398,17 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                          </label>
                          <select 
                            value={settings.tournament?.minSeats?.toString() || '3'}
-                           onChange={e => setSettings({ ...settings, tournament: { ...settings.tournament!, minSeats: parseInt(e.target.value) } })}
+                           onChange={e => {
+                             const minS = parseInt(e.target.value);
+                             let tSettings = { ...settings.tournament!, minSeats: minS };
+                             if (tSettings.isSurvivorCap && tSettings.targetSurvivors !== undefined && tSettings.targetSurvivors > minS - 1) {
+                               tSettings.targetSurvivors = Math.max(1, minS - 1);
+                             }
+                             setSettings({ ...settings, tournament: tSettings });
+                           }}
                            className="w-full h-10 rounded-xl border border-white/10 bg-[#1a1b23] px-3 py-2 text-sm text-white focus:outline-none focus:border-[#126b6f]"
                          >
-                           {Array.from({ length: settings.maxSeats - 2 }, (_, i) => i + 3).map(n => <option key={n} value={n}>{n}</option>)}
+                           {Array.from({ length: Math.min(settings.maxSeats, 7) }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
                          </select>
                        </div>
                     )}
@@ -378,7 +423,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                        >
                          <option value="6">Fast (6s)</option>
                          <option value="12">Normal (12s)</option>
-                         <option value="30">Slow (30s)</option>
+                         <option value="18">Slow (18s)</option>
                        </select>
                     </div>
                     {settings.mode === 'tournament' && (
@@ -642,7 +687,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                            />
                            <span className="text-sm font-semibold text-white whitespace-nowrap">Survivor Cap</span>
                          </label>
-                         {settings.tournament?.isSurvivorCap && (
+                         {false && (
                            <div className="flex flex-col gap-1">
                               <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-md px-2 py-1">
                              <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 whitespace-nowrap">Target (Max {Math.max(1, Math.floor(settings.maxSeats * 0.5))})</label>
@@ -782,12 +827,12 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                                }}
                                className="w-4 h-4 rounded bg-[#1a1b23] border-white/10 accent-[#126b6f]"
                              />
-                             <span className="text-sm font-semibold text-white">Escalate By Rounds</span>
+                             <span className="text-sm font-semibold text-white">Double Blinds</span>
                            </label>
                            {settings.tournament?.isScheduledEscalation && (
                              <div className="flex flex-col gap-1">
                                 <div className="flex items-center gap-2">
-                                  <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 whitespace-nowrap">Every X Rounds (5-30)</label>
+                                  <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 whitespace-nowrap">X Rounds (5-30)</label>
                                   <Input 
                                     type="text" 
                                     value={settings.tournament?.escalationRounds === '' as any ? '' : (settings.tournament?.escalationRounds || 0).toLocaleString()}
@@ -817,13 +862,34 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                      </div>
 
                      <div className="flex flex-col gap-2">
+                         {settings.tournament?.isSurvivorCap && (
+                            <div className="flex flex-col gap-1 mb-2 pt-2 border-t border-white/5">
+                             <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50 mb-1">Target Winners (Max {(settings.tournament?.minSeats || 3) - 1})</label>
+                              <div className="flex items-center w-full gap-2 bg-[#1a1b23] border border-white/10 rounded-xl px-2 py-1 focus-within:border-[#126b6f] focus-within:ring-1 focus-within:ring-[#126b6f]">
+                                <Input 
+                                  type="text" 
+                                  value={settings.tournament?.targetSurvivors === '' as any ? '' : settings.tournament?.targetSurvivors ?? ''}
+                                  onChange={e => {
+                                     let valStr = e.target.value.replace(/,/g, '');
+                                     if (valStr === '') {
+                                       setSettings({ ...settings, tournament: { ...settings.tournament!, targetSurvivors: '' as any } })
+                                     } else {
+                                       setSettings({ ...settings, tournament: { ...settings.tournament!, targetSurvivors: parseInt(valStr) || 0 } })
+                                     }
+                                  }}
+                                  className={`h-8 w-full bg-transparent border-none focus:outline-none focus:border-none p-0 px-1 !ring-0 ${(settings.tournament?.targetSurvivors === '' as any || settings.tournament!.targetSurvivors < 1 || settings.tournament!.targetSurvivors > ((settings.tournament?.minSeats || 3) - 1)) ? 'text-red-500' : 'text-white'}`}
+                                />
+                              </div>
+                              {settings.tournament?.targetSurvivors === '' as any ? (
+                                <div className="text-[10px] text-red-500 mt-0.5 leading-tight">Required</div>
+                              ) : (settings.tournament!.targetSurvivors < 1 || settings.tournament!.targetSurvivors > ((settings.tournament?.minSeats || 3) - 1)) ? (
+                                <div className="text-[10px] text-red-500 mt-0.5 leading-tight whitespace-nowrap">Must be between 1 and {(settings.tournament?.minSeats || 3) - 1}</div>
+                              ) : null}
+                            </div>
+                         )}
+
                          <label className="text-xs font-semibold uppercase tracking-wider text-white/50 mb-1 flex justify-between">
                            <span>Prize Pool</span>
-                           {settings.tournament?.prizeDistribution === 'survivorPaytable' && (
-                              <span className="text-yellow-400 font-normal">
-                                {settings.tournament.targetSurvivors === 1 ? "1st: 100%" : settings.tournament.targetSurvivors === 2 ? "1st: 70%, 2nd: 30%" : "50% / 30% / 20%"}
-                              </span>
-                           )}
                          </label>
                          <select 
                            value={settings.tournament?.prizeDistribution}
@@ -831,7 +897,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                            className="w-full h-10 rounded-xl border border-white/10 bg-[#1a1b23] px-3 py-2 text-sm text-white focus:outline-none focus:border-[#126b6f]"
                          >
                            <option value="survivorPaytable" disabled={!settings.tournament?.isSurvivorCap} className={!settings.tournament?.isSurvivorCap ? 'opacity-30' : ''}>
-                              Survivor Paytable {!settings.tournament?.isSurvivorCap ? '(Requires Survivor Cap)' : ''}
+                              {(settings.tournament?.targetSurvivors || 1) === 1 ? "100%" : (settings.tournament?.targetSurvivors || 1) === 2 ? "70% / 30%" : "50% / 30% / 20%"} {!settings.tournament?.isSurvivorCap ? '(Requires Survivor Cap)' : ''}
                            </option>
                            <option value="splitByChips" disabled={settings.tournament?.isSurvivorCap} className={settings.tournament?.isSurvivorCap ? 'opacity-30' : ''}>
                              Split By Chips {settings.tournament?.isSurvivorCap ? '(Disabled: Survivor Cap)' : ''}
@@ -1009,11 +1075,11 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
         <Button 
           size="lg" 
           disabled={isHosting}
-          className="w-full h-14 text-sm font-black uppercase tracking-widest shadow-[0_4px_8px_rgba(0,0,0,0.5)] hover:shadow-lg transition-transform hover:scale-[1.02] active:scale-95 bg-gradient-to-b from-[#28a19b] to-[#126b6f] hover:from-[#2ebaba] hover:to-[#178287] border border-[#0d4f52] text-white rounded-full disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full h-14 text-sm font-black uppercase tracking-widest shadow-[0_4px_8px_rgba(0,0,0,0.5)] hover:shadow-lg transition-transform hover:scale-[1.02] active:scale-95 bg-gradient-to-b from-[#28a19b] to-[#126b6f] hover:from-[#2ebaba] hover:to-[#178287] border border-[#0d4f52] text-white rounded-full disabled:opacity-50"
           onClick={handleSubmit}
         >
           {isHosting ? (
-             <><Loader2 className="w-5 h-5 mr-2 animate-spin" /> Checking Liquidity...</>
+             <><Loader2 className="w-5 h-5 mr-2 animate-spin" /> Processing...</>
           ) : editTableId ? (
              <><SettingsIcon className="w-5 h-5 mr-2" /> Save Settings</>
           ) : (
@@ -1090,6 +1156,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
         </motion.div>
       )}
     </AnimatePresence>
+    </div>
 
     </div>
   );

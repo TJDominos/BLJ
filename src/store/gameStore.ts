@@ -27,6 +27,8 @@ export interface Hand {
   bet: number;
   insuranceBet?: number;
   sideBets?: SideBets;
+  sideBetPairWon?: number;
+  sideBetPlus3Won?: number;
   status: HandStatus;
   score: number;
 }
@@ -99,6 +101,7 @@ export interface Table {
   discardCount: number;
   discardedCards: PlayingCard[];
   currentTurnIndex: number; // -1 for dealer, 0..maxSeats-1 for players
+  roundsPlayed: number;
 }
 
 export interface SeatResult {
@@ -106,9 +109,14 @@ export interface SeatResult {
   userId?: string;
   bet: number;
   sideBet?: number;
+  sideBetWin?: number;
+  insuranceBet?: number;
+  insuranceWin?: number;
+  isSplit?: boolean;
   win?: number;
   net: number;
   action: string;
+  score?: number;
 }
 
 export interface GameRecord {
@@ -118,6 +126,7 @@ export interface GameRecord {
   amountWon: number;
   timestamp: number;
   seatResults: SeatResult[];
+  dealerScore?: number;
 }
 
 interface GameStore {
@@ -195,6 +204,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
     'table_1': {
       id: 'table_1',
       name: 'System Table',
+      createdAt: Date.now(),
+      visits: 0,
       houseId: 'system',
       liquidity: 100000,
       initialLiquidity: 100000,
@@ -226,7 +237,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       deck: [],
       discardCount: 0,
       discardedCards: [],
-      currentTurnIndex: -1
+      currentTurnIndex: -1,
+      roundsPlayed: 0
     }
   },
   activeTableId: null,
@@ -331,13 +343,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
           }
        }
     } else {
-       const mySeatsCount = tableData.seats.filter(s => s.userId === user.id).length;
-       const requiredMinBal = tableData.settings.minBet * (mySeatsCount + 1);
-       if (existingBal < requiredMinBal) {
-         lockAmount = tableData.settings.minBuyIn;
-         if (user.balance < lockAmount) {
-            return;
-         }
+       lockAmount = tableData.settings.minBuyIn;
+       if (user.balance < lockAmount) {
+          return;
        }
     }
     
@@ -506,7 +514,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   dealerPlay: async (tableId) => {
     const { gameApi } = await import('../backend/gameApi');
-    const { table, winnings, seatResults, returnedLiquidity } = await gameApi.dealerPlayAndResolve(tableId);
+    const { table, winnings, seatResults, returnedLiquidity, dealerScore } = await gameApi.dealerPlayAndResolve(tableId);
     
     set((state) => {
       let user = state.currentUser;
@@ -523,6 +531,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
       const mySeatResults = user ? seatResults.filter(sr => sr.userId === user.id) : [];
 
+      // Refund locked balance if table became officially closed during this round's resolution
+      if (table.status === 'closed' && user) {
+        const myLockedBalance = table.userBalances?.[user.id]?.balance || 0;
+        if (myLockedBalance > 0) {
+           user = { ...user, balance: user.balance + myLockedBalance };
+        }
+        table.userBalances = {}; // Free all players
+      }
+
       if (user && mySeatResults.length > 0) {
         const record: typeof state.gameRecords[0] = {
           id: Math.random().toString(36).substr(2, 9),
@@ -530,7 +547,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
           result: res,
           amountWon,
           timestamp: Date.now(),
-          seatResults: mySeatResults
+          seatResults: mySeatResults,
+          dealerScore
         };
         return {
           currentUser: user,
@@ -563,10 +581,23 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { hostTableApi } = await import('../backend/hostTableApi');
     const { table } = await hostTableApi.closeTable(tableId, user.id);
     
-    set((state) => ({
-      currentUser: user,
-      tables: { ...state.tables, [tableId]: table },
-      activeTableId: state.activeTableId === tableId && table.status === 'closed' ? null : state.activeTableId
-    }));
+    set((state) => {
+      let updatedUser = { ...state.currentUser! };
+      const updatedTable = { ...table };
+      
+      if (updatedTable.status === 'closed') {
+        const myLockedBalance = updatedTable.userBalances?.[updatedUser.id]?.balance || 0;
+        if (myLockedBalance > 0) {
+           updatedUser.balance += myLockedBalance;
+        }
+        updatedTable.userBalances = {};
+      }
+
+      return {
+        currentUser: updatedUser,
+        tables: { ...state.tables, [tableId]: updatedTable },
+        activeTableId: state.activeTableId === tableId && updatedTable.status === 'closed' ? null : state.activeTableId
+      };
+    });
   }
 }));

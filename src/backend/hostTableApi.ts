@@ -35,7 +35,8 @@ export const hostTableApi = {
       deck: [],
       discardCount: 0,
       discardedCards: [],
-      currentTurnIndex: -1
+      currentTurnIndex: -1,
+      roundsPlayed: 0
     };
     tablesDb[tableId] = newTable;
     return JSON.parse(JSON.stringify(newTable));
@@ -47,13 +48,13 @@ export const hostTableApi = {
     if (table && table.houseId === userId) {
       if (table.status === 'playing') {
           table.status = 'closing'; // close after the round
-          return { table: JSON.parse(JSON.stringify(table)) };
+          return { table: JSON.parse(JSON.stringify(table)), returnedLiquidity: 0 };
       } else {
         table.status = 'closed';
-        return { table: JSON.parse(JSON.stringify(table)) };
+        return { table: JSON.parse(JSON.stringify(table)), returnedLiquidity: table.liquidity };
       }
     }
-    return { table: JSON.parse(JSON.stringify(table || {})) };
+    return { table: JSON.parse(JSON.stringify(table || {})) as Table, returnedLiquidity: 0 };
   },
   
   async pauseTable(tableId: string, userId: string): Promise<Table> {

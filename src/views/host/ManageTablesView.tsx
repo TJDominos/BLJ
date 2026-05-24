@@ -46,6 +46,7 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
     
     relevantRecords.forEach(record => {
       const isTournament = tables[record.tableId]?.settings.mode === 'tournament';
+      const usersInRecord = new Set<string>();
       record.seatResults.forEach(sr => {
         if (sr.userId && !sr.userId.startsWith('bot_')) { // ignore bots? Or include them? Include for now
           if (!stats[sr.userId]) {
@@ -61,12 +62,15 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
             };
           }
           const p = stats[sr.userId];
-          p.totalRounds++;
+          if (!usersInRecord.has(sr.userId)) {
+             p.totalRounds++;
+             usersInRecord.add(sr.userId);
+          }
           p.wager += sr.bet;
           const winAmount = sr.bet + sr.net;
           p.win += winAmount > 0 ? winAmount : 0;
           if (!isTournament) {
-            p.profit += sr.net;
+            p.profit -= sr.net;
           } else {
             p.tournaments.add(record.tableId);
           }
@@ -94,27 +98,16 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
   }, [playerStats, sortField, sortAsc]);
 
   const handleCloseTable = async (tableId: string) => {
-    if (window.confirm('Are you sure you want to close this table? Remaining liquidity will be returned to your balance.')) {
+    if (window.confirm('Are you sure you want to close this table? Remaining liquidity will be available for withdrawal, and players\' locked funds will be returned.')) {
         await closeTable(tableId);
         // if user closed their last table, navigate back to lobby
         if (myTables.length === 1) {
             onNavigate('table');
-        } else if (selectedTableId === tableId) {
-            setSelectedTableId('all');
         }
     }
   };
 
-  const handleCloseAll = async () => {
-      if (window.confirm('Are you sure you want to close ALL your tables?')) {
-          for (const t of myTables) {
-              if (t.status !== 'closed') {
-                  await closeTable(t.id);
-              }
-          }
-          onNavigate('table');
-      }
-  };
+
 
   return (
     <div className="w-full h-full flex flex-col bg-[#0f1118]">
@@ -204,7 +197,7 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
            </motion.div>
          )}
       </AnimatePresence>
-      <HeaderUI onLeave={() => onNavigate('table')} onToggleSidebar={onToggleSidebar} isMuted={false} setIsMuted={() => {}} />
+      <HeaderUI onLeave={() => onNavigate('table', selectedTableId !== 'all' ? selectedTableId : (initialTableId || undefined))} onToggleSidebar={onToggleSidebar} isMuted={false} setIsMuted={() => {}} />
 
       <main className="flex-1 overflow-y-auto px-4 py-8">
         <div className="max-w-[1024px] mx-auto space-y-6">
@@ -230,14 +223,7 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
               >
                 <Plus className="w-4 h-4" /> Host New Table
               </button>
-              {myTables.length > 0 && selectedTableId === 'all' && (
-                 <button 
-                   onClick={handleCloseAll}
-                   className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border border-red-500/30"
-                 >
-                   <XCircle className="w-4 h-4" /> Close All
-                 </button>
-              )}
+
             </div>
           </div>
 
@@ -266,7 +252,7 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
               >
                 {table.settings.mode === 'tournament' && <span className="text-yellow-400 text-xs px-1.5 py-0.5 rounded border border-yellow-400/30 bg-yellow-400/10 mr-1">T</span>}
                 {table.name}
-                <div className={cn("w-2 h-2 rounded-full", table.status === 'playing' ? "bg-emerald-400" : table.status === 'closed' ? "bg-red-500" : "bg-yellow-400")}></div>
+                <div className={cn("w-2 h-2 rounded-full", table.status === 'playing' ? "bg-emerald-400" : (table.status === 'closed' || table.status === 'closing') ? "bg-red-500" : "bg-yellow-400")}></div>
               </button>
             ))}
           </div>
@@ -284,14 +270,26 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                   </div>
                   <div className="bg-[#1a1c23] border border-white/5 rounded-xl p-4 flex flex-col items-center justify-center">
                       <span className="text-white/40 text-xs font-bold uppercase tracking-wider mb-1 text-center">Total Profit</span>
-                      <span className="text-emerald-400 font-mono font-bold text-lg">
-                        ${playerStats.reduce((sum, p) => sum + (p.profit > 0 ? p.profit : 0), 0).toLocaleString()}
+                      <span className={cn("font-mono font-bold text-lg flex items-center justify-center gap-1", (() => {
+                        const total = playerStats.reduce((sum, p) => sum + p.profit, 0);
+                        return total > 0 ? 'text-emerald-400' : total < 0 ? 'text-red-400' : 'text-white';
+                      })())}>
+                        {(() => {
+                           const total = playerStats.reduce((sum, p) => sum + p.profit, 0);
+                           return `${total < 0 ? '-' : ''}${Math.abs(total).toLocaleString()}`;
+                        })()}
+                        <div className="w-3.5 h-3.5 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08] shadow-[0_0_2px_rgba(255,197,61,0.4)] relative overflow-hidden flex-shrink-0">
+                          <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/40 rounded-full blur-[1px]"></div>
+                        </div>
                       </span>
                   </div>
                   <div className="bg-[#1a1c23] border border-white/5 rounded-xl p-4 flex flex-col items-center justify-center">
                       <span className="text-white/40 text-xs font-bold uppercase tracking-wider mb-1 text-center">Total Fees</span>
-                      <span className="text-yellow-400 font-mono font-bold text-lg">
-                        ${myTables.filter(t => t.settings.mode === 'tournament').reduce((sum, t) => sum + (t.liquidity || 0), 0).toLocaleString()}
+                      <span className="text-yellow-400 font-mono font-bold text-lg flex items-center justify-center gap-1">
+                        {myTables.filter(t => t.settings.mode === 'tournament').reduce((sum, t) => sum + (t.liquidity || 0), 0).toLocaleString()}
+                        <div className="w-3.5 h-3.5 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08] shadow-[0_0_2px_rgba(255,197,61,0.4)] relative overflow-hidden flex-shrink-0">
+                          <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/40 rounded-full blur-[1px]"></div>
+                        </div>
                       </span>
                   </div>
                </div>
@@ -319,7 +317,7 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                       <span className="text-white/40 text-[10px] sm:text-xs font-bold uppercase tracking-wider mb-1 text-center truncate">{selectedTables[0].settings.mode === 'tournament' ? 'Ticket Rev/Chips' : 'Min/Max Bet'}</span>
                       <span className="text-white font-mono text-sm max-w-full text-center">
                         {selectedTables[0].settings.mode === 'tournament' 
-                          ? `$${(selectedTables[0].settings.tournament?.ticketPrice || 0) * playerStats.length} / ${Object.values(selectedTables[0].userBalances).reduce((sum, ub) => sum + ub.balance, 0)}` 
+                          ? `$${(selectedTables[0].settings.tournament?.ticketPrice || 0) * playerStats.length} / ${Object.values(selectedTables[0].userBalances).reduce((sum: number, ub: any) => sum + ub.balance, 0)}` 
                           : `$${selectedTables[0].settings.minBet} / $${selectedTables[0].settings.maxBet}`}
                       </span>
                   </div>
@@ -339,7 +337,7 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                     className={cn(
                       "flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border",
                       selectedTables[0].settings.mode === 'tournament' && selectedTables[0].status !== 'waiting'
-                        ? "bg-white/5 text-white/30 border-white/10 cursor-not-allowed"
+                        ? "bg-white/5 text-white/30 border-white/10"
                         : "bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 border-blue-500/30"
                     )}
                   >
@@ -347,12 +345,26 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                   </button>
                   
                   {selectedTables[0].settings.mode === 'tournament' ? (
+                    <>
                     <button 
                       onClick={() => onNavigate('host_table')}
                       className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border border-emerald-500/30"
                     >
                       <Plus className="w-4 h-4" /> New Tournament
                     </button>
+                    {(selectedTables[0].status === 'waiting' || selectedTables[0].status === 'closed' || selectedTables[0].status === 'closing') && (
+                      <button 
+                        onClick={() => handleCloseTable(selectedTableId)}
+                        disabled={selectedTables[0].status === 'closed' || selectedTables[0].status === 'closing'}
+                        className={cn(
+                          "flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border",
+                          (selectedTables[0].status === 'closed' || selectedTables[0].status === 'closing') ? "bg-white/5 text-white/30 border-white/10" : "bg-red-500/20 text-red-400 hover:bg-red-500/30 border-red-500/30"
+                        )}
+                      >
+                        <XCircle className="w-4 h-4" /> {selectedTables[0].status === 'closed' ? 'Closed' : selectedTables[0].status === 'closing' ? 'Closing...' : 'Close'}
+                      </button>
+                    )}
+                    </>
                   ) : selectedTables[0].status === 'closed' ? (
                     <button 
                       onClick={() => useGameStore.getState().resumeTable(selectedTableId)}
@@ -363,11 +375,28 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                   ) : (
                     <button 
                       onClick={() => handleCloseTable(selectedTableId)}
-                      className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border border-red-500/30"
+                      disabled={selectedTables[0].status === 'closing'}
+                      className={cn(
+                        "flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border",
+                        selectedTables[0].status === 'closing' ? "bg-white/5 text-white/30 border-white/10" : "bg-red-500/20 text-red-400 hover:bg-red-500/30 border-red-500/30"
+                      )}
                     >
-                      <XCircle className="w-4 h-4" /> Close
+                      <XCircle className="w-4 h-4" /> {selectedTables[0].status === 'closing' ? 'Closing...' : 'Close'}
                     </button>
                   )}
+                  
+                  <button
+                    onClick={() => onNavigate('table', selectedTableId)}
+                    disabled={selectedTables[0].status === 'closed' || selectedTables[0].status === 'closing'}
+                    className={cn(
+                      "flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border",
+                      (selectedTables[0].status === 'closed' || selectedTables[0].status === 'closing')
+                        ? "bg-white/5 text-white/30 border-white/10"
+                        : "bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 border-purple-500/30"
+                    )}
+                  >
+                    <Play className="w-4 h-4" /> Enter Table
+                  </button>
                   
                   <button 
                     onClick={() => {
@@ -431,10 +460,34 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                         ) : (
                           <th className="px-4 py-3 font-semibold text-right cursor-pointer hover:text-white" onClick={() => { setSortField('rounds'); setSortAsc(!sortAsc); }}>Total Rounds {sortField==='rounds' && (sortAsc ? '↑' : '↓')}</th>
                         )}
-                        <th className="px-4 py-3 font-semibold text-right cursor-pointer hover:text-white" onClick={() => { setSortField('wager'); setSortAsc(!sortAsc); }}>Wager {sortField==='wager' && (sortAsc ? '↑' : '↓')}</th>
-                        <th className="px-4 py-3 font-semibold text-right cursor-pointer hover:text-white" onClick={() => { setSortField('win'); setSortAsc(!sortAsc); }}>Win {sortField==='win' && (sortAsc ? '↑' : '↓')}</th>
+                        <th className="px-4 py-3 font-semibold text-right cursor-pointer hover:text-white" onClick={() => { setSortField('wager'); setSortAsc(!sortAsc); }}>
+                          <div className="flex items-center justify-end gap-1">
+                            Wager
+                            <div className="w-3 h-3 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08] shadow-[0_0_2px_rgba(255,197,61,0.4)] relative overflow-hidden flex-shrink-0">
+                              <div className="absolute top-0 right-0 w-1 h-1 bg-white/40 rounded-full blur-[1px]"></div>
+                            </div>
+                            {sortField==='wager' && (sortAsc ? ' ↑' : ' ↓')}
+                          </div>
+                        </th>
+                        <th className="px-4 py-3 font-semibold text-right cursor-pointer hover:text-white" onClick={() => { setSortField('win'); setSortAsc(!sortAsc); }}>
+                          <div className="flex items-center justify-end gap-1">
+                            Win
+                            <div className="w-3 h-3 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08] shadow-[0_0_2px_rgba(255,197,61,0.4)] relative overflow-hidden flex-shrink-0">
+                              <div className="absolute top-0 right-0 w-1 h-1 bg-white/40 rounded-full blur-[1px]"></div>
+                            </div>
+                            {sortField==='win' && (sortAsc ? ' ↑' : ' ↓')}
+                          </div>
+                        </th>
                         {!(selectedTableId !== 'all' && selectedTables[0]?.settings.mode === 'tournament') && (
-                          <th className="px-4 py-3 font-semibold text-right cursor-pointer hover:text-white" onClick={() => { setSortField('profit'); setSortAsc(!sortAsc); }}>Profit {sortField==='profit' && (sortAsc ? '↑' : '↓')}</th>
+                          <th className="px-4 py-3 font-semibold text-right cursor-pointer hover:text-white" onClick={() => { setSortField('profit'); setSortAsc(!sortAsc); }}>
+                            <div className="flex items-center justify-end gap-1">
+                              Profit
+                              <div className="w-3 h-3 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08] shadow-[0_0_2px_rgba(255,197,61,0.4)] relative overflow-hidden flex-shrink-0">
+                                <div className="absolute top-0 right-0 w-1 h-1 bg-white/40 rounded-full blur-[1px]"></div>
+                              </div>
+                              {sortField==='profit' && (sortAsc ? ' ↑' : ' ↓')}
+                            </div>
+                          </th>
                         )}
                       </tr>
                     </thead>
@@ -458,11 +511,30 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                           ) : (
                             <td className="px-4 py-3 text-right font-mono">{p.totalRounds}</td>
                           )}
-                          <td className="px-4 py-3 text-right font-mono text-yellow-400/80">${p.wager.toLocaleString()}</td>
-                          <td className="px-4 py-3 text-right font-mono text-emerald-400/80">${p.win.toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right font-mono text-yellow-400/80">
+                            <div className="flex items-center justify-end gap-1">
+                              {p.wager.toLocaleString()}
+                              <div className="w-3 h-3 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08] shadow-[0_0_2px_rgba(255,197,61,0.4)] relative overflow-hidden flex-shrink-0">
+                                <div className="absolute top-0 right-0 w-1 h-1 bg-white/40 rounded-full blur-[1px]"></div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-emerald-400/80">
+                            <div className="flex items-center justify-end gap-1">
+                              {p.win.toLocaleString()}
+                              <div className="w-3 h-3 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08] shadow-[0_0_2px_rgba(255,197,61,0.4)] relative overflow-hidden flex-shrink-0">
+                                <div className="absolute top-0 right-0 w-1 h-1 bg-white/40 rounded-full blur-[1px]"></div>
+                              </div>
+                            </div>
+                          </td>
                           {!(selectedTableId !== 'all' && selectedTables[0]?.settings.mode === 'tournament') && (
                             <td className={cn("px-4 py-3 text-right font-mono font-bold", p.profit > 0 ? "text-emerald-400" : p.profit < 0 ? "text-red-400" : "text-white/60")}>
-                              {p.profit > 0 ? '+' : ''}{p.profit}
+                              <div className="flex items-center justify-end gap-1">
+                                {p.profit > 0 ? '+' : ''}{p.profit.toLocaleString()}
+                                <div className="w-3 h-3 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08] shadow-[0_0_2px_rgba(255,197,61,0.4)] relative overflow-hidden flex-shrink-0">
+                                  <div className="absolute top-0 right-0 w-1 h-1 bg-white/40 rounded-full blur-[1px]"></div>
+                                </div>
+                              </div>
                             </td>
                           )}
                         </tr>
@@ -504,7 +576,12 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                         <td className="px-4 py-3 text-emerald-400 font-mono text-xs">
                           {selectedTables[0].status === 'closed' ? (
                              [...playerStats].sort((a,b) => b.win - a.win).slice(0, 3).map((w, idx) => (
-                               <div key={w.userId}>{idx+1}. {w.name} (${w.win})</div>
+                               <div key={w.userId} className="flex items-center gap-1">
+                                 {idx+1}. {w.name} ({w.win.toLocaleString()}
+                                 <div className="w-2.5 h-2.5 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08] shadow-[0_0_2px_rgba(255,197,61,0.4)] relative overflow-hidden flex-shrink-0 inline-block align-middle mb-[1px]">
+                                   <div className="absolute top-0 right-0 w-1 h-1 bg-white/40 rounded-full blur-[1px]"></div>
+                                 </div>)
+                               </div>
                              ))
                           ) : 'TBD'}
                         </td>
@@ -519,6 +596,7 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                       <tr>
                         <th className="px-4 py-3 font-semibold">Round</th>
                         <th className="px-4 py-3 font-semibold">Time</th>
+                        <th className="px-4 py-3 font-semibold">Seat</th>
                         <th className="px-4 py-3 font-semibold">Avatar</th>
                         <th className="px-4 py-3 font-semibold">User Name</th>
                         <th className="px-4 py-3 font-semibold text-right">Bet</th>
@@ -530,7 +608,7 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                     <tbody>
                       {relevantRecords.length === 0 && (
                         <tr>
-                          <td colSpan={8} className="text-center py-8 text-white/40">No rounds played yet.</td>
+                          <td colSpan={9} className="text-center py-8 text-white/40">No rounds played yet.</td>
                         </tr>
                       )}
                       {relevantRecords.flatMap((r, rIndex) => r.seatResults.map((sr, idx) => ({ ...sr, recordId: r.id, time: r.timestamp, roundNum: relevantRecords.length - rIndex })))
@@ -539,6 +617,7 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                         <tr key={`${sr.recordId}-${i}`} className="border-b border-white/5 hover:bg-white/5 transition-colors">
                           <td className="px-4 py-3 text-white/60 font-mono">#{sr.roundNum}</td>
                           <td className="px-4 py-3 text-white/60 whitespace-nowrap">{new Date(sr.time).toLocaleTimeString()}</td>
+                          <td className="px-4 py-3 text-white/60 font-mono">Seat {sr.seatIndex + 1}</td>
                           <td className="px-4 py-3">
                              <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${sr.userId}`} alt="Avatar" className="w-6 h-6 rounded-full bg-white/10" />
                           </td>
