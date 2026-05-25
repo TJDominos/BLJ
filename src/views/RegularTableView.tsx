@@ -18,6 +18,8 @@ import { CommentsWidget } from '@/components/blackjack/CommentsWidget';
 import { ConfirmModal } from '@/components/blackjack/ConfirmModal';
 import { DealControlHUD } from '@/components/blackjack/DealControlHUD';
 import { ActiveTurnHUD } from '@/components/blackjack/ActiveTurnHUD';
+import { RankWidget } from '@/components/blackjack/RankWidget';
+import { TablePlayersSidebar } from '@/components/blackjack/TablePlayersSidebar';
 
 // Further down, replace the dealer area:
 
@@ -51,6 +53,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
   const [showDiscardStats, setShowDiscardStats] = useState(false);
   const [showFloatingComments, setShowFloatingComments] = useState(true);
   const [isCommentsOpen, setIsCommentsOpen] = useState(false);
+  const [isTablePlayersOpen, setIsTablePlayersOpen] = useState(false);
 
   const table = tables[activeTableId || ''];
   const mySeats = React.useMemo(() => table?.seats.map((s, i) => s.userId === currentUser?.id ? i : -1).filter(i => i >= 0) || [], [table?.seats?.map(s => s.userId)?.join(), currentUser?.id]);
@@ -355,7 +358,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                });
            }
        } else {
-           const requiredMinBal = table.settings.minBet * (mySeatsCount + 1);
+           const requiredMinBal = table.settings.minBuyIn * (mySeatsCount + 1);
            if (userBal >= requiredMinBal) {
              joinTable(table.id, seatIndex);
            } else {
@@ -573,11 +576,36 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
       {/* Invisible global header placeholder or minimal top nav if needed */}
       <HeaderUI 
         onLeave={() => {
-           onNavigate('lobby');
+           onNavigate('home');
         }}
         isMuted={isMuted}
         setIsMuted={setIsMuted}
         onToggleSidebar={() => onToggleSidebar && onToggleSidebar()}
+      />
+
+      {/* Floating Tables Lobby Button (matches CommentsWidget) */}
+      <div className="fixed left-0 top-[calc(50%-2.5rem)] md:top-[calc(50%-1rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
+        <div 
+          className="bg-zinc-950 border-y-2 border-r-2 border-[#10b981] rounded-r-2xl p-2 md:p-3 pl-2.5 md:pl-4 shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-transform hover:translate-x-1 cursor-pointer flex flex-col items-center group"
+          onClick={() => onToggleSidebar && onToggleSidebar()}
+          title="Tables Lobby"
+        >
+          <Menu className="w-5 h-5 md:w-6 md:h-6 text-zinc-300" />
+        </div>
+        <div 
+          className="bg-zinc-950 border-y-2 border-r-2 border-[#3b82f6] rounded-r-2xl p-2 md:p-3 pl-2.5 md:pl-4 shadow-[0_0_15px_rgba(59,130,246,0.3)] transition-transform hover:translate-x-1 cursor-pointer flex flex-col items-center group"
+          onClick={() => setIsTablePlayersOpen(true)}
+          title="Play Board"
+        >
+          <Coins className="w-5 h-5 md:w-6 md:h-6 text-zinc-300 group-hover:text-[#3b82f6] transition-colors" />
+        </div>
+      </div>
+
+      <TablePlayersSidebar 
+        isOpen={isTablePlayersOpen} 
+        onClose={() => setIsTablePlayersOpen(false)} 
+        table={table}
+        gameRecords={gameRecords}
       />
 
       <CommentsWidget 
@@ -587,6 +615,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
         isOpen={isCommentsOpen}
         setIsOpen={setIsCommentsOpen}
       />
+      <RankWidget />
 
       <div className="w-full max-w-[1024px] flex flex-col items-center gap-1 z-40 px-2 sm:px-4 pt-1 sm:pt-2 pb-1 relative pointer-events-none shrink-0">
         <div className="flex flex-row items-center justify-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-[420px] mx-auto mt-[-2px]">
@@ -833,7 +862,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
 
         </div>
 
-      <div className="flex-1 w-full max-w-[1024px] flex flex-col items-center justify-between pb-0 pt-0 mt-0 ml-0 relative min-h-0 overflow-hidden z-10">
+      <div className="flex-1 w-full max-w-[1024px] flex flex-col items-center justify-between pb-0 pt-0 mt-0 ml-0 relative min-h-0 overflow-hidden origin-center">
         
         {/* Target anchor for floating comments, positioned relative to the overall game board wrapper */}
         <div id="floating-comments-root" className="absolute top-[50px] md:top-[65px] left-0 right-0 pointer-events-none z-40 flex flex-col gap-1.5 justify-start items-start overflow-visible" />
@@ -981,17 +1010,9 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
               )}
            </div>
 
-           <button
-             onClick={() => onToggleSidebar && onToggleSidebar()}
-             className="absolute right-0 top-[35%] sm:top-[40%] -translate-y-1/2 z-40 bg-[#1e2025]/80 backdrop-blur-sm border border-r-0 border-[#ffc53d]/30 p-2 sm:p-3 rounded-l-xl shadow-[0_0_15px_rgba(255,197,61,0.15)] hover:bg-[#ffc53d]/10 hover:border-[#ffc53d]/50 hover:shadow-[0_0_20px_rgba(255,197,61,0.25)] transition-all group pointer-events-auto"
-             title="Live Tables"
-           >
-             <Menu className="w-5 h-5 text-[#ffc53d] group-hover:scale-110 transition-transform" />
-           </button>
-
            {/* Discard Pile (Left Top) */}
-           <div className="absolute top-[72px] left-2 sm:top-[90px] sm:left-8 lg:top-16 lg:left-16 z-30 flex flex-col items-center pointer-events-auto cursor-pointer group" onClick={() => setShowDiscardStats(!showDiscardStats)}>
-             <div className="relative w-[40px] h-[60px] sm:w-[56px] sm:h-[80px] md:w-[72px] md:h-[104px] lg:w-[92px] lg:h-[130px] group-hover:scale-105 transition-transform duration-200">
+           <div className="absolute top-[72px] left-2 sm:top-[90px] sm:left-8 lg:top-16 lg:left-16 flex flex-col items-center pointer-events-auto cursor-pointer group" onClick={() => setShowDiscardStats(!showDiscardStats)}>
+             <div className="relative w-[40px] h-[60px] sm:w-[56px] sm:h-[80px] md:w-[72px] md:h-[104px] lg:w-[92px] lg:h-[130px] group-hover:scale-105 transition-transform duration-200 z-30">
                {table.discardCount > 0 ? (
                  <div className="absolute inset-0 rounded-[6px] md:rounded-[8px] flex items-center justify-center overflow-hidden shadow-lg bg-[url('/discard.png')] bg-contain bg-center bg-no-repeat bg-[#2c2b2a]/80">
                    <span className="text-white/80 text-xl font-mono leading-none z-10">{table.discardCount}</span>
@@ -1014,7 +1035,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                      initial={{ opacity: 0, y: -10, scale: 0.95 }}
                      animate={{ opacity: 1, y: 0, scale: 1 }}
                      exit={{ opacity: 0, y: -10, scale: 0.95 }}
-                     className="absolute top-full mt-2 left-0 bg-[#1e2025]/95 backdrop-blur-md border border-white/10 rounded-xl p-3 shadow-2xl z-40 w-[240px] flex flex-col gap-2 origin-top-left"
+                     className="absolute top-full mt-2 left-0 bg-[#1e2025]/95 backdrop-blur-md border border-white/10 rounded-xl p-3 shadow-2xl z-[100] w-[240px] flex flex-col gap-2 origin-top-left"
                   >
                      <div className="flex flex-col gap-1 mb-1">
                         <div className="flex justify-between items-center">
@@ -1080,7 +1101,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            <div className="w-full flex-[6] flex flex-col items-center justify-center relative z-20 mt-2 sm:mt-4 md:mt-0 lg:mb-4">
              
              <div className="relative w-full z-10 flex items-center justify-center group/seats h-full max-h-full">
-               <div ref={seatsContainerRef} className={cn("flex w-full md:w-[94%] mx-auto h-full pt-12 mt-auto pb-[170px] sm:pb-[150px] md:pb-[140px] justify-start gap-[2%] sm:gap-[1%] items-center px-[4%] md:px-0 z-10 transition-transform duration-300 overflow-x-auto snap-x snap-mandatory md:snap-none hide-scrollbar-custom")}>
+               <div ref={seatsContainerRef} className={cn("flex w-full md:w-[94%] mx-auto h-full pt-[24px] md:pt-[84px] mt-auto pb-[130px] sm:pb-[150px] md:pb-[180px] justify-start gap-[2%] sm:gap-[1%] items-center px-[4%] md:px-0 z-10 transition-transform duration-300 overflow-x-auto snap-x snap-mandatory md:snap-none hide-scrollbar-custom")}>
                  <style>{`.hide-scrollbar-custom::-webkit-scrollbar { display: none; }`}</style>
                  {table.seats.map((seat, seatIdx) => {
                      const isThisSeatTurn = table.status === 'playing' && table.currentTurnIndex === seatIdx;
@@ -1109,7 +1130,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                    // if (isEmptyInPlaying) return null;
   
                    return (
-                     <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-0 pb-[100px] sm:pb-[100px] md:pb-[110px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[180px] sm:h-[220px] md:h-[260px] rounded-[16px] sm:rounded-[24px] min-w-[31%] max-w-[31%] md:min-w-[13.5%] md:max-w-[13.5%] shrink-0 snap-center mx-auto", isThisSeatTurn ? "scale-110 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent"))}>
+                     <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-[20px] md:pt-0 pb-[80px] sm:pb-[100px] md:pb-[110px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[180px] sm:h-[220px] md:h-[260px] rounded-[16px] sm:rounded-[24px] min-w-[31%] max-w-[31%] md:min-w-[13.5%] md:max-w-[13.5%] shrink-0 snap-center mx-auto", isThisSeatTurn ? "scale-110 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent"))}>
                      
                      {/* YOU indicator label for played cards */}
 
@@ -1140,7 +1161,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                                 tableStatus={table.status}
                               />
                             </motion.span>
-                            {seat.hand.status !== 'playing' && (
+                            {seat.hand.status !== 'playing' && seat.hand.status !== 'stood' && (
                               <motion.span 
                                 initial={{ scale: 0, opacity: 0, x: -10 }}
                                 animate={{ scale: 1, opacity: 1, x: 0 }}
@@ -1149,7 +1170,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                                 "text-[10px] font-bold uppercase py-1 px-2 rounded-full tracking-wider shadow-lg",
                                 ['won', 'blackjack'].includes(seat.hand.status) ? "bg-emerald-500 text-black shadow-[0_0_15px_rgba(16,185,129,0.5)]" : (seat.hand.status === 'push' ? "bg-slate-500 text-white" : "bg-red-500 text-white")
                               )}>
-                                {seat.hand.status}
+                                {seat.hand.status === 'busted_lost' ? 'busted' : seat.hand.status}
                               </motion.span>
                             )}
                           </div>
@@ -1293,7 +1314,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                 </button>
              </div>
            </div>
-       </div>    </div>
+       </div>
 
                 {/* Bottom Control Overlay (HUD) */}
          {table.status === 'waiting' && !showRules && !showHistory && !isCommentsOpen && !confirmAction && !isSidebarOpen && table.seats.some(s => s.userId === currentUser.id || s.userId === null) && (
@@ -1322,12 +1343,12 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
               onSideBetsToggle={() => setSideBetsEnabled(!sideBetsEnabled)}
               autoDeal={autoDeal}
               onAutoDealToggle={() => setAutoDeal(!autoDeal)}
-              className="absolute bottom-[48px] sm:bottom-[64px] w-full flex flex-col items-center z-[100] px-4 pointer-events-none"
+              className="absolute bottom-[3px] sm:bottom-[64px] w-full flex flex-col items-center z-[100] px-4 pointer-events-none"
             />
          )}
 
          {table.status === 'playing' && isMyTurn && !isSidebarOpen && (
-           <div className="absolute bottom-[48px] sm:bottom-[64px] w-full flex flex-col items-center z-[100] px-4 pointer-events-none">
+           <div className="absolute bottom-[3px] sm:bottom-[64px] w-full flex flex-col items-center z-[100] px-4 pointer-events-none">
              <ActiveTurnHUD 
                tableId={table.id}
                activeSeatIndex={activeSeatIndex}
@@ -1337,10 +1358,11 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
              />
            </div>
          )}
+       </div>
 
            {/* Bottom Bar: RTP */}
-           <div className="w-full max-w-[1024px] flex justify-center text-[12px] sm:text-[13px] font-bold tracking-wide py-1.5 sm:py-2.5 z-20 relative bg-black shrink-0 border-t border-white/10">
-             <div className="flex items-center gap-4 sm:gap-6 px-4">
+           <div className="w-full max-w-[1024px] flex justify-center text-[10px] sm:text-[11px] font-bold tracking-wide pt-1 pb-[calc(env(safe-area-inset-bottom)+0.25rem)] z-20 relative bg-black shrink-0 border-t border-white/10">
+             <div className="flex items-center gap-4 sm:gap-6 px-4 pb-0.5">
                <button onClick={() => setShowRules(true)} className="hover:text-white text-[#ffc53d] transition-colors uppercase cursor-pointer border-b border-[#ffc53d]/50 hover:border-[#ffc53d] pb-0.5 flex items-center gap-1.5 px-2 bg-[#ffc53d]/10 rounded-sm">
                   <span className="drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">RTP {calculateBaseRTP(table.settings.winningRule)}</span>
                </button>

@@ -1,9 +1,10 @@
 import React, { useState, useMemo } from 'react';
 import { useGameStore } from '@/store/gameStore';
-import { ChevronLeft, Plus, XCircle, Users, Activity, Loader2, Play, Settings } from 'lucide-react';
+import { ChevronLeft, Plus, XCircle, Users, Activity, Loader2, Play, Settings, Share2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { HeaderUI } from '@/components/blackjack/HeaderUI';
+import { ConfirmModal } from '@/components/blackjack/ConfirmModal';
 
 export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }: { onNavigate: (view: 'lobby' | 'create' | 'table' | 'host_table' | 'manage_tables', editId?: string) => boolean | void, onToggleSidebar?: () => void, initialTableId?: string | null }) {
   const { tables, currentUser, gameRecords, closeTable } = useGameStore();
@@ -14,6 +15,7 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
   const [page, setPage] = useState<number>(0);
   const [roundsPage, setRoundsPage] = useState<number>(0);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [confirmAction, setConfirmAction] = useState<{title?: string; message: string | React.ReactNode; confirmText?: string; cancelText?: string; onConfirm: () => void; onCancel?: () => void; } | null>(null);
   
   const [showWithdrawPopup, setShowWithdrawPopup] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState('');
@@ -98,13 +100,19 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
   }, [playerStats, sortField, sortAsc]);
 
   const handleCloseTable = async (tableId: string) => {
-    if (window.confirm('Are you sure you want to close this table? Remaining liquidity will be available for withdrawal, and players\' locked funds will be returned.')) {
+    setConfirmAction({
+      title: 'Close Table',
+      message: 'Are you sure you want to close this table? Remaining liquidity will be available for withdrawal, and players\' locked funds will be returned.',
+      confirmText: 'Close Table',
+      onConfirm: async () => {
+        setConfirmAction(null);
         await closeTable(tableId);
-        // if user closed their last table, navigate back to lobby
         if (myTables.length === 1) {
             onNavigate('table');
         }
-    }
+      },
+      onCancel: () => setConfirmAction(null)
+    });
   };
 
 
@@ -386,6 +394,24 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                   )}
                   
                   <button
+                    onClick={() => {
+                        const link = `${window.location.origin}/t/${selectedTableId}`;
+                        navigator.clipboard.writeText(link);
+                        setToastMessage('Table link copied to clipboard!');
+                        setTimeout(() => setToastMessage(null), 3000);
+                    }}
+                    disabled={selectedTables[0].status === 'closed' || selectedTables[0].status === 'closing'}
+                    className={cn(
+                      "flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-bold uppercase text-xs tracking-wider transition-colors border",
+                      (selectedTables[0].status === 'closed' || selectedTables[0].status === 'closing')
+                        ? "bg-white/5 text-white/30 border-white/10"
+                        : "bg-orange-500/20 text-orange-400 hover:bg-orange-500/30 border-orange-500/30"
+                    )}
+                  >
+                    <Share2 className="w-4 h-4" /> Copy Link
+                  </button>
+
+                  <button
                     onClick={() => onNavigate('table', selectedTableId)}
                     disabled={selectedTables[0].status === 'closed' || selectedTables[0].status === 'closing'}
                     className={cn(
@@ -647,6 +673,13 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
           </div>
         </div>
       </main>
+      
+      {confirmAction && (
+        <ConfirmModal 
+          action={confirmAction}
+          onClose={() => setConfirmAction(null)}
+        />
+      )}
     </div>
   );
 }

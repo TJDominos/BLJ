@@ -295,7 +295,7 @@ export const gameApi = {
     seat.hand.score = calculateScore(seat.hand.cards);
     
     if (seat.hand.score >= 21) {
-      seat.hand.status = seat.hand.score > 21 ? 'busted' : 'playing';
+      seat.hand.status = seat.hand.score > 21 ? 'busted' : 'stood';
       
       if (onUpdate) onUpdate(JSON.parse(JSON.stringify(table)));
       await delay(table.seats.length * 150 + 800); // Wait for hit animation and busted text
@@ -395,7 +395,7 @@ export const gameApi = {
     const newCard1 = table.deck.pop()!;
     seat.hand.cards.push(newCard1);
     seat.hand.score = calculateScore(seat.hand.cards);
-    if (seat.hand.score === 21) seat.hand.status = 'blackjack';
+    if (seat.hand.score === 21) seat.hand.status = 'stood';
 
     // New split hand
     const splitHand: any = {
@@ -407,7 +407,7 @@ export const gameApi = {
     const newCard2 = table.deck.pop()!;
     splitHand.cards.push(newCard2);
     splitHand.score = calculateScore(splitHand.cards);
-    if (splitHand.score === 21) splitHand.status = 'blackjack';
+    if (splitHand.score === 21) splitHand.status = 'stood';
 
     const newSeat = {
       userId: seat.userId,

@@ -65,7 +65,7 @@ export function DealControlHUD({
   const isAnySeatNotReady = mySeats.some(sIdx => !table.seats[sIdx].isReady);
 
   return (
-    <div className={className || "absolute bottom-1 sm:bottom-4 w-full flex flex-col items-center z-30 px-4 pointer-events-none"}>
+    <div className={className || "absolute bottom-1 sm:bottom-4 md:-bottom-5 w-full flex flex-col items-center z-30 px-4 pointer-events-none"}>
       <div className="relative flex flex-col pointer-events-auto z-10 w-[96%] sm:w-auto drop-[0_10px_20px_rgba(0,0,0,0.6)]">
         <div 
           className="relative flex flex-row items-center border-[2px] border-[#6b4c2a] rounded-full bg-gradient-to-b from-[#eac574] via-[#d0a758] to-[#997027] p-1 md:p-2 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8),inset_0_-1px_2px_rgba(0,0,0,0.4)] max-w-full w-full sm:w-[480px] h-[44px] sm:h-[60px]"

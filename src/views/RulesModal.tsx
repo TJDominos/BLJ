@@ -6,7 +6,8 @@ import { calculateBaseRTP, gameRules } from '@/backend/gameRules';
 
 export function RulesModal({ onClose, winningRule, settings }: { onClose: () => void, winningRule: WinningRule, settings?: TableSettings }) {
   const isTournament = settings?.mode === 'tournament';
-  const prizePool = isTournament ? (settings.tournament?.ticketPrice || 0) * (settings.maxSeats || 3) : 0;
+  const tSettings = settings?.tournament;
+  const prizePool = isTournament ? Math.round((tSettings?.ticketPrice || 0) * (settings.maxSeats || 3) * (1 - ((tSettings?.hostFeePct || 3) + (tSettings?.platformFeePct || 2)) / 100)) : 0;
   return (
     <div 
       className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm pointer-events-auto"

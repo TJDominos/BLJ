@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Trophy, Shield, Lock, Coins, Filter, ChevronDown, Gamepad2 } from 'lucide-react';
+import { Trophy, Shield, Lock, Coins, Filter, ChevronDown, Heart } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useGameStore } from '@/store/gameStore';
 
@@ -217,7 +217,12 @@ export function LiveTablesSidebar({
                         <span className="font-bold text-white flex items-center gap-2 text-[15px]">
                            {isOfficial && <Shield className="w-4 h-4 text-amber-500 shrink-0" />}
                            {t.settings.mode === 'tournament' && !isOfficial && <Trophy className="w-4 h-4 text-yellow-500 shrink-0" />}
-                           {t.settings.mode !== 'tournament' && !isOfficial && <Gamepad2 className="w-4 h-4 text-blue-400 shrink-0" />}
+                           {t.settings.mode !== 'tournament' && !isOfficial && (
+                              <div className="relative w-4 h-4 text-pink-400 shrink-0 inline-flex items-center justify-center">
+                                 <Heart className="absolute w-4 h-4" strokeWidth={2} />
+                                 <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="absolute top-1"><path d="m2 4 3 12h14l3-12-6 7-4-7-4 7-6-7zm3 16h14"/></svg>
+                              </div>
+                           )}
                            <span className="truncate">{isOfficial ? "Randseed Table" : t.name}</span>
                            {!t.settings.isPublic && (
                               <Lock className="w-3 h-3 text-red-400 shrink-0" title="Private Table" />
@@ -237,7 +242,7 @@ export function LiveTablesSidebar({
                         )}
                      </div>
                      
-                     <div className="text-[10px] text-white/50 mb-1 flex items-center gap-1">
+                     <div className="text-sm text-white/60 mb-1 flex items-center gap-1">
                         {!isOfficial && t.description && <span className="truncate italic">"{t.description}"</span>}
                      </div>
 

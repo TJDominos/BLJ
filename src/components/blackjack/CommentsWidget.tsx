@@ -10,6 +10,7 @@ interface CommentsWidgetProps {
   setShowFloatingComments?: (show: boolean) => void;
   isOpen: boolean;
   setIsOpen: (isOpen: boolean) => void;
+  children?: React.ReactNode;
 }
 
 export const CommentsWidget: React.FC<CommentsWidgetProps> = ({ 
@@ -18,7 +19,8 @@ export const CommentsWidget: React.FC<CommentsWidgetProps> = ({
   showFloatingComments = true,
   setShowFloatingComments,
   isOpen,
-  setIsOpen
+  setIsOpen,
+  children
 }) => {
   const [isMobile, setIsMobile] = useState(false);
 
@@ -84,7 +86,7 @@ export const CommentsWidget: React.FC<CommentsWidgetProps> = ({
     <>
       <FloatingCommentsOverlay show={!!showFloatingComments} onClick={() => setIsOpen(true)} />
       {/* Floating Buttons Container */}
-      <div className="fixed right-0 top-[calc(50%+0.5rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
+      <div className="fixed right-0 top-[calc(50%-2.5rem)] md:top-[calc(50%-1rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
         {/* Comments Button */}
         <div 
           className="bg-zinc-950 border-y-2 border-l-2 border-[#10b981] rounded-l-2xl p-2 md:p-3 pr-2.5 md:pr-4 shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-transform hover:-translate-x-1 cursor-pointer flex flex-col items-center relative group"
@@ -97,6 +99,8 @@ export const CommentsWidget: React.FC<CommentsWidgetProps> = ({
             </span>
           )}
         </div>
+        
+        {children}
       </div>
 
       {/* Comments Panel / Modal */}
