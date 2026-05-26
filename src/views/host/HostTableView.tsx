@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useGameStore, TableSettings, TournamentSettings } from '@/store/gameStore';
 import { calculateBaseRTP } from '@/backend/gameRules';
+import { systemConfig } from '@/config/systemConfig';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -59,7 +60,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
     maxBet: 50,
     minBuyIn: 50,
     secretBets: true,
-    actionTimeLimit: 12,
+    actionTimeLimit: systemConfig.actionTimeLimit.normal,
     isPublic: true,
     maxSeats: 3,
     winningRule: 'standard',
@@ -421,9 +422,9 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                          onChange={e => setSettings({ ...settings, actionTimeLimit: parseInt(e.target.value) })}
                          className="w-full h-10 rounded-xl border border-white/10 bg-[#1a1b23] px-3 py-2 text-sm text-white focus:outline-none focus:border-[#126b6f]"
                        >
-                         <option value="6">Fast (6s)</option>
-                         <option value="12">Normal (12s)</option>
-                         <option value="18">Slow (18s)</option>
+                         <option value={systemConfig.actionTimeLimit.fast.toString()}>Fast ({systemConfig.actionTimeLimit.fast}s)</option>
+                         <option value={systemConfig.actionTimeLimit.normal.toString()}>Normal ({systemConfig.actionTimeLimit.normal}s)</option>
+                         <option value={systemConfig.actionTimeLimit.slow.toString()}>Slow ({systemConfig.actionTimeLimit.slow}s)</option>
                        </select>
                     </div>
                     {settings.mode === 'tournament' && (
@@ -897,7 +898,15 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                            className="w-full h-10 rounded-xl border border-white/10 bg-[#1a1b23] px-3 py-2 text-sm text-white focus:outline-none focus:border-[#126b6f]"
                          >
                            <option value="survivorPaytable" disabled={!settings.tournament?.isSurvivorCap} className={!settings.tournament?.isSurvivorCap ? 'opacity-30' : ''}>
-                              {(settings.tournament?.targetSurvivors || 1) === 1 ? "100%" : (settings.tournament?.targetSurvivors || 1) === 2 ? "70% / 30%" : "50% / 30% / 20%"} {!settings.tournament?.isSurvivorCap ? '(Requires Survivor Cap)' : ''}
+                              {(() => {
+                                const t = settings.tournament?.targetSurvivors || 1;
+                                if (t === 1) return "100%";
+                                if (t === 2) return "70% / 30%";
+                                if (t === 3) return "50% / 30% / 20%";
+                                if (t === 4) return "40% / 30% / 20% / 10%";
+                                if (t === 5) return "35% / 25% / 20% / 15% / 5%";
+                                return "30% / 20% / 15% / 15% / 10% / ...";
+                              })()} {!settings.tournament?.isSurvivorCap ? '(Requires Survivor Cap)' : ''}
                            </option>
                            <option value="splitByChips" disabled={settings.tournament?.isSurvivorCap} className={settings.tournament?.isSurvivorCap ? 'opacity-30' : ''}>
                              Split By Chips {settings.tournament?.isSurvivorCap ? '(Disabled: Survivor Cap)' : ''}

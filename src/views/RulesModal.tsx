@@ -2,7 +2,8 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { X, ShieldCheck, Trophy } from 'lucide-react';
 import { WinningRule, TableSettings } from '@/store/gameStore';
-import { calculateBaseRTP, gameRules } from '@/backend/gameRules';
+import { calculateBaseRTP } from '@/backend/gameRules';
+import { gameRules } from '@/config/gameRules';
 
 export function RulesModal({ onClose, winningRule, settings }: { onClose: () => void, winningRule: WinningRule, settings?: TableSettings }) {
   const isTournament = settings?.mode === 'tournament';

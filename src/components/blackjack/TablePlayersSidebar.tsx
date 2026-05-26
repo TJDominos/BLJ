@@ -90,17 +90,24 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
     return computed;
   }, [table.seats, cumulative]);
 
-  if (!isOpen) return null;
-
   return (
     <AnimatePresence>
-      <motion.div
-        initial={{ x: '-100%' }}
-        animate={{ x: 0 }}
-        exit={{ x: '-100%' }}
-        transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-        className="fixed inset-y-0 left-0 w-80 bg-zinc-950/95 backdrop-blur-xl border-r border-[#10b981]/30 z-[100] shadow-[10px_0_30px_rgba(0,0,0,0.8)] flex flex-col"
-      >
+      {isOpen && (
+        <>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={onClose}
+            className="fixed inset-0 z-[90] bg-transparent pointer-events-auto"
+          />
+          <motion.div
+            initial={{ x: '-100%' }}
+            animate={{ x: 0 }}
+            exit={{ x: '-100%' }}
+            transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+            className="fixed inset-y-0 left-0 w-80 bg-zinc-950/95 backdrop-blur-xl border-r border-[#10b981]/30 z-[100] shadow-[10px_0_30px_rgba(0,0,0,0.8)] flex flex-col pointer-events-auto"
+          >
         <div className="flex items-center justify-between p-[14px] border-b-[1px] border-zinc-800 bg-zinc-900 shrink-0">
           <div className="flex items-center gap-[10.5px]">
             <button 
@@ -241,6 +248,8 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
           </AnimatePresence>
         </div>
       </motion.div>
+      </>
+      )}
     </AnimatePresence>
   );
 }

@@ -20,6 +20,7 @@ import { DealControlHUD } from '@/components/blackjack/DealControlHUD';
 import { ActiveTurnHUD } from '@/components/blackjack/ActiveTurnHUD';
 import { RankWidget } from '@/components/blackjack/RankWidget';
 import { TablePlayersSidebar } from '@/components/blackjack/TablePlayersSidebar';
+import { useBotBehavior } from '@/hooks/useBotBehavior';
 
 // Further down, replace the dealer area:
 
@@ -116,6 +117,12 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     if (confirmAction !== null) return;
     
     if (dealCountdown !== null && dealCountdown > 0) {
+      const isSeatedNotReady = table?.seats.some(s => s?.userId === currentUser?.id && !s.isReady);
+      if (isSeatedNotReady && dealCountdown <= 6) {
+        const myFirstSeatIdx = table?.seats.findIndex(s => s?.userId === currentUser?.id);
+        const pan = myFirstSeatIdx !== undefined && myFirstSeatIdx >= 0 && table?.seats.length > 1 ? (myFirstSeatIdx / (table.seats.length - 1)) * 2 - 1 : 0;
+        soundManager.playTick(pan);
+      }
       const timer = setTimeout(() => setDealCountdown(dealCountdown - 1), 1000);
       return () => clearTimeout(timer);
     } else if (dealCountdown === 0 && table?.status === 'waiting') {
@@ -281,28 +288,15 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     }
   }, [table?.status, table?.currentTurnIndex, table?.settings.actionTimeLimit, currentUser?.id, JSON.stringify(table?.seats)]);
 
-  useEffect(() => {
-    if (table?.status === 'playing' && table.currentTurnIndex >= 0) {
-      const activeSeat = table.currentTurnIndex;
-      const seat = table.seats[activeSeat];
-      if (seat?.userId?.startsWith('bot_') && seat.hand?.status === 'playing') {
-        const isInitialDeal = seat.hand?.cards?.length === 2;
-        const delayMs = isInitialDeal ? Math.max(1500, table.seats.length * 300 + 1000) : 1500;
-        
-        const timer = setTimeout(() => {
-          if (seat.hand!.score < 17) {
-            hit(table.id, activeSeat);
-          } else {
-            stand(table.id, activeSeat);
-          }
-        }, delayMs);
-        return () => clearTimeout(timer);
-      }
-    }
-  }, [table?.status, table?.currentTurnIndex, JSON.stringify(table?.seats), table?.id, hit, stand]);
+  useBotBehavior(table, hit, stand);
 
   useEffect(() => {
     if (actionCountdown !== null && actionCountdown > 0) {
+      const isTurn = table?.status === 'playing' && table?.currentTurnIndex >= 0 && table?.seats[table.currentTurnIndex]?.userId === currentUser?.id;
+      if (isTurn && actionCountdown <= 6) {
+          const pan = table && table.seats.length > 1 && table.currentTurnIndex >= 0 ? (table.currentTurnIndex / (table.seats.length - 1)) * 2 - 1 : 0;
+          soundManager.playTick(pan);
+      }
       const timer = setTimeout(() => setActionCountdown(actionCountdown - 1), 1000);
       return () => clearTimeout(timer);
     } else if (actionCountdown === 0 && table?.status === 'playing') {
@@ -312,7 +306,23 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
         stand(table.id, activeSeat);
       }
     }
-  }, [actionCountdown, table?.status, table?.id, table?.currentTurnIndex, stand, hit]);
+  }, [actionCountdown, table?.status, table?.id, table?.currentTurnIndex, stand, hit, currentUser?.id, JSON.stringify(table?.seats)]);
+
+  const prevActionSnapshot = React.useRef('');
+  useEffect(() => {
+    if (!table || !currentUser) return;
+    const isTurn = table.status === 'playing' && table.currentTurnIndex >= 0 && table.seats[table.currentTurnIndex]?.userId === currentUser.id;
+    if (isTurn) {
+        const snapshot = `${table.currentTurnIndex}`;
+        if (prevActionSnapshot.current !== snapshot) {
+            const pan = table.seats.length > 1 && table.currentTurnIndex >= 0 ? (table.currentTurnIndex / (table.seats.length - 1)) * 2 - 1 : 0;
+            soundManager.playBell(pan);
+            prevActionSnapshot.current = snapshot;
+        }
+    } else {
+        prevActionSnapshot.current = '';
+    }
+  }, [table?.status, table?.currentTurnIndex, JSON.stringify(table?.seats), currentUser?.id]);
 
   if (!table || !currentUser) {
     return (
@@ -328,7 +338,14 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
   const myUserBal = table.userBalances?.[currentUser.id]?.balance || 0;
   const canDouble = isMyTurn && activeHand?.cards.length === 2 && myUserBal >= (activeHand?.bet || 0);
   const isPlayerDealt = table.status === 'playing' && mySeats.some(sIdx => table.seats[sIdx].hand !== null);
-  const canSplit = canDouble && activeHand?.cards[0].value === activeHand?.cards[1].value && myUserBal >= (activeHand?.bet || 0);
+  
+  const currentHandsCountForSeat = isMyTurn ? (() => {
+    const seat = table.seats[activeSeatIndex];
+    const origSeatIdx = seat.originalSeatIndex !== undefined ? seat.originalSeatIndex : activeSeatIndex;
+    return table.seats.filter(s => s.originalSeatIndex === origSeatIdx).length + (seat.originalSeatIndex === undefined ? 1 : 0);
+  })() : 0;
+  
+  const canSplit = canDouble && activeHand?.cards[0].value === activeHand?.cards[1].value && myUserBal >= (activeHand?.bet || 0) && currentHandsCountForSeat < 4;
   const canBuyInsurance = canDouble && table.dealerHand?.cards[0].value === 'A' && !activeHand?.insuranceBet;
 
   const sideBetsTotalStr = sideBetsEnabled ? (parseInt(pairBetStr.replace(/,/g, '') || '0') + parseInt(plus3BetStr.replace(/,/g, '') || '0')) : 0;
@@ -576,7 +593,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
       {/* Invisible global header placeholder or minimal top nav if needed */}
       <HeaderUI 
         onLeave={() => {
-           onNavigate('home');
+           onNavigate('lobby');
         }}
         isMuted={isMuted}
         setIsMuted={setIsMuted}
@@ -1170,7 +1187,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                                 "text-[10px] font-bold uppercase py-1 px-2 rounded-full tracking-wider shadow-lg",
                                 ['won', 'blackjack'].includes(seat.hand.status) ? "bg-emerald-500 text-black shadow-[0_0_15px_rgba(16,185,129,0.5)]" : (seat.hand.status === 'push' ? "bg-slate-500 text-white" : "bg-red-500 text-white")
                               )}>
-                                {seat.hand.status === 'busted_lost' ? 'busted' : seat.hand.status}
+                                {seat.hand.status as string === 'busted_lost' ? 'busted' : seat.hand.status}
                               </motion.span>
                             )}
                           </div>

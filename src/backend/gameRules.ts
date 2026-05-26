@@ -1,29 +1,4 @@
-export const gameRules = {
-  dealerSoft17: "stand", // standard is hit soft 17 or stand soft 17. The rule says "always 17"
-  blackjackPayout: 1.5, // 3:2
-  insurancePayout: 2, // 2:1
-  dealerNoPeek: true,
-  doubleOnAnyTwo: true, // DOA
-  doubleAfterSplit: true,
-  maxSplitHands: 1, // No re-splitting allowed
-  hitSplitAces: true, // Player can draw multiple cards to split Aces
-  deckCount: 6,
-  shufflePenetration: 0.75, // shuffle on 75% penetration
-  sideBets: {
-    perfectPair: {
-      perfect: 25,
-      colored: 12,
-      mixed: 5
-    },
-    twentyOnePlusThree: {
-      suitedThreeOfAKind: 100,
-      straightFlush: 40,
-      threeOfAKind: 30,
-      straight: 10,
-      flush: 5
-    }
-  }
-};
+import { gameRules } from '../config/gameRules';
 
 export function calculateBaseRTP(winningRule: 'standard' | 'dealer_wins_ties'): string {
   // Baseline: 8 decks, H17, DOA, DAS, No RSA, Peek, Standard tie

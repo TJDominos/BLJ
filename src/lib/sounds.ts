@@ -156,6 +156,67 @@ export class SoundManager {
             this.playTone(60, 'sawtooth', 0.15, 0.1, pan);
         }, 80);
     }
+
+    public playTick(pan: number = 0) {
+        if (this.isMuted) return;
+        this.playTone(800, 'sine', 0.05, 0.2, pan);
+    }
+
+    public playBell(pan: number = 0) {
+        if (this.isMuted) return;
+        const ctx = this.getContext();
+        if (!ctx) return;
+        if (ctx.state === 'suspended') ctx.resume();
+
+        const outNode = ctx.destination;
+        let panner: PannerNode | StereoPannerNode | undefined;
+        
+        // Use StereoPanner if available, else fallback to 3D Panner
+        if (ctx.createStereoPanner) {
+            panner = ctx.createStereoPanner();
+            panner.pan.setValueAtTime(pan, ctx.currentTime);
+        } else {
+            panner = ctx.createPanner();
+            panner.panningModel = 'equalpower';
+            panner.setPosition(pan, 0, 1 - Math.abs(pan));
+        }
+        
+        panner.connect(outNode);
+
+        // Small bell ding ding ding
+        const baseFreq = 1661.22; // G#6, higher pitch for a small bell
+        const now = ctx.currentTime;
+
+        const partials = [
+            { ratio: 1, gain: 0.5, decay: 0.8 },
+            { ratio: 2.15, gain: 0.3, decay: 0.4 },
+            { ratio: 3.44, gain: 0.1, decay: 0.2 }
+        ];
+
+        // Play 2 rapid dings
+        for (let i = 0; i < 2; i++) {
+            const timeOffset = now + (i * 0.15); // 150ms between dings
+            
+            partials.forEach(partial => {
+                const osc = ctx.createOscillator();
+                const gainNode = ctx.createGain();
+                
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(baseFreq * partial.ratio, timeOffset);
+                
+                // Fast attack, short exponential decay
+                gainNode.gain.setValueAtTime(0, timeOffset);
+                gainNode.gain.linearRampToValueAtTime(partial.gain, timeOffset + 0.005);
+                gainNode.gain.exponentialRampToValueAtTime(0.001, timeOffset + partial.decay);
+                
+                osc.connect(gainNode);
+                gainNode.connect(panner!);
+                
+                osc.start(timeOffset);
+                osc.stop(timeOffset + partial.decay);
+            });
+        }
+    }
 }
 
 export const soundManager = SoundManager.getInstance();

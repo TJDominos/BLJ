@@ -1,6 +1,7 @@
 import { Table, PlayingCard, HandStatus, SideBets, SeatResult } from '../store/gameStore';
-import { gameRules } from './gameRules';
+import { gameRules } from '../config/gameRules';
 import { tablesDb, delay } from './db';
+import { botApi } from './botApi';
 
 const calculateScore = (cards: PlayingCard[]): number => {
   let score = 0;
@@ -86,6 +87,9 @@ export const gameApi = {
       table.userBalances[userId].balance += chipsToAdd;
       table.userBalances[userId].initialBuyIn += chipsToAdd; // For tournament, this tracks if they bought in.
     }
+    
+    botApi.arrangeBots(table);
+    
     return JSON.parse(JSON.stringify(table));
   },
 
@@ -94,6 +98,8 @@ export const gameApi = {
     const table = tablesDb[tableId];
     if (!table) throw new Error("Not found");
     
+    let turnAdvancedFrom = -1;
+
     table.seats = table.seats.map((s, i) => {
       if (s.userId === userId && (seatIndex === undefined || i === seatIndex)) {
         // If this is a timeout-based unseat, we only do it if the user isn't actually ready.
@@ -105,13 +111,32 @@ export const gameApi = {
            const refund = s.hand.bet + (s.hand.sideBets?.pair || 0) + (s.hand.sideBets?.twentyOnePlusThree || 0) + (s.hand.insuranceBet || 0);
            table.userBalances[userId].balance += refund;
         }
+        
+        if (table.currentTurnIndex === i) {
+           turnAdvancedFrom = i;
+        }
+
         return { ...s, userId: null, hand: null, isReady: false };
       }
       return s;
     });
+
+    if (turnAdvancedFrom !== -1 && table.status === 'playing') {
+      table.currentTurnIndex = -1;
+      for (let i = turnAdvancedFrom - 1; i >= 0; i--) {
+        if (table.seats[i].isReady && ['playing'].includes(table.seats[i].hand?.status || '')) {
+          table.currentTurnIndex = i;
+          break;
+        }
+      }
+    }
     
     // Check if user is fully disconnected from all seats.
     // However, user handles balance manually now, so returning 0.
+    if (table.status !== 'playing') {
+      botApi.arrangeBots(table);
+    }
+    
     return { table: JSON.parse(JSON.stringify(table)), refundedAmount: 0 };
   },
 
@@ -123,12 +148,26 @@ export const gameApi = {
     // Unseat from all seats first? User can still be watching?
     // Wait, if they unlock balance, they probably can't play anymore.
     // Unseat them from any connected seats.
-    table.seats = table.seats.map((s) => {
+    let turnAdvancedFrom = -1;
+    table.seats = table.seats.map((s, i) => {
       if (s.userId === userId) {
+        if (table.currentTurnIndex === i) {
+           turnAdvancedFrom = i;
+        }
         return { ...s, userId: null, hand: null, isReady: false };
       }
       return s;
     });
+
+    if (turnAdvancedFrom !== -1 && table.status === 'playing') {
+      table.currentTurnIndex = -1;
+      for (let i = turnAdvancedFrom - 1; i >= 0; i--) {
+        if (table.seats[i].isReady && ['playing'].includes(table.seats[i].hand?.status || '')) {
+          table.currentTurnIndex = i;
+          break;
+        }
+      }
+    }
 
     let refundedAmount = 0;
     const userBal = table.userBalances[userId];
@@ -384,6 +423,17 @@ export const gameApi = {
       return JSON.parse(JSON.stringify(table));
     }
     
+    const origSeatIdx = seat.originalSeatIndex !== undefined ? seat.originalSeatIndex : seatIndex;
+    const currentHandsCount = table.seats.filter(s => s.originalSeatIndex === origSeatIdx).length + (seat.originalSeatIndex === undefined ? 1 : 0);
+    
+    if (currentHandsCount >= 4) {
+      return JSON.parse(JSON.stringify(table));
+    }
+    
+    if (seat.originalSeatIndex === undefined) {
+      seat.originalSeatIndex = origSeatIdx;
+    }
+    
     const userBal = table.userBalances[seat.userId];
     if (userBal) userBal.balance -= seat.hand.bet;
 
@@ -414,7 +464,7 @@ export const gameApi = {
       isReady: true,
       hand: splitHand,
       isSplitHand: true,
-      originalSeatIndex: seatIndex
+      originalSeatIndex: origSeatIdx
     };
 
     // Insert new split hand at seatIndex + 1. Original hand stays at seatIndex.
@@ -615,15 +665,10 @@ export const gameApi = {
     table.seats = table.seats
       .filter(s => !s.isSplitHand)
       .map(s => {
-        if (s.userId && s.userId.startsWith('bot_')) {
-          // Keep bots ready and re-bet automatically, keep old cards for viewing
-          return {
-            ...s,
-            isReady: true
-          };
-        }
         return { ...s, isReady: false };
       });
+      
+    botApi.handleRoundEnd(table);
     
     return { table: JSON.parse(JSON.stringify(table)), winnings, seatResults, returnedLiquidity, dealerScore };
   }

@@ -97,16 +97,14 @@ export const RankWidget: React.FC = () => {
       <AnimatePresence>
         {isOpen && (
           <>
-            {/* Backdrop - Only on mobile */}
-            {isMobile && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setIsOpen(false)}
-                className="fixed inset-0 bg-black/60 z-[90] backdrop-blur-[4px] pointer-events-auto"
-              />
-            )}
+            {/* Backdrop */}
+            <motion.div
+              initial={isMobile ? { opacity: 0 } : { opacity: 1 }}
+              animate={isMobile ? { opacity: 1 } : { opacity: 1 }}
+              exit={isMobile ? { opacity: 0 } : { opacity: 1 }}
+              onClick={() => setIsOpen(false)}
+              className={`fixed inset-0 z-[90] pointer-events-auto ${isMobile ? 'bg-black/60 backdrop-blur-[4px]' : 'bg-transparent'}`}
+            />
 
             {/* Panel */}
             <motion.div

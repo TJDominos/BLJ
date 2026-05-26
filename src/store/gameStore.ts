@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { systemConfig } from '../config/systemConfig';
 
 export type User = {
   id: string;
@@ -215,7 +216,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         maxBet: 500,
         minBuyIn: 50,
         secretBets: false,
-        actionTimeLimit: 15,
+        actionTimeLimit: systemConfig.actionTimeLimit.normal,
         isPublic: true,
         maxSeats: 7,
         winningRule: 'standard',
