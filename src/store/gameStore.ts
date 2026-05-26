@@ -413,6 +413,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
       tables: { ...state.tables, [tableId]: table }, 
       activeTableId: seatIndex === undefined ? null : state.activeTableId 
     }));
+
+    if (table.currentTurnIndex === -1 && table.status === 'playing') {
+      get().dealerPlay(tableId);
+    }
   },
 
   unlockTableBalance: async (tableId) => {
@@ -426,6 +430,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
       currentUser: { ...state.currentUser!, balance: state.currentUser!.balance + refundedAmount },
       tables: { ...state.tables, [tableId]: table }
     }));
+
+    if (table.currentTurnIndex === -1 && table.status === 'playing') {
+      get().dealerPlay(tableId);
+    }
   },
 
   placeBet: async (tableId, seatIndex, amount, sideBets) => {

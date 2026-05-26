@@ -656,8 +656,8 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
         onToggleSidebar={() => onToggleSidebar && onToggleSidebar()}
       />
 
-      {/* Floating Tables Lobby Button (matches CommentsWidget) */}
-      <div className="fixed left-0 top-[calc(50%-2.5rem)] md:top-[calc(50%-1rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
+      {/* Floating Tables Lobby Button */}
+      <div className="fixed left-0 top-[calc(50%-2.5rem)] md:top-[calc(50%-1rem)] -translate-y-1/2 z-[90] flex flex-col gap-[7px] pointer-events-auto">
         <div 
           className="bg-zinc-950 border-y-2 border-r-2 border-[#10b981] rounded-r-2xl p-2 md:p-3 pl-2.5 md:pl-4 shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-transform hover:translate-x-1 cursor-pointer flex flex-col items-center group"
           onClick={() => onToggleSidebar && onToggleSidebar()}
@@ -665,6 +665,10 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
         >
           <Menu className="w-5 h-5 md:w-6 md:h-6 text-zinc-300" />
         </div>
+      </div>
+
+      {/* Floating Play Board Button */}
+      <div className="fixed left-0 top-[calc(50%+2.5rem)] md:top-[calc(50%+3.5rem)] -translate-y-1/2 z-[90] flex flex-col gap-[7px] pointer-events-auto">
         <div 
           className="bg-zinc-950 border-y-2 border-r-2 border-[#3b82f6] rounded-r-2xl p-2 md:p-3 pl-2.5 md:pl-4 shadow-[0_0_15px_rgba(59,130,246,0.3)] transition-transform hover:translate-x-1 cursor-pointer flex flex-col items-center group"
           onClick={() => setIsTablePlayersOpen(true)}
