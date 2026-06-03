@@ -70,13 +70,13 @@ const getVRFDeck = async (): Promise<PlayingCard[]> => {
 };
 
 export const gameApi = {
-  async joinTable(tableId: string, userId: string, seatIndex: number, lockAmount: number = 0): Promise<Table> {
+  async joinTable(tableId: string, userId: string, seatIndex: number, lockAmount: number = 0, currency: 'Gcoin' | 'Bonus' = 'Gcoin'): Promise<Table> {
     await delay(300);
     const table = tablesDb[tableId];
     if (table.seats[seatIndex].userId === null) {
       table.seats[seatIndex].userId = userId;
       if (!table.userBalances[userId]) {
-        table.userBalances[userId] = { balance: 0, initialBuyIn: 0 };
+        table.userBalances[userId] = { balance: 0, initialBuyIn: 0, currency };
       }
       
       let chipsToAdd = lockAmount;
@@ -140,7 +140,7 @@ export const gameApi = {
     return { table: JSON.parse(JSON.stringify(table)), refundedAmount: 0 };
   },
 
-  async unlockTableBalance(tableId: string, userId: string): Promise<{ table: Table, refundedAmount: number }> {
+  async unlockTableBalance(tableId: string, userId: string): Promise<{ table: Table, refundedAmount: number, currency: 'Gcoin' | 'Bonus' }> {
     await delay(300);
     const table = tablesDb[tableId];
     if (!table) throw new Error("Not found");
@@ -170,8 +170,10 @@ export const gameApi = {
     }
 
     let refundedAmount = 0;
+    let currency: 'Gcoin' | 'Bonus' = 'Gcoin';
     const userBal = table.userBalances[userId];
     if (userBal) {
+      currency = userBal.currency || 'Gcoin';
       if (table.settings.mode === 'tournament') {
         if (table.status === 'waiting') {
           refundedAmount = table.settings.tournament?.ticketPrice || 0;
@@ -181,12 +183,12 @@ export const gameApi = {
       } else {
         const netWin = userBal.balance - userBal.initialBuyIn;
         let fee = 0;
-        if (netWin > 0) fee = netWin * 0.01;
+        if (netWin > 0 && currency === 'Gcoin') fee = netWin * 0.01; // No fee on Bonus play usually
         refundedAmount = userBal.balance - fee;
       }
       delete table.userBalances[userId];
     }
-    return { table: JSON.parse(JSON.stringify(table)), refundedAmount };
+    return { table: JSON.parse(JSON.stringify(table)), refundedAmount, currency };
   },
 
   async placeBet(tableId: string, seatIndex: number, userId: string, amount: number, sideBets?: SideBets): Promise<{ table: Table, deducted: number }> {

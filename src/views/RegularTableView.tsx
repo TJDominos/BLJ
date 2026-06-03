@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useGameStore, PlayingCard as PlayingCardType } from '@/store/gameStore';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
-import { Coins, Crown, Loader2, LogOut, Volume2, Bell, Heart, RefreshCw, Minus, Plus, ArrowDown, Menu, ChevronLeft, ChevronRight, User, Check } from 'lucide-react';
+import { Coins, Crown, Loader2, LogOut, Volume2, Bell, Heart, RefreshCw, Minus, Plus, ArrowDown, Menu, ChevronLeft, ChevronRight, User, Check, Gift } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { soundManager } from '@/lib/sounds';
@@ -10,9 +10,10 @@ import { RulesModal } from './RulesModal';
 import { PlayingCard } from '@/components/blackjack/PlayingCardUI';
 import { DelayedScore } from '@/components/blackjack/DelayedScore';
 import { DealerArea } from '@/components/blackjack/DealerAreaUI';
-import { GoldCoinTray } from '@/components/blackjack/GoldCoinTray';
+import { WinAnimation } from '@/components/blackjack/WinAnimation';
 import { GoldenWreath } from '@/components/blackjack/GoldenWreath';
 import { HeaderUI } from '@/components/blackjack/HeaderUI';
+import { PlayModeToggle } from '@/components/PlayModeToggle';
 import { LiveTablesSidebar } from '@/components/blackjack/LiveTablesSidebar';
 import { CommentsWidget } from '@/components/blackjack/CommentsWidget';
 import { ConfirmModal } from '@/components/blackjack/ConfirmModal';
@@ -26,8 +27,31 @@ import { useBotBehavior } from '@/hooks/useBotBehavior';
 
 import { calculateBaseRTP } from '@/backend/gameRules';
 
+import { 
+  useUIStore, 
+  selectBetAmountStr, 
+  selectSideBetsEnabled, 
+  selectAutoDeal, 
+  selectPairBetStr, 
+  selectPlus3BetStr, 
+  selectShowHistory, 
+  selectShowRules, 
+  selectIsMuted, 
+  selectShakeSeats, 
+  selectIsShuffling, 
+  selectShowDiscardStats, 
+  selectShowFloatingComments, 
+  selectIsCommentsOpen, 
+  selectIsTablePlayersOpen, 
+  selectConfirmAction,
+  selectActionCountdown,
+  selectDealCountdown,
+  selectRecentWinAmount,
+  selectPlayMode
+} from '@/store/uiStore';
+
 export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }: { onNavigate: (view: 'lobby' | 'create' | 'table' | 'host_table' | 'manage_tables') => boolean | void, onToggleSidebar?: () => void, isSidebarOpen?: boolean }) {
-  const { tables, activeTableId, currentUser, leaveTable, joinTable, placeBet, startGame, hit, stand, doubleDown, split, buyInsurance, gameRecords, unlockTableBalance } = useGameStore();
+  const { tables, activeTableId, currentUser, leaveTable, joinTable, placeBet, startGame, hit, stand, doubleDown, split, buyInsurance, gameRecords: allGameRecords, unlockTableBalance } = useGameStore();
 
   const userHostedTables = Object.values(tables).filter(t => t.houseId === currentUser?.id);
   const hasHostedTables = userHostedTables.length > 0;
@@ -41,34 +65,70 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
      });
   }, [userHostedTables]);
 
-  const [betAmountStr, setBetAmountStr] = useState<string>('0');
-  const [sideBetsEnabled, setSideBetsEnabled] = useState(false);
-  const [autoDeal, setAutoDeal] = useState(false);
-  const [pairBetStr, setPairBetStr] = useState('10');
-  const [plus3BetStr, setPlus3BetStr] = useState('10');
-  const [showHistory, setShowHistory] = useState(false);
-  const [showRules, setShowRules] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [shakeSeats, setShakeSeats] = useState(false);
-  const [isShuffling, setIsShuffling] = useState(false);
-  const [showDiscardStats, setShowDiscardStats] = useState(false);
-  const [showFloatingComments, setShowFloatingComments] = useState(true);
-  const [isCommentsOpen, setIsCommentsOpen] = useState(false);
-  const [isTablePlayersOpen, setIsTablePlayersOpen] = useState(false);
+  const uiStore = useUIStore();
+  const betAmountStr = useUIStore(selectBetAmountStr);
+  const setBetAmountStr = uiStore.setBetAmountStr;
+  const sideBetsEnabled = useUIStore(selectSideBetsEnabled);
+  const setSideBetsEnabled = uiStore.setSideBetsEnabled;
+  const autoDeal = useUIStore(selectAutoDeal);
+  const setAutoDeal = uiStore.setAutoDeal;
+  const pairBetStr = useUIStore(selectPairBetStr);
+  const setPairBetStr = uiStore.setPairBetStr;
+  const plus3BetStr = useUIStore(selectPlus3BetStr);
+  const setPlus3BetStr = uiStore.setPlus3BetStr;
+  const showHistory = useUIStore(selectShowHistory);
+  const setShowHistory = uiStore.setShowHistory;
+  const showRules = useUIStore(selectShowRules);
+  const setShowRules = uiStore.setShowRules;
+  const isMuted = useUIStore(selectIsMuted);
+  const setIsMuted = uiStore.setIsMuted;
+  const shakeSeats = useUIStore(selectShakeSeats);
+  const setShakeSeats = uiStore.setShakeSeats;
+  const isShuffling = useUIStore(selectIsShuffling);
+  const setIsShuffling = uiStore.setIsShuffling;
+  const showDiscardStats = useUIStore(selectShowDiscardStats);
+  const setShowDiscardStats = uiStore.setShowDiscardStats;
+  const showFloatingComments = useUIStore(selectShowFloatingComments);
+  const setShowFloatingComments = uiStore.setShowFloatingComments;
+  const isCommentsOpen = useUIStore(selectIsCommentsOpen);
+  const setIsCommentsOpen = uiStore.setIsCommentsOpen;
+  const isTablePlayersOpen = useUIStore(selectIsTablePlayersOpen);
+  const setIsTablePlayersOpen = uiStore.setIsTablePlayersOpen;
+  const confirmAction = useUIStore(selectConfirmAction);
+  const setConfirmAction = uiStore.setConfirmAction;
+  const actionCountdown = useUIStore(selectActionCountdown);
+  const setActionCountdown = uiStore.setActionCountdown;
+  const dealCountdown = useUIStore(selectDealCountdown);
+  const setDealCountdown = uiStore.setDealCountdown;
+  const recentWinAmount = useUIStore(selectRecentWinAmount);
+  const setRecentWinAmount = uiStore.setRecentWinAmount;
+  const playMode = useUIStore(selectPlayMode);
 
   const table = tables[activeTableId || ''];
   const mySeats = React.useMemo(() => table?.seats.map((s, i) => s.userId === currentUser?.id ? i : -1).filter(i => i >= 0) || [], [table?.seats?.map(s => s.userId)?.join(), currentUser?.id]);
+
+  const setPlayMode = useUIStore(state => state.setPlayMode);
+  const seatedCurrency = table?.userBalances?.[currentUser?.id || '']?.currency;
+  
+  useEffect(() => {
+    if (seatedCurrency && seatedCurrency !== playMode) {
+      setPlayMode(seatedCurrency as 'Gcoin' | 'Bonus');
+    }
+  }, [seatedCurrency, playMode, setPlayMode]);
+
+  const activeCurrency = table?.houseId !== 'system' ? 'Gcoin' : (seatedCurrency || playMode);
+
+  const gameRecords = React.useMemo(() => {
+    if (!table) return [];
+    return allGameRecords.filter(r => r.tableId === table.id && (r.currency || 'Gcoin') === activeCurrency);
+  }, [allGameRecords, table?.id, activeCurrency]);
 
   useEffect(() => {
     if (betAmountStr === '0' && table?.settings.minBet) {
        setBetAmountStr(table.settings.minBet.toString());
     }
-  }, [table?.settings.minBet, betAmountStr]);
+  }, [table?.settings.minBet, betAmountStr, setBetAmountStr]);
 
-  const [confirmAction, setConfirmAction] = useState<{message: string, onConfirm: () => void, confirmText?: string, cancelText?: string, onCancel?: () => void, title?: string} | null>(null);
-  const [actionCountdown, setActionCountdown] = useState<number | null>(null);
-  const [dealCountdown, setDealCountdown] = useState<number | null>(null);
-  const [recentWinAmount, setRecentWinAmount] = useState<{ amount: number, won: boolean, seats?: number[] } | null>(null);
   const previousDeckLength = React.useRef(table?.deck?.length || 0);
   const previousStatus = React.useRef(table?.status);
   const seatsContainerRef = React.useRef<HTMLDivElement>(null);
@@ -223,20 +283,21 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            // net win is amount won > bet ? true : false
            const totalBet = lastRecord.seatResults?.reduce((sum, sr) => sum + sr.bet, 0) || 0;
            const winningSeats: number[] = [];
+           let myWon = false;
            table.seats.forEach((s, idx) => {
                const res = lastRecord.seatResults?.find(sr => sr.seatIndex === idx);
                const isHandWin = s.hand && (s.hand.status === 'won' || s.hand.status === 'blackjack');
                if (isHandWin || (res && res.net > 0)) {
                  winningSeats.push(idx);
+                 if (s.userId === currentUser?.id) myWon = true;
                }
            });
-           const won = winningSeats.length > 0;
-           setRecentWinAmount({ amount: lastRecord.amountWon || 0, won, seats: winningSeats });
+           setRecentWinAmount({ amount: lastRecord.amountWon || 0, won: myWon, seats: winningSeats });
            setTimeout(() => {
               setRecentWinAmount(null);
-           }, table.seats.length * 150 + 5000); // Wait for cards to deal and extra time for viewing
+           }, table.seats.length * 150 + 5000); // 
 
-           if (won) {
+           if (myWon) {
                // Calculate pan based on the first winning seat
                const winPan = table.seats.length > 1 ? (winningSeats[0] / (table.seats.length - 1)) * 2 - 1 : 0;
                soundManager.playWin(winPan);
@@ -363,25 +424,27 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     
     const seat = table.seats[seatIndex];
     if (seat.userId === null) {
-       const userBal = table.userBalances?.[currentUser.id]?.balance || 0;
+       const userBalRecord = table.userBalances?.[currentUser.id];
+       const userBal = userBalRecord?.balance || 0;
        const mySeatsCount = mySeats.length;
+       const currencyToUse = table.houseId !== 'system' ? 'Gcoin' : playMode;
        if (table.settings.mode === 'tournament') {
            if (userBal > 0) { // they already have tournament chips
-               joinTable(table.id, seatIndex);
+               joinTable(table.id, seatIndex, currencyToUse);
            } else {
                setConfirmAction({
                  message: `Do you want to pay ${table.settings.tournament?.ticketPrice} Gcoin ticket to enter this tournament and get ${table.settings.tournament?.startingChips} starting chips?`,
-                 onConfirm: () => joinTable(table.id, seatIndex)
+                 onConfirm: () => joinTable(table.id, seatIndex, currencyToUse)
                });
            }
        } else {
            const requiredMinBal = table.settings.minBuyIn * (mySeatsCount + 1);
            if (userBal >= requiredMinBal) {
-             joinTable(table.id, seatIndex);
+             joinTable(table.id, seatIndex, currencyToUse);
            } else {
              setConfirmAction({
-               message: `Do you want to lock ${table.settings.minBuyIn} Gcoin to sit at this seat?`,
-               onConfirm: () => joinTable(table.id, seatIndex)
+               message: `Do you want to lock ${table.settings.minBuyIn} ${currencyToUse} to sit at this seat?`,
+               onConfirm: () => joinTable(table.id, seatIndex, currencyToUse)
              });
            }
        }
@@ -434,7 +497,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
 
   const getEffectiveSteps = () => {
     const playerBal = table.userBalances?.[currentUser.id]?.balance || 0;
-    const maxVal = Math.floor(Math.min(table.settings.maxBet, playerBal || currentUser.balance));
+    const maxVal = Math.floor(Math.min(table.settings.maxBet, playerBal || (playMode === 'Bonus' ? (currentUser.bonusBalance || 0) : currentUser.balance)));
     const minBet = table.settings.minBet;
     
     let baseSteps = [minBet, minBet * 2, minBet * 5, minBet * 10, minBet * 20, minBet * 50, minBet * 100];
@@ -584,6 +647,8 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
         <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse at 50% 50%, transparent 50%, rgba(0,0,0,0.5) 100%)'}}></div>
       </div>
 
+      <WinAnimation />
+
       {showRules && <RulesModal onClose={() => setShowRules(false)} winningRule={table.settings.winningRule} settings={table.settings} />}
       
       {confirmAction && (
@@ -598,6 +663,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
         isMuted={isMuted}
         setIsMuted={setIsMuted}
         onToggleSidebar={() => onToggleSidebar && onToggleSidebar()}
+        centerContent={table.houseId === 'system' ? <PlayModeToggle disabled={!!table.userBalances?.[currentUser.id]} /> : undefined}
       />
 
       {/* Floating Tables Lobby Button */}
@@ -645,44 +711,47 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
 
               <div id="balance-container" className="flex-1 flex flex-row items-center justify-between h-full w-full relative z-10 bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full px-3 sm:px-4 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6),0_1px_1px_rgba(255,255,255,0.4)] border border-[#3a2510]">
                <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold tracking-wider">
-                 <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#ffeed2] to-[#ffc53d] border-[1px] border-[#8e6022] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
-                    <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
-                 </div>
                   {(() => {
                     const userBal = table.userBalances?.[currentUser.id];
-                    const displayBalance = userBal ? userBal.balance : currentUser.balance;
+                    const currency = userBal ? (userBal.currency || 'Gcoin') : playMode;
+                    const displayBalance = userBal ? userBal.balance : (playMode === 'Bonus' ? (currentUser.bonusBalance || 0) : currentUser.balance);
                     return (
-                      <div className="flex items-center">
-                        <span className="text-[#32d5a4] text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-mono">
-                          {displayBalance.toLocaleString('en-US', {minimumFractionDigits: displayBalance % 1 !== 0 ? 2 : 0, maximumFractionDigits: 2})}
-                        </span>
-                        {userBal && (
-                          <button 
-                            onClick={async () => {
-                              const notReady = mySeats.some(sIdx => table.seats[sIdx].isReady === false && table.seats[sIdx].hand);
-                              if (notReady || table.status === 'playing') {
-                                setConfirmAction({
-                                  message: "Cannot unlock while playing or with active bets.",
-                                  onConfirm: () => {}
-                                });
-                                return;
-                              }
-                              setConfirmAction({
-                                message: userBal.balance === 0 ? "Leave your seat to add more funds from your wallet?" : "Unlock table balance? (1% fee on net winnings)",
-                                onConfirm: async () => {
-                                  await unlockTableBalance(table.id);
+                      <>
+                        <div className={cn("w-3.5 h-3.5 rounded-full border-[1px] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden", currency === 'Bonus' ? "bg-gradient-to-b from-[#818cf8] to-[#4338ca] border-[#312e81]" : "bg-gradient-to-b from-[#ffeed2] to-[#ffc53d] border-[#8e6022]")}>
+                          <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
+                        </div>
+                        <div className="flex items-center">
+                          <span className={cn("text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-mono", currency === 'Bonus' ? "text-indigo-300" : "text-[#32d5a4]")}>
+                            {displayBalance.toLocaleString('en-US', {minimumFractionDigits: displayBalance % 1 !== 0 ? 2 : 0, maximumFractionDigits: 2})}
+                          </span>
+                          {userBal && (
+                            <button 
+                              onClick={async () => {
+                                const notReady = mySeats.some(sIdx => table.seats[sIdx].isReady === false && table.seats[sIdx].hand);
+                                if (notReady || table.status === 'playing') {
+                                  setConfirmAction({
+                                    message: "Cannot unlock while playing or with active bets.",
+                                    onConfirm: () => {}
+                                  });
+                                  return;
                                 }
-                              });
-                            }}
-                            className={cn(
-                              "ml-2 text-white/90 text-[10px] px-2 py-0.5 rounded border border-white/20 transition-colors pointer-events-auto shadow-[0_2px_4px_rgba(0,0,0,0.4)] hover:opacity-80",
-                              userBal.balance === 0 ? "bg-[#eaaa08]/90 font-bold text-black" : "bg-red-900/60"
-                            )}
-                          >
-                            {userBal.balance === 0 ? "ADD FUND" : "UNLOCK"}
-                          </button>
-                        )}
-                      </div>
+                                setConfirmAction({
+                                  message: userBal.balance === 0 ? "Leave your seat to add more funds from your wallet?" : `Unlock table balance? ${currency === 'Gcoin' ? '(1% fee on net winnings)' : '(No fee for Bonus play)'}`,
+                                  onConfirm: async () => {
+                                    await unlockTableBalance(table.id);
+                                  }
+                                });
+                              }}
+                              className={cn(
+                                "ml-2 text-white/90 text-[10px] px-2 py-0.5 rounded border border-white/20 transition-colors pointer-events-auto shadow-[0_2px_4px_rgba(0,0,0,0.4)] hover:opacity-80",
+                                userBal.balance === 0 ? "bg-[#eaaa08]/90 font-bold text-black" : "bg-red-900/60"
+                              )}
+                            >
+                              {userBal.balance === 0 ? "ADD FUND" : "UNLOCK"}
+                            </button>
+                          )}
+                        </div>
+                      </>
                     )
                  })()}
                </div>
@@ -708,9 +777,15 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                      </span>
                      {recentWinAmount.amount > 0 && (
                        <>
-                         <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#ffeed2] to-[#ffc53d] border-[1px] border-[#8e6022] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
-                            <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
-                         </div>
+                         {activeCurrency === 'Bonus' ? (
+                           <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#818cf8] to-[#4338ca] border-[1px] border-[#312e81] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
+                              <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
+                           </div>
+                         ) : (
+                           <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#ffeed2] to-[#ffc53d] border-[1px] border-[#8e6022] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
+                              <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
+                           </div>
+                         )}
                          <span className="font-mono text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">{recentWinAmount.amount % 1 !== 0 ? recentWinAmount.amount.toFixed(2) : recentWinAmount.amount}</span>
                        </>
                      )}
@@ -721,9 +796,15 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                        <ArrowDown className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                        <span>Bet</span>
                      </div>
-                     <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#ffeed2] to-[#ffc53d] border-[1px] border-[#8e6022] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
-                        <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
-                     </div>
+                     {activeCurrency === 'Bonus' ? (
+                        <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#818cf8] to-[#4338ca] border-[1px] border-[#312e81] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
+                           <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
+                        </div>
+                     ) : (
+                       <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#ffeed2] to-[#ffc53d] border-[1px] border-[#8e6022] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
+                          <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
+                       </div>
+                     )}
                      <span className="text-white font-mono text-[14px] sm:text-[16px]">{myTotalBet % 1 !== 0 ? myTotalBet.toFixed(2) : myTotalBet}</span>
                    </div>
                  )}
@@ -809,18 +890,30 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                                 <div className="flex flex-col items-end">
                                   <span className="text-white/40 text-[10px] font-bold tracking-wider mb-1">BET</span>
                                   <div className="flex items-center gap-1.5">
-                                    <div className="w-3.5 h-3.5 rounded-full bg-[#ffc53d] border-[2px] border-[#eaaa08] relative overflow-hidden">
-                                       <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/40 rounded-full blur-[1px]"></div>
-                                    </div>
-                                    <span className="text-white text-sm font-mono">{totalBet}</span>
+                                    {record.currency === 'Bonus' ? (
+                                        <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#818cf8] to-[#4338ca] border-[1px] border-[#312e81] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
+                                           <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
+                                        </div>
+                                    ) : (
+                                        <div className="w-3.5 h-3.5 rounded-full bg-[#ffc53d] border-[2px] border-[#eaaa08] relative overflow-hidden">
+                                          <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/40 rounded-full blur-[1px]"></div>
+                                        </div>
+                                    )}
+                                    <span className={cn("text-sm font-mono", record.currency === 'Bonus' ? "text-indigo-300" : "text-white")}>{totalBet}</span>
                                   </div>
                                 </div>
                                 <div className="flex flex-col items-end">
                                   <span className="text-white/40 text-[10px] font-bold tracking-wider mb-1">NET</span>
                                   <div className="flex items-center gap-1.5">
-                                    <div className="w-3.5 h-3.5 rounded-full bg-[#ffc53d] border-[2px] border-[#eaaa08] relative overflow-hidden">
-                                       <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/40 rounded-full blur-[1px]"></div>
-                                    </div>
+                                    {record.currency === 'Bonus' ? (
+                                        <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#818cf8] to-[#4338ca] border-[1px] border-[#312e81] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
+                                           <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
+                                        </div>
+                                    ) : (
+                                        <div className="w-3.5 h-3.5 rounded-full bg-[#ffc53d] border-[2px] border-[#eaaa08] relative overflow-hidden">
+                                          <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/40 rounded-full blur-[1px]"></div>
+                                        </div>
+                                    )}
                                     <span className={cn("text-sm font-mono font-bold", totalNet >= 0 ? "text-emerald-400" : "text-[#ff6b6b]")}>
                                       {totalNet > 0 ? "+" : ""}{totalNet % 1 !== 0 ? totalNet.toFixed(2) : totalNet}
                                     </span>
@@ -1263,9 +1356,21 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                                   <div className="flex flex-col items-end">
                                     <span className="text-[9px] uppercase tracking-wider text-white/50 font-bold leading-none mt-[1px]">BET</span>
                                   </div>
-                                   <div className="w-[14px] h-[14px] rounded-full bg-[#ffc53d] border-[2px] border-[#eaaa08] relative overflow-hidden">
-                                      <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/40 rounded-full blur-[1px]"></div>
-                                   </div>
+                                  {(()=>{
+                                     const useBonus = sr ? gameRecords[0]?.currency === 'Bonus' : (seat.userId ? table.userBalances?.[seat.userId]?.currency === 'Bonus' : false);
+                                     if (useBonus) {
+                                       return (
+                                         <div className="w-[14px] h-[14px] rounded-full bg-gradient-to-b from-[#818cf8] to-[#4338ca] border-[1px] border-[#312e81] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden shrink-0">
+                                            <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
+                                         </div>
+                                       );
+                                     }
+                                     return (
+                                       <div className="w-[14px] h-[14px] rounded-full bg-[#ffc53d] border-[2px] border-[#eaaa08] relative overflow-hidden shrink-0">
+                                          <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/40 rounded-full blur-[1px]"></div>
+                                       </div>
+                                     );
+                                  })()}
                                   <span className="text-[12px] font-mono text-white leading-none mt-0.5">{betAmount % 1 !== 0 ? betAmount.toFixed(2) : betAmount}</span>
                                 </div>
                               </>

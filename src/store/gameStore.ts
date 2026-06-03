@@ -5,6 +5,7 @@ export type User = {
   id: string;
   name: string;
   balance: number;
+  bonusBalance?: number;
 };
 
 export type CardSuit = 'hearts' | 'diamonds' | 'clubs' | 'spades';
@@ -94,7 +95,7 @@ export interface Table {
   safeAccountAddress: string;
   settings: TableSettings;
   seats: PlayerSeat[]; // array matching maxSeats
-  userBalances: Record<string, { balance: number, initialBuyIn: number }>;
+  userBalances: Record<string, { balance: number, initialBuyIn: number, currency?: 'Gcoin' | 'Bonus' }>;
   inviteLink: string;
   status: 'waiting' | 'playing' | 'paused' | 'closed' | 'closing'; // paused if lack of liquidity
   dealerHand: Hand | null;
@@ -128,6 +129,7 @@ export interface GameRecord {
   timestamp: number;
   seatResults: SeatResult[];
   dealerScore?: number;
+  currency?: 'Gcoin' | 'Bonus';
 }
 
 interface GameStore {
@@ -144,7 +146,7 @@ interface GameStore {
   pauseTable: (tableId: string) => Promise<void>;
   resumeTable: (tableId: string) => Promise<void>;
   withdrawLiquidity: (tableId: string, amount: number) => Promise<void>;
-  joinTable: (tableId: string, seatIndex: number) => Promise<void>;
+  joinTable: (tableId: string, seatIndex: number, currency?: 'Gcoin' | 'Bonus') => Promise<void>;
   observeTable: (tableId: string) => void;
   recordVisit: (tableId: string) => Promise<void>;
   leaveTable: (tableId: string, seatIndex?: number, isTimeout?: boolean) => Promise<void>;
@@ -246,7 +248,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   gameRecords: [],
 
   login: (name: string) => {
-    set({ currentUser: { id: `user_${Math.random().toString(36).substr(2, 9)}`, name, balance: 50000 } });
+    set({ currentUser: { id: `user_${Math.random().toString(36).substr(2, 9)}`, name, balance: 50000, bonusBalance: 10000 } });
   },
 
   createTable: async (settings, liquidity) => {
@@ -314,7 +316,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }));
   },
 
-  joinTable: async (tableId, seatIndex) => {
+  joinTable: async (tableId, seatIndex, currency = 'Gcoin') => {
     const user = get().currentUser;
     if (!user) return;
     
@@ -345,18 +347,24 @@ export const useGameStore = create<GameStore>((set, get) => ({
        }
     } else {
        lockAmount = tableData.settings.minBuyIn;
-       if (user.balance < lockAmount) {
+       const availableBalance = currency === 'Bonus' ? (user.bonusBalance || 0) : user.balance;
+       if (availableBalance < lockAmount) {
+          alert(`Insufficient ${currency} balance.`);
           return;
        }
     }
     
     // Optimistic deduce
     if (lockAmount > 0) {
-      set(state => ({ currentUser: { ...state.currentUser!, balance: state.currentUser!.balance - lockAmount } }));
+      if (currency === 'Bonus') {
+        set(state => ({ currentUser: { ...state.currentUser!, bonusBalance: (state.currentUser!.bonusBalance || 0) - lockAmount } }));
+      } else {
+        set(state => ({ currentUser: { ...state.currentUser!, balance: state.currentUser!.balance - lockAmount } }));
+      }
     }
 
     const { gameApi } = await import('../backend/gameApi');
-    const table = await gameApi.joinTable(tableId, user.id, seatIndex, lockAmount);
+    const table = await gameApi.joinTable(tableId, user.id, seatIndex, lockAmount, currency);
 
     if (currentActiveId !== tableId) {
       // Async so we don't await
@@ -424,12 +432,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!user) return;
     
     const { gameApi } = await import('../backend/gameApi');
-    const { table, refundedAmount } = await gameApi.unlockTableBalance(tableId, user.id);
+    const { table, refundedAmount, currency } = await gameApi.unlockTableBalance(tableId, user.id);
 
-    set((state) => ({ 
-      currentUser: { ...state.currentUser!, balance: state.currentUser!.balance + refundedAmount },
-      tables: { ...state.tables, [tableId]: table }
-    }));
+    set((state) => {
+      if (currency === 'Bonus') {
+        return {
+          currentUser: { ...state.currentUser!, bonusBalance: (state.currentUser!.bonusBalance || 0) + refundedAmount },
+          tables: { ...state.tables, [tableId]: table }
+        };
+      } else {
+        return {
+          currentUser: { ...state.currentUser!, balance: state.currentUser!.balance + refundedAmount },
+          tables: { ...state.tables, [tableId]: table }
+        };
+      }
+    });
 
     if (table.currentTurnIndex === -1 && table.status === 'playing') {
       get().dealerPlay(tableId);
@@ -542,14 +559,25 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
       // Refund locked balance if table became officially closed during this round's resolution
       if (table.status === 'closed' && user) {
-        const myLockedBalance = table.userBalances?.[user.id]?.balance || 0;
-        if (myLockedBalance > 0) {
-           user = { ...user, balance: user.balance + myLockedBalance };
+        const myLockedItem = table.userBalances?.[user.id] || null;
+        if (myLockedItem && myLockedItem.balance > 0) {
+           if (myLockedItem.currency === 'Bonus') {
+             user = { ...user, bonusBalance: (user.bonusBalance || 0) + myLockedItem.balance };
+           } else {
+             user = { ...user, balance: user.balance + myLockedItem.balance };
+           }
         }
         table.userBalances = {}; // Free all players
       }
 
       if (user && mySeatResults.length > 0) {
+        let recCurrency: 'Gcoin' | 'Bonus' | undefined = undefined;
+        // In case it's closed and cleared, we use state table
+        const balRecord = state.tables[tableId]?.userBalances?.[user.id] || table.userBalances?.[user.id];
+        if (balRecord) {
+           recCurrency = balRecord.currency || 'Gcoin';
+        }
+        
         const record: typeof state.gameRecords[0] = {
           id: Math.random().toString(36).substr(2, 9),
           tableId,
@@ -557,7 +585,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
           amountWon,
           timestamp: Date.now(),
           seatResults: mySeatResults,
-          dealerScore
+          dealerScore,
+          currency: recCurrency
         };
         return {
           currentUser: user,
@@ -595,9 +624,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const updatedTable = { ...table };
       
       if (updatedTable.status === 'closed') {
-        const myLockedBalance = updatedTable.userBalances?.[updatedUser.id]?.balance || 0;
-        if (myLockedBalance > 0) {
-           updatedUser.balance += myLockedBalance;
+        const myBalRecord = updatedTable.userBalances?.[updatedUser.id] || null;
+        if (myBalRecord && myBalRecord.balance > 0) {
+           if (myBalRecord.currency === 'Bonus') {
+               updatedUser.bonusBalance = (updatedUser.bonusBalance || 0) + myBalRecord.balance;
+           } else {
+               updatedUser.balance += myBalRecord.balance;
+           }
         }
         updatedTable.userBalances = {};
       }

@@ -10,7 +10,7 @@ import { RulesModal } from './RulesModal';
 import { PlayingCard } from '@/components/blackjack/PlayingCardUI';
 import { DelayedScore } from '@/components/blackjack/DelayedScore';
 import { DealerArea } from '@/components/blackjack/DealerAreaUI';
-import { GoldCoinTray } from '@/components/blackjack/GoldCoinTray';
+import { WinAnimation } from '@/components/blackjack/WinAnimation';
 import { GoldenWreath } from '@/components/blackjack/GoldenWreath';
 import { HeaderUI } from '@/components/blackjack/HeaderUI';
 import { LiveTablesSidebar } from '@/components/blackjack/LiveTablesSidebar';
@@ -26,6 +26,28 @@ import { useBotBehavior } from '@/hooks/useBotBehavior';
 
 import { calculateBaseRTP } from '@/backend/gameRules';
 
+import { 
+  useUIStore, 
+  selectBetAmountStr, 
+  selectSideBetsEnabled, 
+  selectPairBetStr, 
+  selectPlus3BetStr, 
+  selectShowHistory, 
+  selectShowTournamentHistory,
+  selectShowRules, 
+  selectIsMuted, 
+  selectShakeSeats, 
+  selectIsShuffling, 
+  selectShowDiscardStats, 
+  selectShowFloatingComments, 
+  selectIsCommentsOpen, 
+  selectIsTablePlayersOpen, 
+  selectConfirmAction,
+  selectActionCountdown,
+  selectDealCountdown,
+  selectRecentWinAmount
+} from '@/store/uiStore';
+
 export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen }: { onNavigate: (view: 'lobby' | 'create' | 'table' | 'host_table' | 'manage_tables') => boolean | void, onToggleSidebar?: () => void, isSidebarOpen?: boolean }) {
   const { tables, activeTableId, currentUser, leaveTable, joinTable, placeBet, startGame, hit, stand, doubleDown, split, buyInsurance, gameRecords, unlockTableBalance } = useGameStore();
 
@@ -40,20 +62,43 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
      });
   }, [userHostedTables]);
 
-  const [betAmountStr, setBetAmountStr] = useState<string>('0');
-  const [sideBetsEnabled, setSideBetsEnabled] = useState(false);
-  const [pairBetStr, setPairBetStr] = useState('10');
-  const [plus3BetStr, setPlus3BetStr] = useState('10');
-  const [showHistory, setShowHistory] = useState(false);
-  const [showTournamentHistory, setShowTournamentHistory] = useState(false);
-  const [showRules, setShowRules] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [shakeSeats, setShakeSeats] = useState(false);
-  const [isShuffling, setIsShuffling] = useState(false);
-  const [showDiscardStats, setShowDiscardStats] = useState(false);
-  const [showFloatingComments, setShowFloatingComments] = useState(true);
-  const [isCommentsOpen, setIsCommentsOpen] = useState(false);
-  const [isTablePlayersOpen, setIsTablePlayersOpen] = useState(false);
+  const uiStore = useUIStore();
+  const betAmountStr = useUIStore(selectBetAmountStr);
+  const setBetAmountStr = uiStore.setBetAmountStr;
+  const sideBetsEnabled = useUIStore(selectSideBetsEnabled);
+  const setSideBetsEnabled = uiStore.setSideBetsEnabled;
+  const pairBetStr = useUIStore(selectPairBetStr);
+  const setPairBetStr = uiStore.setPairBetStr;
+  const plus3BetStr = useUIStore(selectPlus3BetStr);
+  const setPlus3BetStr = uiStore.setPlus3BetStr;
+  const showHistory = useUIStore(selectShowHistory);
+  const setShowHistory = uiStore.setShowHistory;
+  const showTournamentHistory = useUIStore(selectShowTournamentHistory);
+  const setShowTournamentHistory = uiStore.setShowTournamentHistory;
+  const showRules = useUIStore(selectShowRules);
+  const setShowRules = uiStore.setShowRules;
+  const isMuted = useUIStore(selectIsMuted);
+  const setIsMuted = uiStore.setIsMuted;
+  const shakeSeats = useUIStore(selectShakeSeats);
+  const setShakeSeats = uiStore.setShakeSeats;
+  const isShuffling = useUIStore(selectIsShuffling);
+  const setIsShuffling = uiStore.setIsShuffling;
+  const showDiscardStats = useUIStore(selectShowDiscardStats);
+  const setShowDiscardStats = uiStore.setShowDiscardStats;
+  const showFloatingComments = useUIStore(selectShowFloatingComments);
+  const setShowFloatingComments = uiStore.setShowFloatingComments;
+  const isCommentsOpen = useUIStore(selectIsCommentsOpen);
+  const setIsCommentsOpen = uiStore.setIsCommentsOpen;
+  const isTablePlayersOpen = useUIStore(selectIsTablePlayersOpen);
+  const setIsTablePlayersOpen = uiStore.setIsTablePlayersOpen;
+  const confirmAction = useUIStore(selectConfirmAction);
+  const setConfirmAction = uiStore.setConfirmAction;
+  const actionCountdown = useUIStore(selectActionCountdown);
+  const setActionCountdown = uiStore.setActionCountdown;
+  const dealCountdown = useUIStore(selectDealCountdown);
+  const setDealCountdown = uiStore.setDealCountdown;
+  const recentWinAmount = useUIStore(selectRecentWinAmount);
+  const setRecentWinAmount = uiStore.setRecentWinAmount;
 
   const table = tables[activeTableId || ''];
   const mySeats = React.useMemo(() => table?.seats.map((s, i) => s.userId === currentUser?.id ? i : -1).filter(i => i >= 0) || [], [table?.seats?.map(s => s.userId)?.join(), currentUser?.id]);
@@ -64,12 +109,8 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
     } else if (betAmountStr === '0' && table?.settings.minBet) {
        setBetAmountStr(table.settings.minBet.toString());
     }
-  }, [table?.settings.tournament?.minBetChips, table?.settings.minBet, betAmountStr]);
+  }, [table?.settings.tournament?.minBetChips, table?.settings.minBet, betAmountStr, setBetAmountStr]);
 
-  const [confirmAction, setConfirmAction] = useState<{message: string | React.ReactNode, onConfirm: () => void, confirmText?: string, cancelText?: string, onCancel?: () => void, title?: string} | null>(null);
-  const [actionCountdown, setActionCountdown] = useState<number | null>(null);
-  const [dealCountdown, setDealCountdown] = useState<number | null>(null);
-  const [recentWinAmount, setRecentWinAmount] = useState<{ amount: number, won: boolean, seats?: number[] } | null>(null);
   const previousDeckLength = React.useRef(table?.deck?.length || 0);
   const previousStatus = React.useRef(table?.status);
   const seatsContainerRef = React.useRef<HTMLDivElement>(null);
@@ -219,20 +260,21 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
            // net win is amount won > bet ? true : false
            const totalBet = lastRecord.seatResults?.reduce((sum, sr) => sum + sr.bet, 0) || 0;
            const winningSeats: number[] = [];
+           let myWon = false;
            table.seats.forEach((s, idx) => {
                const res = lastRecord.seatResults?.find(sr => sr.seatIndex === idx);
                const isHandWin = s.hand && (s.hand.status === 'won' || s.hand.status === 'blackjack');
                if (isHandWin || (res && res.net > 0)) {
                  winningSeats.push(idx);
+                 if (s.userId === currentUser?.id) myWon = true;
                }
            });
-           const won = winningSeats.length > 0;
-           setRecentWinAmount({ amount: lastRecord.amountWon || 0, won, seats: winningSeats });
+           setRecentWinAmount({ amount: lastRecord.amountWon || 0, won: myWon, seats: winningSeats });
            setTimeout(() => {
               setRecentWinAmount(null);
-           }, table.seats.length * 150 + 5000); // Wait for cards to deal and extra time for viewing
+           }, table.seats.length * 150 + 5000); // 
 
-           if (won) {
+           if (myWon) {
                // Calculate pan based on the first winning seat
                const winPan = table.seats.length > 1 ? (winningSeats[0] / (table.seats.length - 1)) * 2 - 1 : 0;
                soundManager.playWin(winPan);
@@ -590,6 +632,8 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
         {/* Soft vignette at edges to blend */}
         <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse at 50% 50%, transparent 50%, rgba(0,0,0,0.5) 100%)'}}></div>
       </div>
+
+      <WinAnimation />
 
       {showRules && <RulesModal onClose={() => setShowRules(false)} winningRule={table.settings.winningRule} settings={table.settings} />}
       

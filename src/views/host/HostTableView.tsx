@@ -999,7 +999,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                 </div>
                 <div className="space-y-1 px-3 pt-2 pb-3">
                   <div className="flex flex-col sm:flex-row gap-4 w-full">
-                    <div className="hidden sm:flex shrink-0 bg-white p-2 rounded-xl border border-white/10 flex-col items-center justify-center">
+                    <div className="hidden sm:flex shrink-0 w-[106px] h-[106px] bg-white p-2 rounded-xl border border-white/10 flex-col items-center justify-center self-start">
                       <QRCodeSVG value={getDepositAddress()} size={90} />
                     </div>
                     <div className="flex flex-col gap-3 w-full flex-1 min-w-0">

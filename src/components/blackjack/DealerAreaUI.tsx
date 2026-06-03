@@ -5,7 +5,6 @@ import { Trophy } from 'lucide-react';
 import { PlayingCard as PlayingCardType, Hand } from '@/store/gameStore';
 
 import { DelayedScore } from './DelayedScore';
-import { GoldCoinTray } from './GoldCoinTray';
 
 const CloverAvatar = ({ className }: { className?: string }) => {
   const heartPath = "M12 21.05C12 21.05 1.5 14.5 1.5 8.5C1.5 4.5 4.5 1.5 8 1.5C10 1.5 11.5 2.5 12 4C12.5 2.5 14 1.5 16 1.5C20.5 1.5 22.5 4.5 22.5 8.5C22.5 14.5 12 21.05 12 21.05Z";
@@ -71,7 +70,6 @@ export function DealerArea({
              </span>
           )}
         </div>
-        <GoldCoinTray recentWinAmount={recentWinAmount} inline={true} />
       </div>
 
       {dealerHand ? (
