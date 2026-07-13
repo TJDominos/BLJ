@@ -21,6 +21,7 @@ import { DealControlHUD } from '@/components/blackjack/DealControlHUD';
 import { ActiveTurnHUD } from '@/components/blackjack/ActiveTurnHUD';
 import { RankWidget } from '@/components/blackjack/RankWidget';
 import { TablePlayersSidebar } from '@/components/blackjack/TablePlayersSidebar';
+import { CurrencyIcon } from '@/components/CurrencyIcon';
 import { useBotBehavior } from '@/hooks/useBotBehavior';
 
 // Further down, replace the dealer area:
@@ -453,6 +454,29 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     }
   };
 
+  const handleUnlockRequest = () => {
+    if (!table || !currentUser) return;
+    
+    if (mySeats.length > 0) {
+      setConfirmAction({
+        title: 'Table Action',
+        message: 'You must stand up to switch play modes.',
+        confirmText: 'OK',
+        onConfirm: () => {}
+      });
+      return;
+    }
+
+    setConfirmAction({
+      title: 'Unlock Funds',
+      message: 'You have locked funds on this table. Would you like to unlock them now to switch modes?',
+      confirmText: 'Unlock',
+      onConfirm: async () => {
+        await unlockTableBalance(table.id);
+      }
+    });
+  };
+
   const handleStartGame = async () => {
     soundManager.playChip();
     setRecentWinAmount(null);
@@ -663,7 +687,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
         isMuted={isMuted}
         setIsMuted={setIsMuted}
         onToggleSidebar={() => onToggleSidebar && onToggleSidebar()}
-        centerContent={table.houseId === 'system' ? <PlayModeToggle disabled={!!table.userBalances?.[currentUser.id]} /> : undefined}
+        centerContent={table.houseId === 'system' ? <PlayModeToggle disabled={!!(table.userBalances?.[currentUser.id]?.balance && table.userBalances[currentUser.id].balance > 0) || mySeats.length > 0} onUnlockRequest={handleUnlockRequest} /> : undefined}
       />
 
       {/* Floating Tables Lobby Button */}
@@ -717,11 +741,9 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                     const displayBalance = userBal ? userBal.balance : (playMode === 'Bonus' ? (currentUser.bonusBalance || 0) : currentUser.balance);
                     return (
                       <>
-                        <div className={cn("w-3.5 h-3.5 rounded-full border-[1px] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden", currency === 'Bonus' ? "bg-gradient-to-b from-[#818cf8] to-[#4338ca] border-[#312e81]" : "bg-gradient-to-b from-[#ffeed2] to-[#ffc53d] border-[#8e6022]")}>
-                          <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
-                        </div>
+                        <CurrencyIcon currency={currency} className="w-3.5 h-3.5" />
                         <div className="flex items-center">
-                          <span className={cn("text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-mono", currency === 'Bonus' ? "text-indigo-300" : "text-[#32d5a4]")}>
+                          <span className={cn("text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-mono", currency === 'Bonus' ? "text-[#2b7fff]" : "text-[#ffc53d]")}>
                             {displayBalance.toLocaleString('en-US', {minimumFractionDigits: displayBalance % 1 !== 0 ? 2 : 0, maximumFractionDigits: 2})}
                           </span>
                           {userBal && (
@@ -777,16 +799,8 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                      </span>
                      {recentWinAmount.amount > 0 && (
                        <>
-                         {activeCurrency === 'Bonus' ? (
-                           <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#818cf8] to-[#4338ca] border-[1px] border-[#312e81] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
-                              <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
-                           </div>
-                         ) : (
-                           <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#ffeed2] to-[#ffc53d] border-[1px] border-[#8e6022] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
-                              <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
-                           </div>
-                         )}
-                         <span className="font-mono text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">{recentWinAmount.amount % 1 !== 0 ? recentWinAmount.amount.toFixed(2) : recentWinAmount.amount}</span>
+                         <CurrencyIcon currency={activeCurrency} className="w-3.5 h-3.5" />
+                         <span className={cn("font-mono text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]", activeCurrency === 'Bonus' ? "text-[#2b7fff]" : "text-[#ffc53d]")}>{recentWinAmount.amount % 1 !== 0 ? recentWinAmount.amount.toFixed(2) : recentWinAmount.amount}</span>
                        </>
                      )}
                    </motion.div>
@@ -796,16 +810,8 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                        <ArrowDown className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                        <span>Bet</span>
                      </div>
-                     {activeCurrency === 'Bonus' ? (
-                        <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#818cf8] to-[#4338ca] border-[1px] border-[#312e81] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
-                           <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
-                        </div>
-                     ) : (
-                       <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#ffeed2] to-[#ffc53d] border-[1px] border-[#8e6022] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
-                          <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
-                       </div>
-                     )}
-                     <span className="text-white font-mono text-[14px] sm:text-[16px]">{myTotalBet % 1 !== 0 ? myTotalBet.toFixed(2) : myTotalBet}</span>
+                     <CurrencyIcon currency={activeCurrency} className="w-3.5 h-3.5" />
+                     <span className={cn("font-mono text-[14px] sm:text-[16px]", activeCurrency === 'Bonus' ? "text-[#2b7fff]" : "text-[#ffc53d]")}>{myTotalBet % 1 !== 0 ? myTotalBet.toFixed(2) : myTotalBet}</span>
                    </div>
                  )}
                </div>
@@ -1215,7 +1221,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            <div className="w-full flex-[6] flex flex-col items-center justify-center relative z-20 mt-2 sm:mt-4 md:mt-0 lg:mb-4">
              
              <div className="relative w-full z-10 flex items-center justify-center group/seats h-full max-h-full">
-               <div ref={seatsContainerRef} className={cn("flex w-full md:w-[94%] mx-auto h-full pt-[24px] md:pt-[84px] mt-auto pb-[130px] sm:pb-[150px] md:pb-[180px] justify-start gap-[2%] sm:gap-[1%] items-center px-[4%] md:px-0 z-10 transition-transform duration-300 overflow-x-auto snap-x snap-mandatory md:snap-none hide-scrollbar-custom")}>
+               <div ref={seatsContainerRef} className={cn("flex w-full md:w-[94%] mx-auto h-full pt-[10px] md:pt-[20px] mt-auto pb-[60px] sm:pb-[80px] md:pb-[90px] justify-start gap-[2%] sm:gap-[1%] items-center px-[4%] md:px-0 z-10 transition-transform duration-300 overflow-x-auto snap-x snap-mandatory md:snap-none hide-scrollbar-custom")}>
                  <style>{`.hide-scrollbar-custom::-webkit-scrollbar { display: none; }`}</style>
                  {table.seats.map((seat, seatIdx) => {
                      const isThisSeatTurn = table.status === 'playing' && table.currentTurnIndex === seatIdx;
@@ -1244,7 +1250,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                    // if (isEmptyInPlaying) return null;
   
                    return (
-                     <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-[20px] md:pt-0 pb-[80px] sm:pb-[100px] md:pb-[110px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[180px] sm:h-[220px] md:h-[260px] rounded-[16px] sm:rounded-[24px] min-w-[31%] max-w-[31%] md:min-w-[13.5%] md:max-w-[13.5%] shrink-0 snap-center mx-auto", isThisSeatTurn ? "scale-110 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent"))}>
+                     <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-[20px] md:pt-0 pb-[80px] sm:pb-[90px] md:pb-[90px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[150px] sm:h-[180px] md:h-[200px] rounded-[16px] sm:rounded-[24px] min-w-[31%] max-w-[31%] md:min-w-[13.5%] md:max-w-[13.5%] shrink-0 snap-center mx-auto", isThisSeatTurn ? "scale-110 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent"))}>
                      
                      {/* YOU indicator label for played cards */}
 
@@ -1469,12 +1475,12 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
               onSideBetsToggle={() => setSideBetsEnabled(!sideBetsEnabled)}
               autoDeal={autoDeal}
               onAutoDealToggle={() => setAutoDeal(!autoDeal)}
-              className="absolute bottom-[3px] sm:bottom-[64px] w-full flex flex-col items-center z-[100] px-4 pointer-events-none"
+              className="absolute bottom-2 w-full flex flex-col items-center z-[100] px-4 pointer-events-none"
             />
          )}
 
          {table.status === 'playing' && isMyTurn && !isSidebarOpen && (
-           <div className="absolute bottom-[3px] sm:bottom-[64px] w-full flex flex-col items-center z-[100] px-4 pointer-events-none">
+           <div className="absolute bottom-2 w-full flex flex-col items-center z-[100] px-4 pointer-events-none">
              <ActiveTurnHUD 
                tableId={table.id}
                activeSeatIndex={activeSeatIndex}

@@ -40,7 +40,7 @@ export function DealerArea({
   liquidity?: number;
 }) {
   return (
-    <div className="w-full flex-[4] flex flex-col items-center justify-start min-h-[200px] sm:min-h-[250px] z-10 pt-0 shadow-none">
+    <div className="w-full flex-[4] flex flex-col items-center justify-start min-h-[160px] sm:min-h-[200px] lg:min-h-[220px] z-10 pt-0 shadow-none">
       {/* Dealer Avatar & Name */}
       <div className="relative flex items-center justify-center gap-2 z-20 px-3 mt-3 ml-0 py-1">
         <div id="dealer-avatar" className="w-8 h-8 sm:w-10 sm:h-10 lg:w-12 lg:h-12 rounded-full overflow-hidden border-2 border-[#1e2025] shadow-lg bg-[#2a2d36] flex flex-shrink-0 items-center justify-center relative">

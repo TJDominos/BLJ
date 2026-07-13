@@ -20,6 +20,7 @@ import { DealControlHUD } from '@/components/blackjack/DealControlHUD';
 import { ActiveTurnHUD } from '@/components/blackjack/ActiveTurnHUD';
 import { RankWidget } from '@/components/blackjack/RankWidget';
 import { TablePlayersSidebar } from '@/components/blackjack/TablePlayersSidebar';
+import { CurrencyIcon } from '@/components/CurrencyIcon';
 import { useBotBehavior } from '@/hooks/useBotBehavior';
 
 // Further down, replace the dealer area:
@@ -745,10 +746,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
 
               <div id="balance-container" className="flex-1 flex flex-row items-center justify-between h-full w-full relative z-10 bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full px-3 sm:px-4 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6),0_1px_1px_rgba(255,255,255,0.4)] border border-[#3a2510]">
                <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold tracking-wider">
-                 <div className="w-4 h-4 rounded-full border border-white/50 bg-[#c0392b] flex items-center justify-center relative overflow-hidden shadow-[inset_0_1px_2px_rgba(255,255,255,0.4),0_1px_3px_rgba(0,0,0,0.6)]">
-                    <div className="absolute inset-0 rounded-full border-[2px] border-dashed border-white/30"></div>
-                    <div className="w-1.5 h-1.5 rounded-full bg-[#3498db] shadow-[inset_0_1px_2px_rgba(0,0,0,0.5)]"></div>
-                 </div>
+                 <CurrencyIcon currency="Chip" className="w-4 h-4" />
                   {(() => {
                     const userBal = table.userBalances?.[currentUser.id];
                     const displayBalance = userBal ? userBal.balance : 0;
@@ -784,10 +782,8 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                      </span>
                      {recentWinAmount.amount > 0 && (
                        <>
-                         <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#ffeed2] to-[#ffc53d] border-[1px] border-[#8e6022] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
-                            <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
-                         </div>
-                         <span className="font-mono text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">{recentWinAmount.amount % 1 !== 0 ? recentWinAmount.amount.toFixed(2) : recentWinAmount.amount}</span>
+                         <CurrencyIcon currency="Chip" className="w-3.5 h-3.5" />
+                         <span className="text-[#32d5a4] font-mono text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">{recentWinAmount.amount % 1 !== 0 ? recentWinAmount.amount.toFixed(2) : recentWinAmount.amount}</span>
                        </>
                      )}
                    </motion.div>
@@ -797,10 +793,8 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                        <ArrowDown className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                        <span>Bet</span>
                      </div>
-                     <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-b from-[#ffeed2] to-[#ffc53d] border-[1px] border-[#8e6022] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden">
-                        <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/60 rounded-full blur-[0.5px]"></div>
-                     </div>
-                     <span className="text-white font-mono text-[14px] sm:text-[16px]">{myTotalBet % 1 !== 0 ? myTotalBet.toFixed(2) : myTotalBet}</span>
+                     <CurrencyIcon currency="Chip" className="w-3.5 h-3.5" />
+                     <span className="text-[#32d5a4] font-mono text-[14px] sm:text-[16px]">{myTotalBet % 1 !== 0 ? myTotalBet.toFixed(2) : myTotalBet}</span>
                    </div>
                  )}
                </div>
@@ -1219,7 +1213,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
            <div className="w-full flex-[6] flex flex-col items-center justify-center relative z-20 mt-2 sm:mt-4 md:mt-0 lg:mb-4">
              
              <div className="relative w-full z-10 flex items-center justify-center group/seats h-full max-h-full">
-               <div ref={seatsContainerRef} className={cn("flex w-full md:w-[94%] mx-auto h-full pt-[24px] md:pt-[84px] mt-auto pb-[130px] sm:pb-[150px] md:pb-[180px] justify-start gap-[2%] sm:gap-[1%] items-center px-[4%] md:px-0 z-10 transition-transform duration-300 overflow-x-auto snap-x snap-mandatory md:snap-none hide-scrollbar-custom")}>
+               <div ref={seatsContainerRef} className={cn("flex w-full md:w-[94%] mx-auto h-full pt-[10px] md:pt-[20px] mt-auto pb-[60px] sm:pb-[80px] md:pb-[90px] justify-start gap-[2%] sm:gap-[1%] items-center px-[4%] md:px-0 z-10 transition-transform duration-300 overflow-x-auto snap-x snap-mandatory md:snap-none hide-scrollbar-custom")}>
                  <style>{`.hide-scrollbar-custom::-webkit-scrollbar { display: none; }`}</style>
                  {table.seats.map((seat, seatIdx) => {
                      const isThisSeatTurn = table.status === 'playing' && table.currentTurnIndex === seatIdx;
@@ -1248,7 +1242,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                    // if (isEmptyInPlaying) return null;
   
                    return (
-                     <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-[20px] md:pt-0 pb-[80px] sm:pb-[100px] md:pb-[110px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[180px] sm:h-[220px] md:h-[260px] rounded-[16px] sm:rounded-[24px] min-w-[31%] max-w-[31%] md:min-w-[13.5%] md:max-w-[13.5%] shrink-0 snap-center mx-auto", isThisSeatTurn ? "scale-110 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent"))}>
+                     <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-[20px] md:pt-0 pb-[80px] sm:pb-[90px] md:pb-[90px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[150px] sm:h-[180px] md:h-[200px] rounded-[16px] sm:rounded-[24px] min-w-[31%] max-w-[31%] md:min-w-[13.5%] md:max-w-[13.5%] shrink-0 snap-center mx-auto", isThisSeatTurn ? "scale-110 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent"))}>
                      
                      {/* YOU indicator label for played cards */}
 
@@ -1459,12 +1453,12 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
               dealCountdown={dealCountdown}
               isTournament={false}
               onSideBetsToggle={() => setSideBetsEnabled(!sideBetsEnabled)}
-              className="absolute bottom-[3px] sm:bottom-[64px] w-full flex flex-col items-center z-[100] px-4 pointer-events-none"
+              className="absolute bottom-2 w-full flex flex-col items-center z-[100] px-4 pointer-events-none"
             />
          )}
 
          {table.status === 'playing' && isMyTurn && !isSidebarOpen && (
-           <div className="absolute bottom-[3px] sm:bottom-[64px] w-full flex flex-col items-center z-[100] px-4 pointer-events-none">
+           <div className="absolute bottom-2 w-full flex flex-col items-center z-[100] px-4 pointer-events-none">
              <ActiveTurnHUD 
                tableId={table.id}
                activeSeatIndex={activeSeatIndex}

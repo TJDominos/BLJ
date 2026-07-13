@@ -1,20 +1,34 @@
 import React from 'react';
 import { useUIStore, selectPlayMode } from '../store/uiStore';
 import { cn } from '../lib/utils';
-import { Gift } from 'lucide-react';
 import { motion, PanInfo } from 'motion/react';
+import { CurrencyIcon } from './CurrencyIcon';
 
-export function PlayModeToggle({ disabled }: { disabled?: boolean }) {
+export function PlayModeToggle({ disabled, onUnlockRequest }: { disabled?: boolean, onUnlockRequest?: () => void }) {
     const playMode = useUIStore(selectPlayMode);
     const setPlayMode = useUIStore(state => state.setPlayMode);
 
     const toggleMode = () => {
-        if (disabled) return;
+        if (disabled) {
+            if (onUnlockRequest) {
+                onUnlockRequest();
+            } else {
+                alert("You have locked funds on the table. Please unlock them or leave the table to switch mode.");
+            }
+            return;
+        }
         setPlayMode(playMode === 'Gcoin' ? 'Bonus' : 'Gcoin');
     };
 
     const handleDragEnd = (event: any, info: PanInfo) => {
-        if (disabled) return;
+        if (disabled) {
+            if (onUnlockRequest) {
+                onUnlockRequest();
+            } else {
+                alert("You have locked funds on the table. Please unlock them or leave the table to switch mode.");
+            }
+            return;
+        }
         const dragDistance = info.offset.x;
         
         if (playMode === 'Gcoin' && dragDistance > 15) {
@@ -33,7 +47,7 @@ export function PlayModeToggle({ disabled }: { disabled?: boolean }) {
             onClick={toggleMode}
             className={cn(
                 "flex items-center bg-black/40 rounded-full p-0.5 border border-white/10 backdrop-blur-sm cursor-pointer select-none touch-none", 
-                disabled && "opacity-50 pointer-events-none"
+                disabled && "opacity-50"
             )}
         >
             <div
@@ -44,22 +58,20 @@ export function PlayModeToggle({ disabled }: { disabled?: boolean }) {
                         : "w-7 h-7 hover:bg-white/10 border border-transparent"
                 )}
             >
-                <div className={cn("shrink-0 rounded-full border-[1.5px] border-[#8e6022] shadow-[0_1px_2px_rgba(0,0,0,0.4)] relative overflow-hidden", playMode === 'Gcoin' ? "w-3.5 h-3.5 bg-gradient-to-b from-[#ffeed2] to-[#ffc53d]" : "w-4 h-4 bg-gradient-to-b from-[#ffeed2] to-[#ffc53d]")}>
-                   <div className="absolute top-0 right-0 w-1 h-1 bg-white/60 rounded-full blur-[0.5px]"></div>
-                </div>
-                {playMode === 'Gcoin' && <span className="text-[10px] font-bold leading-none mt-px">Gcoin</span>}
+                <CurrencyIcon currency="Gcoin" className={playMode === 'Gcoin' ? "w-3.5 h-3.5" : "w-4 h-4"} />
+                {playMode === 'Gcoin' && <span className="text-[10px] font-bold leading-none mt-px text-[#ffeed2]">Gcoin</span>}
             </div>
             
             <div
                 className={cn(
                     "flex items-center justify-center rounded-full transition-all overflow-hidden relative z-10 duration-300",
                     playMode === 'Bonus'
-                        ? "px-2.5 py-1 gap-1.5 bg-gradient-to-b from-[#4f46e5] to-[#312e81] text-white shadow-[0_0_10px_rgba(79,70,229,0.5)] border border-indigo-400/40"
+                        ? "px-2.5 py-1 gap-1.5 bg-gradient-to-b from-[#2b7fff] to-[#1a5bb8] text-white shadow-[0_0_10px_rgba(43,127,255,0.5)] border border-[#2b7fff]/40"
                         : "w-7 h-7 hover:bg-white/10 border border-transparent"
                 )}
             >
-                <Gift className={cn("shrink-0", playMode === 'Bonus' ? "w-3.5 h-3.5 text-indigo-200" : "w-4 h-4 text-white/40")} />
-                {playMode === 'Bonus' && <span className="text-[10px] font-bold leading-none mt-px">Bonus</span>}
+                <CurrencyIcon currency="Bonus" className={playMode === 'Bonus' ? "w-3.5 h-3.5" : "w-4 h-4 opacity-40"} />
+                {playMode === 'Bonus' && <span className="text-[10px] font-bold leading-none mt-px text-white">Bonus</span>}
             </div>
         </motion.div>
     );

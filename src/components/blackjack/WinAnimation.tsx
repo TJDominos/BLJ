@@ -1,25 +1,41 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { useUIStore, selectRecentWinAmount } from '@/store/uiStore';
+import { useUIStore, selectRecentWinAmount, selectPlayMode } from '@/store/uiStore';
+import { useGameStore } from '@/store/gameStore';
+import { CurrencyIcon } from '@/components/CurrencyIcon';
 
 export function WinAnimation() {
   const recentWinAmount = useUIStore(selectRecentWinAmount);
-  const [animatingCoins, setAnimatingCoins] = useState<{ id: string, delay: number, seatIdx: number, rotate: number, offsetX: number, offsetY: number }[]>([]);
+  const activeTableId = useGameStore(state => state.activeTableId);
+  const tables = useGameStore(state => state.tables);
+  const table = activeTableId ? tables[activeTableId] : null;
+  const playMode = useUIStore(selectPlayMode);
+  const [animatingCoins, setAnimatingCoins] = useState<{ id: string, delay: number, seatIdx: number, rotate: number, offsetX: number, offsetY: number, currency: 'Gcoin' | 'Bonus' | 'Chip' }[]>([]);
 
   useEffect(() => {
     // trigger animation if any seat won
     if (recentWinAmount?.seats && recentWinAmount.seats.length > 0) {
+      let activeCurrency: 'Gcoin' | 'Bonus' | 'Chip' = 'Gcoin';
+      if (table) {
+        if (table.settings.mode === 'tournament') {
+          activeCurrency = 'Chip';
+        } else {
+          activeCurrency = table.houseId !== 'system' ? 'Gcoin' : playMode;
+        }
+      }
+
       const coins: any[] = [];
       recentWinAmount.seats.forEach((seatIdx) => {
          for(let i=0; i<15; i++) {
-           coins.push({ 
-             id: `coin-${seatIdx}-${i}-${Date.now()}`, 
-             delay: i * 0.05 + Math.random() * 0.1, 
-             seatIdx,
+           coins.push({
+              id: `coin-${seatIdx}-${i}-${Date.now()}`,
+              delay: i * 0.05 + Math.random() * 0.1,
+              seatIdx,
              offsetX: (Math.random() - 0.5) * 60,
              offsetY: (Math.random() - 0.5) * 60,
-             rotate: Math.random() * 720
+             rotate: Math.random() * 720,
+             currency: activeCurrency
            });
          }
       });
@@ -29,10 +45,9 @@ export function WinAnimation() {
         setAnimatingCoins([]);
       }, 4000);
     }
-  }, [recentWinAmount]);
+  }, [recentWinAmount, table, playMode]);
 
   if (typeof document === 'undefined') return null;
-
   return createPortal(
     <AnimatePresence>
       {animatingCoins.map(coin => (
@@ -95,11 +110,10 @@ function CoinAnimation({ coin }: { coin: any }) {
         ease: "easeInOut",
         delay: coin.delay
       }}
-      className="fixed z-[100] w-5 h-5 sm:w-7 sm:h-7 rounded-full bg-gradient-to-b from-[#ffeed2] via-[#ffc53d] to-[#b47a18] border-[1px] border-[#8e6022] shadow-[0_5px_15px_rgba(255,197,61,0.8),inset_0_2px_4px_rgba(255,255,255,0.8)] pointer-events-none overflow-hidden flex items-center justify-center transform-gpu"
+      className="fixed z-[100] w-5 h-5 sm:w-7 sm:h-7 pointer-events-none flex items-center justify-center transform-gpu"
       style={{ left: -10, top: -10 }}
     >
-      <div className="absolute top-[10%] right-[10%] w-[30%] h-[30%] bg-white rounded-full blur-[1px] opacity-70"></div>
-      <div className="w-[60%] h-[60%] rounded-full border border-[#ca891d]/50 opacity-50 absolute"></div>
+      <CurrencyIcon currency={coin.currency} className="w-full h-full shadow-[0_5px_15px_rgba(0,0,0,0.5)]" />
     </motion.div>
   );
 }
