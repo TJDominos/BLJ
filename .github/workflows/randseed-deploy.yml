@@ -1,0 +1,357 @@
+# randseed-workflow-version: 6
+name: Deploy to RandSeed Sandbox
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_id:
+        required: true
+        type: string
+      commit_sha:
+        required: true
+        type: string
+      game_id:
+        required: true
+        type: string
+      deployment_environment:
+        description: RandSeed deployment environment
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - production
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve RandSeed deployment environment
+        id: target_environment
+        shell: bash
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.deployment_environment }}
+        run: |
+          set -Eeuo pipefail
+          case "$TARGET_ENVIRONMENT" in
+            dev)
+              API_URL="https://devcreator.randseed.org"
+              OIDC_AUDIENCE="randseed-gamecreator"
+              ;;
+            test)
+              API_URL="https://testcreator.randseed.org"
+              OIDC_AUDIENCE="randseed-gamecreator-test"
+              ;;
+            production)
+              API_URL="https://creator.randseed.org"
+              OIDC_AUDIENCE="randseed-gamecreator-production"
+              ;;
+            *)
+              echo "::error::Unsupported RandSeed deployment environment"
+              exit 1
+              ;;
+          esac
+          printf 'api_url=%s\n' "$API_URL" >> "$GITHUB_OUTPUT"
+          printf 'oidc_audience=%s\n' "$OIDC_AUDIENCE" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies and build or stage static files
+        shell: bash
+        env:
+          BUILD_DIR: dist
+        run: |
+          set -Eeuo pipefail
+          if [ -f package.json ]; then
+            if [ -f pnpm-lock.yaml ]; then
+              corepack enable
+              pnpm install --frozen-lockfile
+              pnpm run build
+            elif [ -f yarn.lock ]; then
+              corepack enable
+              yarn install --frozen-lockfile
+              yarn build
+            elif [ -f package-lock.json ]; then
+              npm ci
+              npm run build
+            else
+              npm install
+              npm run build
+            fi
+          elif [ -f "$BUILD_DIR/index.html" ]; then
+            echo "Using existing static output in $BUILD_DIR"
+          elif [ -f index.html ]; then
+            node <<'NODE'
+            const fs = require('fs');
+            const path = require('path');
+
+            const repositoryRoot = process.cwd();
+            const buildDirectory = path.resolve(process.env.BUILD_DIR || 'dist');
+            const relativeBuildDirectory = path.relative(repositoryRoot, buildDirectory);
+            if (!relativeBuildDirectory || relativeBuildDirectory === '..' || relativeBuildDirectory.startsWith(`..${path.sep}`) || path.isAbsolute(relativeBuildDirectory)) {
+              console.error('Static build directory must be a subdirectory of the repository');
+              process.exit(1);
+            }
+            const staticExtensions = new Set([
+              '.aac', '.avif', '.basis', '.bin', '.bmp', '.css', '.csv',
+              '.data', '.dds', '.eot', '.fbx', '.gif', '.glb', '.gltf',
+              '.htm', '.html', '.ico', '.jpeg', '.jpg', '.js', '.json',
+              '.ktx', '.ktx2', '.m4a', '.mid', '.midi', '.mp3', '.mp4',
+              '.mtl', '.obj', '.ogg', '.ogv', '.otf', '.pck', '.png',
+              '.svg', '.ttf', '.txt', '.unityweb', '.wasm', '.wav',
+              '.webm', '.webmanifest', '.webp', '.woff', '.woff2', '.xml',
+            ]);
+            let copiedFiles = 0;
+
+            function copyStaticFiles(directory, relativeDirectory = '') {
+              for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+                if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+                const relativePath = path.join(relativeDirectory, entry.name);
+                if (relativePath === relativeBuildDirectory || relativePath.startsWith(`${relativeBuildDirectory}${path.sep}`)) continue;
+                const sourcePath = path.join(directory, entry.name);
+                if (entry.isDirectory()) {
+                  copyStaticFiles(sourcePath, relativePath);
+                } else if (entry.isFile() && staticExtensions.has(path.extname(entry.name).toLowerCase())) {
+                  const outputPath = path.join(buildDirectory, relativePath);
+                  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+                  fs.copyFileSync(sourcePath, outputPath);
+                  copiedFiles += 1;
+                }
+              }
+            }
+
+            fs.mkdirSync(buildDirectory, { recursive: true });
+            copyStaticFiles(repositoryRoot);
+            if (!fs.existsSync(path.join(buildDirectory, 'index.html'))) {
+              console.error('Static output staging failed: root index.html was not copied');
+              process.exit(1);
+            }
+            console.log(`Staged ${copiedFiles} static browser files in ${process.env.BUILD_DIR}`);
+          NODE
+          else
+            echo "No package.json build project or root index.html found" >&2
+            exit 1
+          fi
+      - name: Report build failure
+        if: failure()
+        env:
+          RANDSEED_API_URL: ${{ steps.target_environment.outputs.api_url }}
+          OIDC_AUDIENCE: ${{ steps.target_environment.outputs.oidc_audience }}
+          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+        run: |
+          set -Eeuo pipefail
+          OIDC_TOKEN=$(node --input-type=module <<'NODE'
+          const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+          const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+          const audience = process.env.OIDC_AUDIENCE;
+          if (!requestUrl || !requestToken || !audience) { console.error('GitHub Actions OIDC environment variables are missing'); process.exit(1); }
+          const url = new URL(requestUrl);
+          url.searchParams.set('audience', audience);
+          const response = await fetch(url, { headers: { Accept: 'application/json', Authorization: `bearer ${requestToken}` } });
+          const body = await response.text();
+          if (!response.ok) { console.error(`RandSeed build failure callback token request failed (${response.status})`); process.exit(1); }
+          let payload;
+          try { payload = JSON.parse(body); } catch { console.error('GitHub OIDC token endpoint returned invalid JSON'); process.exit(1); }
+          if (typeof payload.value !== 'string' || payload.value.length === 0) { console.error('GitHub OIDC token endpoint returned no token'); process.exit(1); }
+          process.stdout.write(payload.value);
+          NODE
+          )
+          echo "::add-mask::$OIDC_TOKEN"
+          HTTP_STATUS=$(curl -sS -o /tmp/randseed-build-failure-response -w '%{http_code}' -X POST "$RANDSEED_API_URL/api/deployments/$DEPLOYMENT_ID/build-failed" -H "Authorization: Bearer $OIDC_TOKEN" -H 'Content-Type: application/json' --data '{"error_code":"BUILD_FAILED"}')
+          if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
+            echo "RandSeed build failure callback failed ($HTTP_STATUS)" >&2
+            exit 1
+          fi
+      - name: Create manifest
+        env:
+          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          BUILD_DIR: dist
+        run: |
+          set -Eeuo pipefail
+          node <<'NODE' > /tmp/randseed-manifest.json
+          const fs = require('fs'), path = require('path'), crypto = require('crypto');
+          const root = process.env.BUILD_DIR;
+          if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) { console.error(`Build directory does not exist: ${root}`); process.exit(1); }
+          const files = [];
+          function walk(dir) { for (const entry of fs.readdirSync(dir, { withFileTypes: true })) { const full = path.join(dir, entry.name); if (entry.isDirectory()) walk(full); else { const relative = path.relative(root, full).split(path.sep).join('/'); const bytes = fs.readFileSync(full); files.push({ path: relative, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), size: bytes.length }); } } }
+          walk(root); files.sort((a, b) => a.path.localeCompare(b.path));
+          const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+          console.error(`RandSeed artifact manifest: ${files.length} files, ${totalBytes} bytes`);
+          console.log(JSON.stringify({ deployment_id: process.env.DEPLOYMENT_ID, commit_sha: process.env.COMMIT_SHA, root, files, total_bytes: totalBytes }));
+          NODE
+      - name: Validate browser runtime artifact
+        env:
+          BUILD_DIR: dist
+        run: |
+          set -Eeuo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const root = path.resolve(process.env.BUILD_DIR);
+          const maxFiles = 2000;
+          const maxBytes = 100 * 1024 * 1024;
+          const rejectedExtensions = new Set([
+            '.bash', '.bat', '.cgi', '.cmd', '.dylib', '.dll', '.exe', '.msi',
+            '.php', '.pl', '.ps1', '.py', '.rb', '.sh', '.so', '.toml',
+            '.wrangler', '.yaml', '.yml', '.jsonc',
+          ]);
+          function fail(message) {
+            console.error(`RandSeed browser runtime validation failed: ${message}`);
+            console.error('Build a static browser export with a root index.html and browser-loaded assets. Server processes and native binaries are not available at play time.');
+            process.exit(1);
+          }
+          function walk(directory, relativeDirectory = '') {
+            const files = [];
+            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+              const relativePath = path.posix.join(relativeDirectory, entry.name);
+              const fullPath = path.join(directory, entry.name);
+              if (entry.isDirectory()) {
+                if (entry.name === 'node_modules' || entry.name === '.git') {
+                  fail(`runtime output contains ${relativePath}/; dependency installations and source repositories must not be deployed`);
+                }
+                files.push(...walk(fullPath, relativePath));
+              } else if (entry.isFile()) {
+                files.push({ path: relativePath, size: fs.statSync(fullPath).size });
+              }
+            }
+            return files;
+          }
+          if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) fail(`build directory does not exist: ${root}`);
+          const files = walk(root);
+          if (!files.some((file) => file.path === 'index.html')) fail(`build directory ${root} does not contain a root index.html`);
+          if (files.length === 0) fail('build directory is empty');
+          if (files.length >= maxFiles) fail(`build output contains ${files.length} files; the platform limit is ${maxFiles - 1}`);
+          const rejected = files.find((file) => rejectedExtensions.has(path.extname(file.path).toLowerCase()));
+          if (rejected) fail(`unsupported server-side or native file ${rejected.path}; upload the engine browser/WebGL/WebAssembly export instead`);
+          const totalBytes = files.reduce((total, file) => total + file.size, 0);
+          if (totalBytes > maxBytes) fail(`build output is ${totalBytes} bytes; the artifact limit is ${maxBytes} bytes`);
+          console.log(`RandSeed browser runtime validation passed: ${files.length} files, ${totalBytes} bytes, root ${root}`);
+          NODE
+      - name: Request upload session
+        env:
+          RANDSEED_API_URL: ${{ steps.target_environment.outputs.api_url }}
+          OIDC_AUDIENCE: ${{ steps.target_environment.outputs.oidc_audience }}
+          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+        run: |
+          set -Eeuo pipefail
+          OIDC_TOKEN=$(node --input-type=module <<'NODE'
+          const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+          const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+          const audience = process.env.OIDC_AUDIENCE;
+          if (!requestUrl || !requestToken || !audience) {
+            console.error('GitHub Actions OIDC environment variables are missing');
+            process.exit(1);
+          }
+          const url = new URL(requestUrl);
+          url.searchParams.set('audience', audience);
+          const response = await fetch(url, {
+            headers: {
+              Accept: 'application/json',
+              Authorization: `bearer ${requestToken}`,
+            },
+          });
+          const body = await response.text();
+          if (!response.ok) {
+            const errorBody = body.replace(/\s+/g, ' ').slice(0, 1000);
+            console.error(`GitHub OIDC token request failed (${response.status} ${response.statusText}): ${errorBody}`);
+            process.exit(1);
+          }
+          let payload;
+          try {
+            payload = JSON.parse(body);
+          } catch {
+            console.error('GitHub OIDC token endpoint returned invalid JSON');
+            process.exit(1);
+          }
+          if (typeof payload.value !== 'string' || payload.value.length === 0) {
+            console.error('GitHub OIDC token endpoint returned no token');
+            process.exit(1);
+          }
+          process.stdout.write(payload.value);
+          NODE
+          )
+          echo "::add-mask::$OIDC_TOKEN"
+          echo "OIDC_TOKEN=$OIDC_TOKEN" >> "$GITHUB_ENV"
+          node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync('/tmp/randseed-manifest.json'));fs.writeFileSync('/tmp/randseed-upload-request.json',JSON.stringify({manifest:m}))"
+          HTTP_STATUS=$(curl -sS -o /tmp/randseed-session.json -w '%{http_code}' -X POST "$RANDSEED_API_URL/api/deployments/$DEPLOYMENT_ID/upload-session" -H "Authorization: Bearer $OIDC_TOKEN" -H 'Content-Type: application/json' --data-binary @/tmp/randseed-upload-request.json)
+          if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
+            node -e "const fs=require('fs');const body=fs.readFileSync('/tmp/randseed-session.json','utf8');let message=body;try { const parsed=JSON.parse(body); message=parsed.code+': '+(parsed.error||parsed.message||body); } catch {} console.error('RandSeed upload session failed ('+process.argv[1]+'): '+message.replace(/\\s+/g,' ').slice(0,1000));process.exit(1)" "$HTTP_STATUS"
+          fi
+          node <<'NODE'
+          const fs = require('fs');
+          const session = JSON.parse(fs.readFileSync('/tmp/randseed-session.json', 'utf8'));
+          if (typeof session.upload_token !== 'string' || typeof session.upload_base_url !== 'string' || !Array.isArray(session.files_to_upload) || session.files_to_upload.some((path) => typeof path !== 'string')) {
+            console.error('RandSeed upload session response is missing upload credentials or its content-addressed file list');
+            process.exit(1);
+          }
+          NODE
+      - name: Upload missing content-addressed files
+        env:
+          RANDSEED_API_URL: ${{ steps.target_environment.outputs.api_url }}
+          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          BUILD_DIR: dist
+        run: |
+          set -Eeuo pipefail
+          UPLOAD_TOKEN=$(node -e "console.log(require('/tmp/randseed-session.json').upload_token)")
+          UPLOAD_BASE_URL=$(node -e "const { upload_base_url }=require('/tmp/randseed-session.json');console.log(new URL(upload_base_url,process.env.RANDSEED_API_URL).toString().replace(/\\/$/,''))")
+          echo "::add-mask::$UPLOAD_TOKEN"
+          node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync('/tmp/randseed-manifest.json','utf8'));const s=JSON.parse(fs.readFileSync('/tmp/randseed-session.json','utf8'));const byPath=new Map(m.files.map((f)=>[f.path,f]));for(const filePath of s.files_to_upload){const f=byPath.get(filePath);if(!f){console.error('RandSeed requested an undeclared file: '+filePath);process.exit(1)}console.log(Buffer.from(JSON.stringify([f.path,f.size])).toString('base64'))}" | while IFS= read -r FILE_ROW; do
+            FILE_PATH=$(node -e "console.log(JSON.parse(Buffer.from(process.argv[1],'base64').toString('utf8'))[0])" "$FILE_ROW")
+            FILE_SIZE=$(node -e "console.log(JSON.parse(Buffer.from(process.argv[1],'base64').toString('utf8'))[1])" "$FILE_ROW")
+            ENCODED_PATH=$(node -e "console.log(process.argv[1].split('/').map(encodeURIComponent).join('/'))" "$FILE_PATH")
+            HTTP_STATUS=$(curl -sS -o /tmp/randseed-upload-response -w '%{http_code}' -X PUT "$UPLOAD_BASE_URL/$ENCODED_PATH" -H "Authorization: Bearer $UPLOAD_TOKEN" -H "Content-Length: $FILE_SIZE" --data-binary @"$BUILD_DIR/$FILE_PATH")
+            if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
+              node -e "const fs=require('fs');const body=fs.readFileSync('/tmp/randseed-upload-response','utf8');console.error('RandSeed artifact upload failed ('+process.argv[2]+', '+process.argv[1]+'): '+body.replace(/\\s+/g,' ').slice(0,1000));process.exit(1)" "$HTTP_STATUS" "$FILE_PATH"
+            fi
+          done
+      - name: Verify and publish
+        env:
+          RANDSEED_API_URL: ${{ steps.target_environment.outputs.api_url }}
+          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+        run: |
+          set -Eeuo pipefail
+          HTTP_STATUS=$(curl -sS -o /tmp/randseed-complete-response -w '%{http_code}' -X POST "$RANDSEED_API_URL/api/deployments/$DEPLOYMENT_ID/upload-complete" -H "Authorization: Bearer $OIDC_TOKEN" -H 'Content-Type: application/json' --data "$(node -e "const fs=require('fs');console.log(JSON.stringify({manifest:JSON.parse(fs.readFileSync('/tmp/randseed-manifest.json'))}))")")
+          if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
+            node -e "const fs=require('fs');const body=fs.readFileSync('/tmp/randseed-complete-response','utf8');let message=body;try { const parsed=JSON.parse(body); message=parsed.code+': '+(parsed.error||parsed.message||body); } catch {} console.error('RandSeed deployment completion failed ('+process.argv[1]+'): '+message.replace(/\\s+/g,' ').slice(0,1000));process.exit(1)" "$HTTP_STATUS"
+          fi
+      - name: Report deployment failure
+        if: failure()
+        env:
+          RANDSEED_API_URL: ${{ steps.target_environment.outputs.api_url }}
+          OIDC_AUDIENCE: ${{ steps.target_environment.outputs.oidc_audience }}
+          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+        run: |
+          set -Eeuo pipefail
+          OIDC_TOKEN=$(node --input-type=module <<'NODE'
+          const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+          const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+          const audience = process.env.OIDC_AUDIENCE;
+          if (!requestUrl || !requestToken || !audience) { console.error('GitHub Actions OIDC environment variables are missing'); process.exit(1); }
+          const url = new URL(requestUrl);
+          url.searchParams.set('audience', audience);
+          const response = await fetch(url, { headers: { Accept: 'application/json', Authorization: `bearer ${requestToken}` } });
+          const body = await response.text();
+          if (!response.ok) { console.error(`RandSeed failure callback token request failed (${response.status})`); process.exit(1); }
+          let payload;
+          try { payload = JSON.parse(body); } catch { console.error('GitHub OIDC token endpoint returned invalid JSON'); process.exit(1); }
+          if (typeof payload.value !== 'string' || payload.value.length === 0) { console.error('GitHub OIDC token endpoint returned no token'); process.exit(1); }
+          process.stdout.write(payload.value);
+          NODE
+          )
+          echo "::add-mask::$OIDC_TOKEN"
+          HTTP_STATUS=$(curl -sS -o /tmp/randseed-deployment-failure-response -w '%{http_code}' -X POST "$RANDSEED_API_URL/api/deployments/$DEPLOYMENT_ID/build-failed" -H "Authorization: Bearer $OIDC_TOKEN" -H 'Content-Type: application/json' --data '{"error_code":"DEPLOYMENT_FAILED"}')
+          if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
+            echo "RandSeed deployment failure callback failed ($HTTP_STATUS)" >&2
+            exit 1
+          fi
