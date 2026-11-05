@@ -35,9 +35,6 @@ export function LiveTablesSidebar({
     // Filter by mode
     result = result.filter(t => activeTab === 'regular' ? t.settings.mode !== 'tournament' : t.settings.mode === 'tournament');
     
-    // Also include non-public if the user is house or already has money locked there
-    result = result.filter(t => t.settings.isPublic || t.houseId === currentUser?.id || (currentUser && t.userBalances?.[currentUser.id]));
-    
     // Sort
     result.sort((a, b) => {
       // Randseed official always pinned to top
@@ -223,7 +220,7 @@ export function LiveTablesSidebar({
                                  <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="absolute top-1"><path d="m2 4 3 12h14l3-12-6 7-4-7-4 7-6-7zm3 16h14"/></svg>
                               </div>
                            )}
-                           <span className="truncate">{isOfficial ? "Randseed Table" : t.name}</span>
+                           <span className="truncate">{isOfficial ? (t.name || "Royal Official Lounge") : t.name}</span>
                            {!t.settings.isPublic && (
                               <Lock className="w-3 h-3 text-red-400 shrink-0" title="Private Table" />
                            )}
@@ -242,18 +239,14 @@ export function LiveTablesSidebar({
                         )}
                      </div>
                      
-                     <div className="text-sm text-white/60 mb-1 flex items-center gap-1">
-                        {!isOfficial && t.description && <span className="truncate italic">"{t.description}"</span>}
-                     </div>
-
                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
                          <span className={cn("font-medium", getSpeedLabel(t.settings.actionTimeLimit) === 'Fast' ? 'text-amber-400' : 'text-emerald-400')}>
                              {getSpeedLabel(t.settings.actionTimeLimit)} Pace
                          </span>
                          {t.settings.mode === 'tournament' ? (
                              <span className="text-white/60 flex items-center gap-1">
-                                 Ticket: <Coins className="w-3 h-3 text-amber-400" />
-                                 {t.settings.tournament?.ticketPrice || 0}
+                                 Entry: <Coins className="w-3 h-3 text-amber-400" />
+                                 {t.settings.tournament?.ticketPrice || 0} Game Coins
                              </span>
                          ) : (
                              <span className="text-white/60 flex items-center gap-1">
@@ -269,9 +262,9 @@ export function LiveTablesSidebar({
                      <div className="mt-2.5 flex items-center justify-between text-xs pt-2.5 border-t border-white/5">
                         <div className="flex items-center gap-1.5 text-white/50 cursor-pointer hover:text-white transition-colors">
                            <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center overflow-hidden shrink-0">
-                              <span className="text-[10px] font-black">{isOfficial ? "RS" : t.houseId.substring(0, 2).toUpperCase()}</span>
+                              <span className="text-[10px] font-black">{isOfficial ? "RB" : t.houseId.substring(0, 2).toUpperCase()}</span>
                            </div>
-                           <span className="truncate max-w-[160px] text-[11px] font-semibold">{isOfficial ? "Randseed Official" : t.houseId}</span>
+                           <span className="truncate max-w-[160px] text-[11px] font-semibold">{isOfficial ? "Royal House Official" : t.houseId}</span>
                         </div>
                         
                         <div className="flex items-center gap-3">

@@ -68,7 +68,7 @@ export function DealControlHUD({
     <div className={className || "absolute bottom-1 sm:bottom-4 md:-bottom-5 w-full flex flex-col items-center z-30 px-4 pointer-events-none"}>
       <div className="relative flex flex-col pointer-events-auto z-10 w-[96%] sm:w-auto drop-[0_10px_20px_rgba(0,0,0,0.6)]">
         <div 
-          className="relative flex flex-row items-center border-[2px] border-[#6b4c2a] rounded-full bg-gradient-to-b from-[#eac574] via-[#d0a758] to-[#997027] p-1 md:p-2 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8),inset_0_-1px_2px_rgba(0,0,0,0.4)] max-w-full w-full sm:w-[480px] h-[44px] sm:h-[60px]"
+          className="relative flex flex-row items-center border-[2px] border-[#6b4c2a] rounded-full bg-gradient-to-b from-[#eac574] via-[#d0a758] to-[#997027] p-1 md:p-2 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8),inset_0_-1px_2px_rgba(0,0,0,0.4)] max-w-full w-full sm:w-[460px] h-[44px] sm:h-[60px]"
         >
           <div className="absolute left-1 right-1 inset-y-1 bg-[url('https://www.transparenttextures.com/patterns/dark-matter.png')] opacity-20 pointer-events-none rounded-full"></div>
 
@@ -82,13 +82,13 @@ export function DealControlHUD({
             </svg>
           </div>
 
-          <div className="flex-1 flex flex-row gap-1.5 sm:gap-3 items-center z-10 mx-auto justify-center w-full max-w-full px-1">
+          <div className="flex-1 flex flex-row gap-1.5 sm:gap-2.5 items-center z-10 mx-auto justify-center w-full max-w-full px-1">
               {/* Bet Input Body */}
               <div className="flex flex-col justify-center items-center shrink">
                 {isTournament && (
-                  <span className="text-[8px] sm:text-[9px] text-[#ffc53d] font-bold uppercase tracking-wider mb-0.5 sm:mb-1 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">Min Blind: {table.settings.tournament?.minBetChips || 50}</span>
+                  <span className="text-[8px] sm:text-[9px] text-[#ffc53d] font-bold uppercase tracking-wider mb-0.5 sm:mb-1 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">Min Bet: {table.settings.tournament?.minBetChips || table.settings.minBet || 50}</span>
                 )}
-                <div className="flex items-center bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full w-[95px] sm:w-[140px] shrink-0 h-[32px] sm:h-[44px] p-1 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6),0_1px_1px_rgba(255,255,255,0.4)] border border-[#3a2510]">
+                <div className="flex items-center bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full w-[95px] sm:w-[136px] shrink-0 h-[32px] sm:h-[44px] p-1 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6),0_1px_1px_rgba(255,255,255,0.4)] border border-[#3a2510]">
                     <button 
                       onClick={onMinus}
                       className="w-[24px] h-[24px] sm:w-[32px] sm:h-[32px] rounded-[6px] sm:rounded-[8px] bg-gradient-to-b from-[#bd945d] to-[#987241] flex justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
@@ -125,8 +125,10 @@ export function DealControlHUD({
               {(() => {
                 if (!isAnySeatNotReady && mySeats.length > 0) {
                   return (
-                    <div className="relative w-[70px] sm:w-[120px] h-[32px] sm:h-[44px] flex items-center justify-center">
-                       <span className="text-white/60 font-bold text-xs sm:text-sm tracking-widest uppercase">Ready</span>
+                    <div className="relative w-[70px] sm:w-[110px] h-[32px] sm:h-[44px] flex items-center justify-center">
+                       <span className="text-white/75 font-bold text-xs sm:text-sm tracking-widest uppercase">
+                         Ready
+                       </span>
                     </div>
                   );
                 }
@@ -135,7 +137,7 @@ export function DealControlHUD({
                   <button 
                     onClick={onDeal}
                     className={cn(
-                      "relative overflow-hidden min-w-[70px] sm:min-w-[120px] h-[32px] sm:h-[44px] bg-gradient-to-b from-[#28a19b] to-[#126b6f] text-white rounded-[12px] sm:rounded-[20px] px-2 font-black tracking-widest text-[12px] sm:text-[16px] uppercase transition-all shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border border-[#0d4f52] flex items-center justify-center shrink-0 group hover:from-[#2ebaba] hover:to-[#178287]",
+                      "relative overflow-hidden min-w-[70px] sm:min-w-[110px] h-[32px] sm:h-[44px] bg-gradient-to-b from-[#28a19b] to-[#126b6f] text-white rounded-[12px] sm:rounded-[20px] px-2 font-black tracking-widest text-[12px] sm:text-[16px] uppercase transition-all shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border border-[#0d4f52] flex items-center justify-center shrink-0 group hover:from-[#2ebaba] hover:to-[#178287]",
                       dealCountdown !== null ? "animate-pulse shadow-[0_0_15px_rgba(40,161,155,0.8)]" : "active:scale-95"
                     )}
                   >

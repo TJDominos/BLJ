@@ -11,8 +11,8 @@ export function HeaderUI({
   centerContent
 }: {
   onLeave: () => void;
-  isMuted: boolean;
-  setIsMuted: (val: boolean) => void;
+  isMuted?: boolean;
+  setIsMuted?: (val: boolean) => void;
   onOpenTable?: () => void;
   onToggleSidebar?: () => void;
   hideLeaveButton?: boolean;
@@ -33,8 +33,12 @@ export function HeaderUI({
           )}
         </div>
         <div className="flex items-center gap-2 sm:gap-4 justify-center z-0 flex-1 shrink-0 px-2">
-          <h1 className="text-sm sm:text-xl font-bold text-white tracking-wider whitespace-nowrap">
-            BLACKJACK
+          <h1
+            onClick={onLeave}
+            className="text-sm sm:text-xl font-bold text-white tracking-wider whitespace-nowrap cursor-pointer hover:text-[#f0d078] transition-colors"
+            title="Back to Royal BlackJack Home"
+          >
+            ROYAL BLACKJACK
           </h1>
           {centerContent && (
              <div className="scale-90 sm:scale-100 origin-center flex shrink-0">
@@ -43,12 +47,6 @@ export function HeaderUI({
           )}
         </div>
         <div className="flex items-center gap-0 sm:gap-2 relative z-10 flex-1 justify-end">
-          <button 
-            onClick={() => setIsMuted(!isMuted)}
-            className="w-10 h-10 sm:w-10 sm:h-10 flex items-center justify-center text-white/50 hover:text-white transition-colors rounded-full hover:bg-white/5"
-          >
-            {isMuted ? <VolumeX className="w-5 h-5 sm:w-5 sm:h-5 opacity-50" /> : <Volume2 className="w-5 h-5 sm:w-5 sm:h-5" />}
-          </button>
           <button className="w-10 h-10 sm:w-10 sm:h-10 flex items-center justify-center text-white/50 hover:text-white transition-colors rounded-full hover:bg-white/5 relative">
             <Bell className="w-5 h-5 sm:w-5 sm:h-5" />
             <span className="absolute top-[10px] right-[10px] sm:top-[10px] sm:right-[10px] w-1.5 h-1.5 bg-red-500 rounded-full border border-[#1e2025]"></span>

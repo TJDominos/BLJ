@@ -1,11 +1,14 @@
 import { create } from 'zustand';
-import { systemConfig } from '../config/systemConfig';
 
 export type User = {
   id: string;
   name: string;
+  avatar?: string;
   balance: number;
   bonusBalance?: number;
+  role: 'player' | 'creator' | 'publisher';
+  isCreator?: boolean;
+  publisherKey?: string;
 };
 
 export type CardSuit = 'hearts' | 'diamonds' | 'clubs' | 'spades';
@@ -37,6 +40,8 @@ export interface Hand {
 
 export interface PlayerSeat {
   userId: string | null; // null if empty
+  name?: string;
+  avatar?: string;
   isReady: boolean;
   hand: Hand | null;
   isSplitHand?: boolean;
@@ -67,6 +72,23 @@ export interface TournamentSettings {
   autoCloseAndRefundTimeHours?: number;
 }
 
+export interface TournamentRecord {
+  id: string;
+  timestamp: number;
+  rounds: number;
+  seatsFilled: number;
+  maxSeats: number;
+  ticketPrice: number;
+  prizePool: number;
+  reason: string;
+  winners: {
+    userId: string;
+    name: string;
+    chips: number;
+    prizeCoins: number;
+  }[];
+}
+
 export interface TableSettings {
   name?: string;
   description?: string;
@@ -78,6 +100,8 @@ export interface TableSettings {
   secretBets: boolean;
   actionTimeLimit: number;
   isPublic: boolean;
+  tableCode?: string; // 4-digit PIN for private custom tables
+  hasTableCode?: boolean;
   maxSeats: number;
   winningRule: WinningRule;
   order: 'seat' | 'random';
@@ -104,6 +128,17 @@ export interface Table {
   discardedCards: PlayingCard[];
   currentTurnIndex: number; // -1 for dealer, 0..maxSeats-1 for players
   roundsPlayed: number;
+  tournamentHistory?: TournamentRecord[];
+  emptySince?: number | null;
+  maxHostingTimeMs?: number;
+  expiresAt?: number | null;
+  lastRoundSummary?: {
+    roundId: string;
+    timestamp: number;
+    winnings: Record<string, number>;
+    seatResults: SeatResult[];
+    dealerScore: number;
+  };
 }
 
 export interface SeatResult {
@@ -137,10 +172,16 @@ interface GameStore {
   tables: Record<string, Table>;
   activeTableId: string | null;
   gameRecords: GameRecord[];
+  unlockedTableIds: Record<string, boolean>;
   
-  // Actions
-  login: (name: string) => void;
+  // Actions (Pure Backend-Driven: Frontend only sends intent & renders response)
+  login: (name: string, overrideUserId?: string, avatar?: string, isCreator?: boolean) => Promise<void>;
+  syncStateFromServer: () => Promise<void>;
+  setCreatorIdentity: (isCreator: boolean, creatorName?: string) => Promise<void>;
+  verifyPublisher: (publisherKey: string) => Promise<boolean>;
+  exitPublisherMode: () => void;
   createTable: (settings: TableSettings, liquidity: number) => Promise<string>;
+  verifyTableCode: (tableId: string, tableCode: string) => Promise<boolean>;
   updateTableSettings: (tableId: string, settings: Partial<TableSettings>) => Promise<void>;
   depositLiquidity: (tableId: string, amount: number) => Promise<void>;
   pauseTable: (tableId: string) => Promise<void>;
@@ -151,6 +192,7 @@ interface GameStore {
   recordVisit: (tableId: string) => Promise<void>;
   leaveTable: (tableId: string, seatIndex?: number, isTimeout?: boolean) => Promise<void>;
   unlockTableBalance: (tableId: string) => Promise<void>;
+  refillGameCoins: (tableId?: string) => Promise<void>;
   placeBet: (tableId: string, seatIndex: number, amount: number, sideBets?: SideBets) => Promise<void>;
   closeTable: (tableId: string) => Promise<void>;
   
@@ -166,153 +208,321 @@ interface GameStore {
   addGameRecord: (record: GameRecord) => void;
 }
 
-const generateDeck = (): PlayingCard[] => {
-  const suits: CardSuit[] = ['hearts', 'diamonds', 'clubs', 'spades'];
-  const values: CardValue[] = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
-  const deck: PlayingCard[] = [];
-  for (const suit of suits) {
-    for (const value of values) {
-      deck.push({ suit, value });
-    }
+async function postGameApi<T = any>(url: string, body: Record<string, any>): Promise<T> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || `Request failed (${res.status})`);
   }
-  // Shuffle
-  return deck.sort(() => Math.random() - 0.5);
-};
-
-const calculateScore = (cards: PlayingCard[]): number => {
-  let score = 0;
-  let aces = 0;
-  for (const c of cards) {
-    if (c.isHidden) continue;
-    if (c.value === 'A') {
-      aces += 1;
-      score += 11;
-    } else if (['J', 'Q', 'K'].includes(c.value)) {
-      score += 10;
-    } else {
-      score += parseInt(c.value);
-    }
-  }
-  while (score > 21 && aces > 0) {
-    score -= 10;
-    aces -= 1;
-  }
-  return score;
-};
+  return data as T;
+}
 
 export const useGameStore = create<GameStore>((set, get) => ({
   currentUser: null,
-  tables: {
-    // some default table
-    'table_1': {
-      id: 'table_1',
-      name: 'System Table',
-      createdAt: Date.now(),
-      visits: 0,
-      houseId: 'system',
-      liquidity: 100000,
-      initialLiquidity: 100000,
-      safeAccountAddress: '0x1234...5678',
-      settings: {
-        minBet: 10,
-        maxBet: 500,
-        minBuyIn: 50,
-        secretBets: false,
-        actionTimeLimit: systemConfig.actionTimeLimit.normal,
-        isPublic: true,
-        maxSeats: 7,
-        winningRule: 'standard',
-        order: 'seat'
-      },
-      seats: [
-        { userId: null, isReady: false, hand: null },
-        { userId: null, isReady: false, hand: null },
-        { userId: null, isReady: false, hand: null },
-        { userId: null, isReady: false, hand: null },
-        { userId: null, isReady: false, hand: null },
-        { userId: null, isReady: false, hand: null },
-        { userId: null, isReady: false, hand: null }
-      ],
-      userBalances: {},
-      inviteLink: 'https://ais-pre.run.app/t/table_1',
-      status: 'waiting',
-      dealerHand: null,
-      deck: [],
-      discardCount: 0,
-      discardedCards: [],
-      currentTurnIndex: -1,
-      roundsPlayed: 0
-    }
-  },
+  tables: {},
   activeTableId: null,
   gameRecords: [],
+  unlockedTableIds: (() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      const raw = localStorage.getItem('royal_blackjack_unlocked_tables');
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  })(),
 
-  login: (name: string) => {
-    set({ currentUser: { id: `user_${Math.random().toString(36).substr(2, 9)}`, name, balance: 50000, bonusBalance: 10000 } });
+  login: async (name: string, overrideUserId?: string, avatar?: string, isCreator?: boolean) => {
+    const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+    const urlUserId = params?.get('userId') || params?.get('uid') || params?.get('id') || params?.get('accountId');
+    const urlName = params?.get('name') || params?.get('userName') || params?.get('username') || params?.get('nickname');
+    const urlAvatar = params?.get('avatar') || params?.get('avatarUrl');
+
+    const effectiveName = urlName || name || 'Player';
+    const effectiveAvatar = urlAvatar || avatar || undefined;
+
+    const savedKey = typeof window !== 'undefined' ? localStorage.getItem('royal_blackjack_publisher_key') : null;
+    const urlCreatorFlag =
+      Boolean(isCreator) ||
+      params?.get('role') === 'creator' ||
+      params?.get('role') === 'publisher' ||
+      params?.get('isCreator') === 'true';
+    const urlKey =
+      params?.get('creatorKey') ||
+      params?.get('publisherKey') ||
+      (urlCreatorFlag ? 'royal-blackjack-creator' : null);
+    const activeKey = urlKey || savedKey || undefined;
+
+    let savedUserId = overrideUserId || urlUserId || (typeof window !== 'undefined' ? localStorage.getItem('royal_blackjack_user_id') : null);
+    if (!savedUserId) {
+      savedUserId = `user_${Math.random().toString(36).slice(2, 11)}`;
+    }
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('royal_blackjack_user_id', savedUserId);
+    }
+
+    try {
+      const data = await postGameApi<{ user: User; tables: Record<string, Table> }>('/api/game/session', {
+        userId: savedUserId,
+        name: effectiveName,
+        avatar: effectiveAvatar,
+        publisherKey: activeKey,
+        isCreator: Boolean(activeKey || urlCreatorFlag),
+      });
+      set({
+        currentUser: data.user,
+        tables: data.tables,
+      });
+    } catch (err) {
+      console.error('Failed to initialize session from backend:', err);
+    }
+  },
+
+  syncStateFromServer: async () => {
+    const userId = get().currentUser?.id;
+    try {
+      const res = await fetch(`/api/game/state${userId ? `?userId=${encodeURIComponent(userId)}` : ''}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const nextTables: Record<string, Table> = data.tables || get().tables;
+
+      set((state) => {
+        const user = data.user || state.currentUser;
+        let updatedRecords = state.gameRecords;
+
+        if (user) {
+          for (const t of Object.values(nextTables)) {
+            const summary = t.lastRoundSummary;
+            if (summary && summary.roundId && !updatedRecords.some((r) => r.id === summary.roundId)) {
+              const mySeatResults = (summary.seatResults || []).filter((sr) => sr.userId === user.id);
+              if (mySeatResults.length > 0) {
+                const amountWon = summary.winnings?.[user.id] || 0;
+                const totalNet = mySeatResults.reduce((sum, sr) => sum + (sr.net || 0), 0);
+                const hasBlackjack = mySeatResults.some((sr) => sr.action === 'blackjack');
+                const resType: 'win' | 'lose' | 'push' | 'blackjack' = hasBlackjack
+                  ? 'blackjack'
+                  : totalNet > 0
+                  ? 'win'
+                  : totalNet < 0
+                  ? 'lose'
+                  : 'push';
+
+                updatedRecords = [
+                  {
+                    id: summary.roundId,
+                    tableId: t.id,
+                    result: resType,
+                    amountWon,
+                    timestamp: summary.timestamp || Date.now(),
+                    seatResults: mySeatResults,
+                    dealerScore: summary.dealerScore,
+                    currency: 'Gcoin' as const,
+                  },
+                  ...updatedRecords,
+                ].slice(0, 50);
+              }
+            }
+          }
+        }
+
+        return {
+          currentUser: user,
+          tables: nextTables,
+          gameRecords: updatedRecords,
+        };
+      });
+    } catch {
+      // Ignore transient poll errors
+    }
+  },
+
+  setCreatorIdentity: async (isCreator: boolean, creatorName?: string) => {
+    const current = get().currentUser;
+    const userId = current?.id || (typeof window !== 'undefined' ? localStorage.getItem('royal_blackjack_user_id') : null) || 'creator_user';
+    if (isCreator) {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('royal_blackjack_publisher_key', 'royal-blackjack-creator');
+      }
+      try {
+        const data = await postGameApi<{ user: User; tables: Record<string, Table> }>('/api/game/session', {
+          userId,
+          name: creatorName || current?.name || 'Creator',
+          publisherKey: 'royal-blackjack-creator',
+          isCreator: true,
+        });
+        set({
+          currentUser: { ...data.user, role: 'creator', isCreator: true, publisherKey: 'royal-blackjack-creator' },
+          tables: data.tables,
+        });
+      } catch {
+        set((state) => ({
+          currentUser: state.currentUser
+            ? { ...state.currentUser, role: 'creator', isCreator: true, publisherKey: 'royal-blackjack-creator' }
+            : null,
+        }));
+      }
+    } else {
+      get().exitPublisherMode();
+    }
+  },
+
+  verifyPublisher: async (publisherKey: string) => {
+    const trimmed = publisherKey.trim() || 'royal-blackjack-creator';
+    try {
+      const res = await fetch('/api/stats', {
+        headers: {
+          'x-creator-key': trimmed,
+          'x-publisher-key': trimmed,
+          'x-user-role': 'creator',
+        },
+      });
+      if (!res.ok) return false;
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('royal_blackjack_publisher_key', trimmed);
+      }
+      set((state) => ({
+        currentUser: state.currentUser
+          ? { ...state.currentUser, role: 'creator', isCreator: true, publisherKey: trimmed }
+          : null,
+      }));
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  exitPublisherMode: () => {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('royal_blackjack_publisher_key');
+    }
+    set((state) => ({
+      currentUser: state.currentUser
+        ? { ...state.currentUser, role: 'player', isCreator: false, publisherKey: undefined }
+        : null,
+    }));
   },
 
   createTable: async (settings, liquidity) => {
     const user = get().currentUser;
     if (!user) return '';
     
-    const { hostTableApi } = await import('../backend/hostTableApi');
-    const table = await hostTableApi.createTable(user.id, user.name, settings, liquidity);
+    const data = await postGameApi<{ table: Table; tables: Record<string, Table>; user: User }>('/api/game/tables', {
+      userId: user.id,
+      userName: user.name,
+      settings,
+      liquidity,
+    });
     
-    set((state) => ({
-      tables: { ...state.tables, [table.id]: table },
-      activeTableId: table.id
-    }));
-    return table.id;
+    const nextUnlocked = { ...get().unlockedTableIds, [data.table.id]: true };
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('royal_blackjack_unlocked_tables', JSON.stringify(nextUnlocked));
+      } catch {
+        // Ignore storage errors
+      }
+    }
+
+    set({
+      currentUser: data.user || user,
+      tables: data.tables,
+      activeTableId: data.table.id,
+      unlockedTableIds: nextUnlocked,
+    });
+    return data.table.id;
+  },
+
+  verifyTableCode: async (tableId, tableCode) => {
+    const user = get().currentUser;
+    try {
+      const data = await postGameApi<{ valid: boolean }>(`/api/game/tables/${tableId}/verify-code`, {
+        userId: user?.id,
+        tableCode: tableCode.trim(),
+      });
+      if (data.valid) {
+        const nextUnlocked = { ...get().unlockedTableIds, [tableId]: true };
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem('royal_blackjack_unlocked_tables', JSON.stringify(nextUnlocked));
+          } catch {
+            // Ignore storage errors
+          }
+        }
+        set({ unlockedTableIds: nextUnlocked });
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
   },
 
   updateTableSettings: async (tableId, settings) => {
     const user = get().currentUser;
     if (!user) return;
-    const { hostTableApi } = await import('../backend/hostTableApi');
-    const table = await hostTableApi.updateTableSettings(tableId, user.id, settings);
+    const res = await fetch(`/api/game/tables/${tableId}/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: user.id, settings }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
     set((state) => ({
-      tables: { ...state.tables, [table.id]: table }
+      currentUser: data.user || state.currentUser,
+      tables: data.tables || state.tables,
     }));
   },
 
   depositLiquidity: async (tableId, amount) => {
     const user = get().currentUser;
     if (!user) return;
-    const { hostTableApi } = await import('../backend/hostTableApi');
-    const table = await hostTableApi.depositLiquidity(tableId, user.id, amount);
+    const data = await postGameApi<{ tables: Record<string, Table>; user: User }>(`/api/game/tables/${tableId}/deposit`, {
+      userId: user.id,
+      amount,
+    });
     set((state) => ({
-      tables: { ...state.tables, [table.id]: table }
+      currentUser: data.user || state.currentUser,
+      tables: data.tables,
     }));
   },
 
   pauseTable: async (tableId) => {
     const user = get().currentUser;
     if (!user) return;
-    const { hostTableApi } = await import('../backend/hostTableApi');
-    const table = await hostTableApi.pauseTable(tableId, user.id);
+    const data = await postGameApi<{ tables: Record<string, Table>; user: User }>(`/api/game/tables/${tableId}/pause`, {
+      userId: user.id,
+    });
     set((state) => ({
-      tables: { ...state.tables, [table.id]: table }
+      currentUser: data.user || state.currentUser,
+      tables: data.tables,
     }));
   },
 
   resumeTable: async (tableId) => {
     const user = get().currentUser;
     if (!user) return;
-    const { hostTableApi } = await import('../backend/hostTableApi');
-    const table = await hostTableApi.resumeTable(tableId, user.id);
+    const data = await postGameApi<{ tables: Record<string, Table>; user: User }>(`/api/game/tables/${tableId}/resume`, {
+      userId: user.id,
+    });
     set((state) => ({
-      tables: { ...state.tables, [table.id]: table }
+      currentUser: data.user || state.currentUser,
+      tables: data.tables,
     }));
   },
 
   withdrawLiquidity: async (tableId, amount) => {
     const user = get().currentUser;
-    if (!user) return;
-    if (amount <= 0) return;
-    const { hostTableApi } = await import('../backend/hostTableApi');
-    const table = await hostTableApi.withdrawLiquidity(tableId, user.id, amount);
+    if (!user || amount <= 0) return;
+    const data = await postGameApi<{ tables: Record<string, Table>; user: User }>(`/api/game/tables/${tableId}/withdraw`, {
+      userId: user.id,
+      amount,
+    });
     set((state) => ({
-      tables: { ...state.tables, [table.id]: table }
+      currentUser: data.user || state.currentUser,
+      tables: data.tables,
     }));
   },
 
@@ -320,72 +530,27 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const user = get().currentUser;
     if (!user) return;
     
-    // Check if user is already seated with balance at another table
     const currentActiveId = get().activeTableId;
-    if (currentActiveId && currentActiveId !== tableId) {
-      const activeTable = get().tables[currentActiveId];
-      if (activeTable?.userBalances?.[user.id] && activeTable.userBalances[user.id].balance > 0) {
-        if (!confirm(`You have locked balance on ${activeTable.name}. Switch anyway?`)) {
-          return;
-        }
-      }
-    }
-    
-    const tableData = get().tables[tableId];
-    if (!tableData) return;
-    
-    const existingBal = tableData.userBalances[user.id]?.balance || 0;
-    let lockAmount = 0;
-    
-    if (tableData.settings.mode === 'tournament') {
-       if (existingBal === 0) {
-          lockAmount = tableData.settings.tournament?.ticketPrice || 0;
-          if (user.balance < lockAmount) {
-             console.error("Insufficient balance for tournament ticket");
-             return;
-          }
-       }
-    } else {
-       lockAmount = tableData.settings.minBuyIn;
-       const availableBalance = currency === 'Bonus' ? (user.bonusBalance || 0) : user.balance;
-       if (availableBalance < lockAmount) {
-          alert(`Insufficient ${currency} balance.`);
-          return;
-       }
-    }
-    
-    // Optimistic deduce
-    if (lockAmount > 0) {
-      if (currency === 'Bonus') {
-        set(state => ({ currentUser: { ...state.currentUser!, bonusBalance: (state.currentUser!.bonusBalance || 0) - lockAmount } }));
-      } else {
-        set(state => ({ currentUser: { ...state.currentUser!, balance: state.currentUser!.balance - lockAmount } }));
-      }
-    }
-
-    const { gameApi } = await import('../backend/gameApi');
-    const table = await gameApi.joinTable(tableId, user.id, seatIndex, lockAmount, currency);
+    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
+      `/api/game/tables/${tableId}/join`,
+      { userId: user.id, seatIndex, currency }
+    );
 
     if (currentActiveId !== tableId) {
-      // Async so we don't await
       get().recordVisit(tableId);
     }
 
-    set((state) => ({ tables: { ...state.tables, [tableId]: table }, activeTableId: tableId }));
+    set({
+      currentUser: data.user,
+      tables: data.tables,
+      activeTableId: tableId,
+    });
   },
 
   observeTable: (tableId) => {
     const user = get().currentUser;
     if (!user) return;
     const currentActiveId = get().activeTableId;
-    if (currentActiveId && currentActiveId !== tableId) {
-      const activeTable = get().tables[currentActiveId];
-      if (activeTable?.userBalances?.[user.id] && activeTable.userBalances[user.id].balance > 0) {
-        if (!confirm(`You have locked balance on ${activeTable.name}. Unlock or switch anyway?`)) {
-          return;
-        }
-      }
-    }
     if (currentActiveId !== tableId) {
       get().recordVisit(tableId);
     }
@@ -393,36 +558,36 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   recordVisit: async (tableId) => {
-    const { hostTableApi } = await import('../backend/hostTableApi');
-    await hostTableApi.recordVisit(tableId);
-    // Ideally we fetch the table to update it visually, but since we have periodic refresh or other means, it's fine.
-    // Or we can increment locally:
-    set(state => {
-      if (state.tables[tableId]) {
-        return {
-          tables: {
-            ...state.tables,
-            [tableId]: { ...state.tables[tableId], visits: (state.tables[tableId].visits || 0) + 1 }
-          }
-        };
-      }
-      return {};
-    });
+    const user = get().currentUser;
+    try {
+      const data = await postGameApi<{ tables: Record<string, Table>; user: User }>(
+        `/api/game/tables/${tableId}/visit`,
+        { userId: user?.id }
+      );
+      set((state) => ({
+        tables: data.tables || state.tables,
+      }));
+    } catch {
+      // Ignore visit telemetry error
+    }
   },
 
   leaveTable: async (tableId, seatIndex, isTimeout) => {
     const user = get().currentUser;
     if (!user) return;
     
-    const { gameApi } = await import('../backend/gameApi');
-    const { table } = await gameApi.leaveTable(tableId, user.id, seatIndex, isTimeout);
+    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
+      `/api/game/tables/${tableId}/leave`,
+      { userId: user.id, seatIndex, isTimeout }
+    );
 
-    set((state) => ({ 
-      tables: { ...state.tables, [tableId]: table }, 
-      activeTableId: seatIndex === undefined ? null : state.activeTableId 
+    set((state) => ({
+      currentUser: data.user || state.currentUser,
+      tables: data.tables,
+      activeTableId: seatIndex === undefined ? null : state.activeTableId,
     }));
 
-    if (table.currentTurnIndex === -1 && table.status === 'playing') {
+    if (data.table && data.table.currentTurnIndex === -1 && data.table.status === 'playing') {
       get().dealerPlay(tableId);
     }
   },
@@ -431,50 +596,66 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const user = get().currentUser;
     if (!user) return;
     
-    const { gameApi } = await import('../backend/gameApi');
-    const { table, refundedAmount, currency } = await gameApi.unlockTableBalance(tableId, user.id);
+    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
+      `/api/game/tables/${tableId}/unlock`,
+      { userId: user.id }
+    );
 
-    set((state) => {
-      if (currency === 'Bonus') {
-        return {
-          currentUser: { ...state.currentUser!, bonusBalance: (state.currentUser!.bonusBalance || 0) + refundedAmount },
-          tables: { ...state.tables, [tableId]: table }
-        };
-      } else {
-        return {
-          currentUser: { ...state.currentUser!, balance: state.currentUser!.balance + refundedAmount },
-          tables: { ...state.tables, [tableId]: table }
-        };
-      }
-    });
+    set((state) => ({
+      currentUser: data.user || state.currentUser,
+      tables: data.tables,
+    }));
 
-    if (table.currentTurnIndex === -1 && table.status === 'playing') {
+    if (data.table && data.table.currentTurnIndex === -1 && data.table.status === 'playing') {
       get().dealerPlay(tableId);
     }
+  },
+
+  refillGameCoins: async (tableId) => {
+    const user = get().currentUser;
+    if (!user) return;
+
+    const targetTableId = tableId || get().activeTableId;
+    const data = await postGameApi<{ user: User; table?: Table; tables: Record<string, Table> }>(
+      '/api/game/refill',
+      { userId: user.id, tableId: targetTableId }
+    );
+
+    set((state) => ({
+      currentUser: data.user || state.currentUser,
+      tables: data.tables || state.tables,
+    }));
   },
 
   placeBet: async (tableId, seatIndex, amount, sideBets) => {
     const user = get().currentUser;
     if (!user) return;
     
-    const { gameApi } = await import('../backend/gameApi');
-    const { table, deducted } = await gameApi.placeBet(tableId, seatIndex, user.id, amount, sideBets);
+    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
+      `/api/game/tables/${tableId}/bet`,
+      { userId: user.id, seatIndex, amount, sideBets }
+    );
     
     set((state) => ({
-      tables: { ...state.tables, [tableId]: table }
+      currentUser: data.user || state.currentUser,
+      tables: data.tables,
     }));
   },
 
   startGame: async (tableId) => {
-    const { gameApi } = await import('../backend/gameApi');
-    const table = await gameApi.startGame(tableId);
+    const user = get().currentUser;
+    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
+      `/api/game/tables/${tableId}/start`,
+      { userId: user?.id }
+    );
     
     set((state) => ({
-      tables: { ...state.tables, [tableId]: table }
+      currentUser: data.user || state.currentUser,
+      tables: data.tables,
     }));
 
-    if (table.currentTurnIndex === -1 && table.status === 'playing') {
-      const activeSeatsCount = table.seats.filter(s => s.isReady).length;
+    if (data.table.currentTurnIndex === -1 && data.table.status === 'playing') {
+      const activeSeatsCount = data.table.seats.filter(s => s.isReady).length;
       setTimeout(() => {
         get().dealerPlay(tableId);
       }, (activeSeatsCount + 1) * 400 + 500);
@@ -482,68 +663,102 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   hit: async (tableId, seatIndex) => {
-    const { gameApi } = await import('../backend/gameApi');
-    const table = await gameApi.hit(tableId, seatIndex, (interimTable) => {
-      set((state) => ({ tables: { ...state.tables, [tableId]: interimTable } }));
-    });
+    const user = get().currentUser;
+    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
+      `/api/game/tables/${tableId}/hit`,
+      { userId: user?.id, seatIndex }
+    );
     
-    set((state) => ({ tables: { ...state.tables, [tableId]: table } }));
+    set((state) => ({
+      currentUser: data.user || state.currentUser,
+      tables: data.tables,
+    }));
 
-    if (table.currentTurnIndex === -1 && table.status === 'playing') {
-       get().dealerPlay(tableId);
+    if (data.table.currentTurnIndex === -1 && data.table.status === 'playing') {
+      get().dealerPlay(tableId);
     }
   },
 
   stand: async (tableId, seatIndex) => {
-    const { gameApi } = await import('../backend/gameApi');
-    const table = await gameApi.stand(tableId, seatIndex, (interimTable) => {
-      set((state) => ({ tables: { ...state.tables, [tableId]: interimTable } }));
-    });
+    const user = get().currentUser;
+    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
+      `/api/game/tables/${tableId}/stand`,
+      { userId: user?.id, seatIndex }
+    );
     
-    set((state) => ({ tables: { ...state.tables, [tableId]: table } }));
+    set((state) => ({
+      currentUser: data.user || state.currentUser,
+      tables: data.tables,
+    }));
 
-    if (table.currentTurnIndex === -1 && table.status === 'playing') {
+    if (data.table.currentTurnIndex === -1 && data.table.status === 'playing') {
       get().dealerPlay(tableId);
     }
   },
 
   doubleDown: async (tableId, seatIndex) => {
-    const { gameApi } = await import('../backend/gameApi');
+    const user = get().currentUser;
+    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
+      `/api/game/tables/${tableId}/double`,
+      { userId: user?.id, seatIndex }
+    );
     
-    const table = await gameApi.doubleDown(tableId, seatIndex, (interimTable) => {
-      set((state) => ({ tables: { ...state.tables, [tableId]: interimTable } }));
-    });
-    
-    set((state) => ({ tables: { ...state.tables, [tableId]: table } }));
+    set((state) => ({
+      currentUser: data.user || state.currentUser,
+      tables: data.tables,
+    }));
 
-    if (table.currentTurnIndex === -1 && table.status === 'playing') {
+    if (data.table.currentTurnIndex === -1 && data.table.status === 'playing') {
       get().dealerPlay(tableId);
     }
   },
 
   split: async (tableId, seatIndex) => {
-    const { gameApi } = await import('../backend/gameApi');
+    const user = get().currentUser;
+    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
+      `/api/game/tables/${tableId}/split`,
+      { userId: user?.id, seatIndex }
+    );
     
-    const table = await gameApi.split(tableId, seatIndex);
-    set((state) => ({ tables: { ...state.tables, [tableId]: table } }));
+    set((state) => ({
+      currentUser: data.user || state.currentUser,
+      tables: data.tables,
+    }));
 
-    if (table.currentTurnIndex === -1 && table.status === 'playing') {
+    if (data.table.currentTurnIndex === -1 && data.table.status === 'playing') {
       get().dealerPlay(tableId);
     }
   },
 
   buyInsurance: async (tableId, seatIndex) => {
-    const { gameApi } = await import('../backend/gameApi');
-    const table = await gameApi.buyInsurance(tableId, seatIndex);
-    set((state) => ({ tables: { ...state.tables, [tableId]: table } }));
+    const user = get().currentUser;
+    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
+      `/api/game/tables/${tableId}/insurance`,
+      { userId: user?.id, seatIndex }
+    );
+    set((state) => ({
+      currentUser: data.user || state.currentUser,
+      tables: data.tables,
+    }));
   },
 
   dealerPlay: async (tableId) => {
-    const { gameApi } = await import('../backend/gameApi');
-    const { table, winnings, seatResults, returnedLiquidity, dealerScore } = await gameApi.dealerPlayAndResolve(tableId);
+    const currentUser = get().currentUser;
+    const data = await postGameApi<{
+      user: User;
+      table: Table;
+      tables: Record<string, Table>;
+      winnings: Record<string, number>;
+      seatResults: SeatResult[];
+      dealerScore: number;
+    }>(`/api/game/tables/${tableId}/dealer-play`, {
+      userId: currentUser?.id,
+    });
     
+    const { table, tables, winnings, seatResults, dealerScore } = data;
+
     set((state) => {
-      let user = state.currentUser;
+      const user = data.user || state.currentUser;
       const amountWon = user ? (winnings[user.id] || 0) : 0;
       
       let res: 'win' | 'lose' | 'push' | 'blackjack' = 'push';
@@ -556,56 +771,39 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
 
       const mySeatResults = user ? seatResults.filter(sr => sr.userId === user.id) : [];
+      const roundId = table.lastRoundSummary?.roundId || Math.random().toString(36).substr(2, 9);
 
-      // Refund locked balance if table became officially closed during this round's resolution
-      if (table.status === 'closed' && user) {
-        const myLockedItem = table.userBalances?.[user.id] || null;
-        if (myLockedItem && myLockedItem.balance > 0) {
-           if (myLockedItem.currency === 'Bonus') {
-             user = { ...user, bonusBalance: (user.bonusBalance || 0) + myLockedItem.balance };
-           } else {
-             user = { ...user, balance: user.balance + myLockedItem.balance };
-           }
-        }
-        table.userBalances = {}; // Free all players
-      }
-
-      if (user && mySeatResults.length > 0) {
-        let recCurrency: 'Gcoin' | 'Bonus' | undefined = undefined;
-        // In case it's closed and cleared, we use state table
-        const balRecord = state.tables[tableId]?.userBalances?.[user.id] || table.userBalances?.[user.id];
-        if (balRecord) {
-           recCurrency = balRecord.currency || 'Gcoin';
-        }
-        
+      if (user && mySeatResults.length > 0 && !state.gameRecords.some(r => r.id === roundId)) {
         const record: typeof state.gameRecords[0] = {
-          id: Math.random().toString(36).substr(2, 9),
+          id: roundId,
           tableId,
           result: res,
           amountWon,
-          timestamp: Date.now(),
+          timestamp: table.lastRoundSummary?.timestamp || Date.now(),
           seatResults: mySeatResults,
           dealerScore,
-          currency: recCurrency
+          currency: 'Gcoin'
         };
+        const updatedRecords = [record, ...state.gameRecords].slice(0, 50);
+
         return {
           currentUser: user,
-          tables: { ...state.tables, [tableId]: table },
-          gameRecords: [record, ...state.gameRecords].slice(0, 50),
+          tables,
+          gameRecords: updatedRecords,
           activeTableId: state.activeTableId === tableId && table.status === 'closed' ? null : state.activeTableId
         };
       }
 
       return {
         currentUser: user,
-        tables: { ...state.tables, [tableId]: table },
+        tables,
         activeTableId: state.activeTableId === tableId && table.status === 'closed' ? null : state.activeTableId
       };
     });
   },
 
-  resolveGame: async (tableId) => {
-    // Moved to dealerPlayAndResolve entirely
+  resolveGame: async (_tableId) => {
+    // Handled inside backend dealerPlay
   },
 
   addGameRecord: (record) => {
@@ -616,30 +814,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const user = get().currentUser;
     if (!user) return;
     
-    const { hostTableApi } = await import('../backend/hostTableApi');
-    const { table } = await hostTableApi.closeTable(tableId, user.id);
+    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
+      `/api/game/tables/${tableId}/close`,
+      { userId: user.id }
+    );
     
-    set((state) => {
-      let updatedUser = { ...state.currentUser! };
-      const updatedTable = { ...table };
-      
-      if (updatedTable.status === 'closed') {
-        const myBalRecord = updatedTable.userBalances?.[updatedUser.id] || null;
-        if (myBalRecord && myBalRecord.balance > 0) {
-           if (myBalRecord.currency === 'Bonus') {
-               updatedUser.bonusBalance = (updatedUser.bonusBalance || 0) + myBalRecord.balance;
-           } else {
-               updatedUser.balance += myBalRecord.balance;
-           }
-        }
-        updatedTable.userBalances = {};
-      }
-
-      return {
-        currentUser: updatedUser,
-        tables: { ...state.tables, [tableId]: updatedTable },
-        activeTableId: state.activeTableId === tableId && updatedTable.status === 'closed' ? null : state.activeTableId
-      };
-    });
+    set((state) => ({
+      currentUser: data.user || state.currentUser,
+      tables: data.tables,
+      activeTableId: state.activeTableId === tableId && data.table.status === 'closed' ? null : state.activeTableId,
+    }));
   }
 }));
+

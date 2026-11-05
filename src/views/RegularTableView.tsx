@@ -12,15 +12,13 @@ import { DelayedScore } from '@/components/blackjack/DelayedScore';
 import { DealerArea } from '@/components/blackjack/DealerAreaUI';
 import { WinAnimation } from '@/components/blackjack/WinAnimation';
 import { GoldenWreath } from '@/components/blackjack/GoldenWreath';
-import { HeaderUI } from '@/components/blackjack/HeaderUI';
-import { PlayModeToggle } from '@/components/PlayModeToggle';
 import { LiveTablesSidebar } from '@/components/blackjack/LiveTablesSidebar';
-import { CommentsWidget } from '@/components/blackjack/CommentsWidget';
 import { ConfirmModal } from '@/components/blackjack/ConfirmModal';
 import { DealControlHUD } from '@/components/blackjack/DealControlHUD';
 import { ActiveTurnHUD } from '@/components/blackjack/ActiveTurnHUD';
 import { RankWidget } from '@/components/blackjack/RankWidget';
 import { TablePlayersSidebar } from '@/components/blackjack/TablePlayersSidebar';
+import { TableSeatButton } from '@/components/blackjack/TableSeatButton';
 import { CurrencyIcon } from '@/components/CurrencyIcon';
 import { useBotBehavior } from '@/hooks/useBotBehavior';
 
@@ -52,7 +50,7 @@ import {
 } from '@/store/uiStore';
 
 export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }: { onNavigate: (view: 'lobby' | 'create' | 'table' | 'host_table' | 'manage_tables') => boolean | void, onToggleSidebar?: () => void, isSidebarOpen?: boolean }) {
-  const { tables, activeTableId, currentUser, leaveTable, joinTable, placeBet, startGame, hit, stand, doubleDown, split, buyInsurance, gameRecords: allGameRecords, unlockTableBalance } = useGameStore();
+  const { tables, activeTableId, currentUser, leaveTable, joinTable, placeBet, startGame, hit, stand, doubleDown, split, buyInsurance, gameRecords: allGameRecords, unlockTableBalance, refillGameCoins } = useGameStore();
 
   const userHostedTables = Object.values(tables).filter(t => t.houseId === currentUser?.id);
   const hasHostedTables = userHostedTables.length > 0;
@@ -425,30 +423,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     
     const seat = table.seats[seatIndex];
     if (seat.userId === null) {
-       const userBalRecord = table.userBalances?.[currentUser.id];
-       const userBal = userBalRecord?.balance || 0;
-       const mySeatsCount = mySeats.length;
-       const currencyToUse = table.houseId !== 'system' ? 'Gcoin' : playMode;
-       if (table.settings.mode === 'tournament') {
-           if (userBal > 0) { // they already have tournament chips
-               joinTable(table.id, seatIndex, currencyToUse);
-           } else {
-               setConfirmAction({
-                 message: `Do you want to pay ${table.settings.tournament?.ticketPrice} Gcoin ticket to enter this tournament and get ${table.settings.tournament?.startingChips} starting chips?`,
-                 onConfirm: () => joinTable(table.id, seatIndex, currencyToUse)
-               });
-           }
-       } else {
-           const requiredMinBal = table.settings.minBuyIn * (mySeatsCount + 1);
-           if (userBal >= requiredMinBal) {
-             joinTable(table.id, seatIndex, currencyToUse);
-           } else {
-             setConfirmAction({
-               message: `Do you want to lock ${table.settings.minBuyIn} ${currencyToUse} to sit at this seat?`,
-               onConfirm: () => joinTable(table.id, seatIndex, currencyToUse)
-             });
-           }
-       }
+       await joinTable(table.id, seatIndex, 'Gcoin');
     } else if (seat.userId === currentUser.id) {
        await leaveTable(table.id, seatIndex);
     }
@@ -509,13 +484,26 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
           )
         );
       } catch (err: any) {
-        // If placeBet fails (e.g., game already started), ignore silently or alert
         console.warn("Could not place bet:", err);
       } finally {
         setTimeout(() => { isPlacingBetRef.current = false; }, 1000);
       }
+    } else if (!canAfford && myUserBal < table.settings.minBet) {
+      setConfirmAction({
+        title: 'Free 5,000 Game Coins Refill',
+        message: 'You are out of Game Coins! Claim a fresh 5,000 Game Coins refill for free to keep playing.',
+        confirmText: 'Claim 5,000 Coins',
+        onConfirm: async () => {
+          await refillGameCoins(table.id);
+        }
+      });
     } else {
-      alert(`Invalid bet or insufficient locked balance (Min: ${table.settings.minBet}, Max: ${table.settings.maxBet}, Total Cost: ${totalBet}, Locked: ${myUserBal})`);
+      setConfirmAction({
+        title: 'Insufficient Game Coins',
+        message: `Total bet (${totalBet.toLocaleString()}) exceeds your current Game Coins (${myUserBal.toLocaleString()}). Lower your bet or claim a 5,000 Game Coins refill when your balance reaches 0.`,
+        confirmText: 'OK',
+        onConfirm: () => {}
+      });
     }
   };
 
@@ -679,16 +667,14 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
         <ConfirmModal action={confirmAction} onClose={() => setConfirmAction(null)} />
       )}
 
-      {/* Invisible global header placeholder or minimal top nav if needed */}
-      <HeaderUI 
-        onLeave={() => {
-           onNavigate('lobby');
-        }}
-        isMuted={isMuted}
-        setIsMuted={setIsMuted}
-        onToggleSidebar={() => onToggleSidebar && onToggleSidebar()}
-        centerContent={table.houseId === 'system' ? <PlayModeToggle disabled={!!(table.userBalances?.[currentUser.id]?.balance && table.userBalances[currentUser.id].balance > 0) || mySeats.length > 0} onUnlockRequest={handleUnlockRequest} /> : undefined}
-      />
+      {/* Top-Left Exit Button on Table Felt (using HeaderUI exit icon) */}
+      <button
+        onClick={() => onNavigate('lobby')}
+        className="fixed top-4 left-4 z-[90] w-10 h-10 flex items-center justify-center text-white/75 hover:text-white rounded-full bg-black/45 hover:bg-black/65 border border-white/15 backdrop-blur-sm transition-colors cursor-pointer pointer-events-auto shadow-lg"
+        title="Return / Exit"
+      >
+        <LogOut className="w-5 h-5 scale-x-[-1]" />
+      </button>
 
       {/* Floating Tables Lobby Button */}
       <div className="fixed left-0 top-[calc(50%-2.5rem)] md:top-[calc(50%-1rem)] -translate-y-1/2 z-[90] flex flex-col gap-[7px] pointer-events-auto">
@@ -719,16 +705,9 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
         gameRecords={gameRecords}
       />
 
-      <CommentsWidget 
-        unreadCount={15} 
-        showFloatingComments={showFloatingComments}
-        setShowFloatingComments={setShowFloatingComments}
-        isOpen={isCommentsOpen}
-        setIsOpen={setIsCommentsOpen}
-      />
       <RankWidget />
 
-      <div className="w-full max-w-[1024px] flex flex-col items-center gap-1 z-40 px-2 sm:px-4 pt-1 sm:pt-2 pb-1 relative pointer-events-none shrink-0">
+      <div className="w-full max-w-[1024px] flex flex-col items-center gap-1 z-40 px-2 sm:px-4 pt-3 sm:pt-4 pb-1 relative pointer-events-none shrink-0">
         <div className="flex flex-row items-center justify-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-[420px] mx-auto mt-[-2px]">
           <div className="relative flex flex-row items-center border-[2px] border-[#6b4c2a] rounded-full bg-gradient-to-b from-[#eac574] via-[#d0a758] to-[#997027] p-1 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8),inset_0_-1px_2px_rgba(0,0,0,0.4),0_4px_10px_rgba(0,0,0,0.5)] justify-between flex-1 h-[40px] sm:h-[44px] min-w-[240px]">
             <div className="absolute left-1 right-1 inset-y-1 bg-[url('https://www.transparenttextures.com/patterns/dark-matter.png')] opacity-20 pointer-events-none rounded-full z-0"></div>
@@ -737,39 +716,25 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold tracking-wider">
                   {(() => {
                     const userBal = table.userBalances?.[currentUser.id];
-                    const currency = userBal ? (userBal.currency || 'Gcoin') : playMode;
-                    const displayBalance = userBal ? userBal.balance : (playMode === 'Bonus' ? (currentUser.bonusBalance || 0) : currentUser.balance);
+                    const displayBalance = userBal ? userBal.balance : currentUser.balance;
+                    const isOutOfCoins = displayBalance < table.settings.minBet && (table.status === 'waiting' || myTotalBet === 0);
                     return (
                       <>
-                        <CurrencyIcon currency={currency} className="w-3.5 h-3.5" />
+                        <CurrencyIcon currency="Chip" className="w-3.5 h-3.5" />
                         <div className="flex items-center">
-                          <span className={cn("text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-mono", currency === 'Bonus' ? "text-[#2b7fff]" : "text-[#ffc53d]")}>
+                          <span className="text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-mono text-[#ffc53d]">
                             {displayBalance.toLocaleString('en-US', {minimumFractionDigits: displayBalance % 1 !== 0 ? 2 : 0, maximumFractionDigits: 2})}
                           </span>
-                          {userBal && (
+                          {isOutOfCoins && (
                             <button 
                               onClick={async () => {
-                                const notReady = mySeats.some(sIdx => table.seats[sIdx].isReady === false && table.seats[sIdx].hand);
-                                if (notReady || table.status === 'playing') {
-                                  setConfirmAction({
-                                    message: "Cannot unlock while playing or with active bets.",
-                                    onConfirm: () => {}
-                                  });
-                                  return;
-                                }
-                                setConfirmAction({
-                                  message: userBal.balance === 0 ? "Leave your seat to add more funds from your wallet?" : `Unlock table balance? ${currency === 'Gcoin' ? '(1% fee on net winnings)' : '(No fee for Bonus play)'}`,
-                                  onConfirm: async () => {
-                                    await unlockTableBalance(table.id);
-                                  }
-                                });
+                                soundManager.playChip();
+                                await refillGameCoins(table.id);
                               }}
-                              className={cn(
-                                "ml-2 text-white/90 text-[10px] px-2 py-0.5 rounded border border-white/20 transition-colors pointer-events-auto shadow-[0_2px_4px_rgba(0,0,0,0.4)] hover:opacity-80",
-                                userBal.balance === 0 ? "bg-[#eaaa08]/90 font-bold text-black" : "bg-red-900/60"
-                              )}
+                              className="ml-2 text-black text-[10px] px-2 py-0.5 rounded-full border border-white/30 transition-colors pointer-events-auto shadow-[0_2px_6px_rgba(0,0,0,0.5)] hover:brightness-110 bg-gradient-to-r from-[#ffd86b] to-[#eaaa08] font-extrabold tracking-tight cursor-pointer whitespace-nowrap"
+                              title="Claim free 5,000 Game Coins refill"
                             >
-                              {userBal.balance === 0 ? "ADD FUND" : "UNLOCK"}
+                              +5,000 COINS
                             </button>
                           )}
                         </div>
@@ -799,8 +764,8 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                      </span>
                      {recentWinAmount.amount > 0 && (
                        <>
-                         <CurrencyIcon currency={activeCurrency} className="w-3.5 h-3.5" />
-                         <span className={cn("font-mono text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]", activeCurrency === 'Bonus' ? "text-[#2b7fff]" : "text-[#ffc53d]")}>{recentWinAmount.amount % 1 !== 0 ? recentWinAmount.amount.toFixed(2) : recentWinAmount.amount}</span>
+                         <CurrencyIcon currency="Chip" className="w-3.5 h-3.5" />
+                         <span className="font-mono text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] text-[#ffc53d]">{recentWinAmount.amount % 1 !== 0 ? recentWinAmount.amount.toFixed(2) : recentWinAmount.amount}</span>
                        </>
                      )}
                    </motion.div>
@@ -810,8 +775,8 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                        <ArrowDown className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                        <span>Bet</span>
                      </div>
-                     <CurrencyIcon currency={activeCurrency} className="w-3.5 h-3.5" />
-                     <span className={cn("font-mono text-[14px] sm:text-[16px]", activeCurrency === 'Bonus' ? "text-[#2b7fff]" : "text-[#ffc53d]")}>{myTotalBet % 1 !== 0 ? myTotalBet.toFixed(2) : myTotalBet}</span>
+                     <CurrencyIcon currency="Chip" className="w-3.5 h-3.5" />
+                     <span className="font-mono text-[14px] sm:text-[16px] text-[#ffc53d]">{myTotalBet % 1 !== 0 ? myTotalBet.toFixed(2) : myTotalBet}</span>
                    </div>
                  )}
                </div>
@@ -830,7 +795,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                 if (userBal) {
                     setConfirmAction({
                         title: "Leave Table",
-                        message: "You have locked chips on this table. Do you want to unlock your funds?",
+                        message: "You have Game Coins on this table. Do you want to unlock your funds?",
                         confirmText: "Unlock & Leave",
                         cancelText: "Just Leave",
                         onConfirm: async () => {
@@ -983,9 +948,6 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
         </div>
 
       <div className="flex-1 w-full max-w-[1024px] flex flex-col items-center justify-between pb-0 pt-0 mt-0 ml-0 relative min-h-0 overflow-hidden origin-center">
-        
-        {/* Target anchor for floating comments, positioned relative to the overall game board wrapper */}
-        <div id="floating-comments-root" className="absolute top-[50px] md:top-[65px] left-0 right-0 pointer-events-none z-40 flex flex-col gap-1.5 justify-start items-start overflow-visible" />
 
 <AnimatePresence>
              {isShuffling && (
@@ -1068,7 +1030,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            </div>
 
            {/* Game Rules Center Area */}
-           <div className="absolute top-[35%] sm:top-[40%] left-1/2 -translate-x-1/2 -translate-y-[90%] sm:-translate-y-[100%] md:-translate-y-[105%] mt-[30px] md:mt-[35px] z-10 px-2 sm:px-4 whitespace-nowrap scale-[0.6] sm:scale-[0.8] md:scale-100 flex flex-col items-center gap-1.5 sm:gap-2 pointer-events-none">
+           <div className="absolute top-[48%] sm:top-[50%] left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 px-2 sm:px-4 whitespace-nowrap scale-[0.6] sm:scale-[0.8] md:scale-100 flex flex-col items-center gap-1 sm:gap-1.5 pointer-events-none">
               <span className="text-[#c6a364] text-[11px] md:text-[16px] font-black tracking-[0.3em] uppercase opacity-90" style={{ textShadow: '0px 1px 1px rgba(0,0,0,1), 0px -1px 1px rgba(0,0,0,0.8), 0px 0px 3px rgba(176,142,85,0.4)' }}>
                 Blackjack Pays 3 to 2
               </span>
@@ -1385,53 +1347,17 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                        </div>
                      )}
 
-                     {/* If waiting, render the select overlay */}
-                       <motion.div 
-                         onClick={() => toggleSeatSelection(seatIdx)}
-                         animate={shakeSeats && !isSelected && seat.userId === null ? { x: [-10, 10, -10, 10, 0] } : {}}
-                         transition={{ duration: 0.4 }}
-                         className={cn(
-                           "absolute bottom-[5px] sm:bottom-[10px] left-1/2 -translate-x-1/2 w-[45px] h-[45px] sm:w-[50px] sm:h-[50px] md:w-[60px] md:h-[60px] text-[10px] sm:text-[12px] z-50 shadow-xl bg-black/60 rounded-full",
-                           "flex flex-col items-center justify-center border transition-all cursor-pointer font-bold uppercase tracking-widest leading-none",
-                           seat.isReady
-                             ? "border-[#32d5a4] text-[#32d5a4] bg-[#32d5a4]/30 shadow-[0_0_15px_rgba(50,213,164,0.3)] backdrop-blur-[2px]" 
-                             : (isSelected ? "border-amber-400/80 text-amber-400 bg-black/40 shadow-[0_0_15px_rgba(251,191,36,0.3)] backdrop-blur-[2px]" : 
-                                (seat.userId !== null ? "border-white/20 text-white/50 bg-black/40" : "border-white/10 text-white bg-black/60 shadow-lg hover:border-white/50 backdrop-blur-[2px]")
-                               ),
-                           shakeSeats && !isSelected && seat.userId === null && "border-red-500/80 text-white bg-red-500/60"
-                         )}
-                       >
-                         {seat.isReady ? (
-                             <div className="flex flex-col items-center justify-center w-full h-full relative">
-                               <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${seat.userId}`} alt="Avatar" className={cn("w-[80%] h-[80%] rounded-full opacity-100", isSelected ? "ring-2 ring-offset-1 ring-offset-black ring-[#32d5a4] shadow-[0_0_15px_rgba(50,213,164,0.8)]" : "shadow-[0_0_10px_rgba(50,213,164,0.5)]")} />
-                               {dealCountdown !== null && (
-                                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[70%] h-[70%] flex flex-col items-center justify-center bg-black/60 rounded-full z-10 shadow-[inset_0_0_10px_rgba(50,213,164,0.2)]">
-                                   <span className="text-[6px] sm:text-[8px] font-black text-[#32d5a4] uppercase mt-0.5" style={{WebkitTextStroke: '0.2px black'}}>READY</span>
-                                 </div>
-                               )}
-                               {isSelected && <div className="absolute -bottom-2 sm:-bottom-2.5 bg-amber-500 text-black text-[6px] sm:text-[7px] font-black uppercase px-2 py-0.5 rounded shadow-lg z-20 whitespace-nowrap">You</div>}
-                             </div>
-                          ) : (
-                           isSelected ? (
-                             <div className="flex flex-col items-center justify-center w-full h-full relative">
-                               <div className="absolute inset-[3px] rounded-full ring-2 ring-amber-400 ring-offset-0 animate-pulse shadow-[0_0_20px_rgba(251,191,36,0.8)] z-0"></div>
-                               <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${currentUser.id}`} alt="Avatar" className="w-[80%] h-[80%] rounded-full opacity-100 relative z-10" />
-                               <div className="absolute -bottom-2 sm:-bottom-2.5 bg-amber-500 text-black text-[6px] sm:text-[7px] font-black uppercase px-2 py-0.5 rounded shadow-lg z-20 whitespace-nowrap">You</div>
-                             </div>
-                           ) : (
-                             seat.userId !== null ? (
-                               <div className="flex flex-col items-center justify-center w-full h-full relative">
-                                 <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${seat.userId}`} alt="Avatar" className="w-[80%] h-[80%] rounded-full opacity-60 grayscale" />
-                               </div>
-                             ) : (
-                                <div className="flex flex-col items-center gap-[1px]">
-                                  <span className="text-[8px] sm:text-[10px] md:text-[12px] text-white/50 tracking-widest font-mono uppercase">SEAT {table.seats.length - seatIdx}</span>
-                                  <span>Sit</span>
-                                </div>
-                              )
-                           )
-                         )}
-                       </motion.div>
+                     {/* Seat selection & player profile button */}
+                      <TableSeatButton
+                        seat={seat}
+                        seatIdx={seatIdx}
+                        totalSeats={table.seats.length}
+                        currentUser={currentUser}
+                        isSelected={isSelected}
+                        dealCountdown={dealCountdown}
+                        shakeSeats={shakeSeats}
+                        onClick={() => toggleSeatSelection(seatIdx)}
+                      />
                    </div>
                  );
                })}

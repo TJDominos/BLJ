@@ -12,14 +12,13 @@ import { DelayedScore } from '@/components/blackjack/DelayedScore';
 import { DealerArea } from '@/components/blackjack/DealerAreaUI';
 import { WinAnimation } from '@/components/blackjack/WinAnimation';
 import { GoldenWreath } from '@/components/blackjack/GoldenWreath';
-import { HeaderUI } from '@/components/blackjack/HeaderUI';
 import { LiveTablesSidebar } from '@/components/blackjack/LiveTablesSidebar';
-import { CommentsWidget } from '@/components/blackjack/CommentsWidget';
 import { ConfirmModal } from '@/components/blackjack/ConfirmModal';
 import { DealControlHUD } from '@/components/blackjack/DealControlHUD';
 import { ActiveTurnHUD } from '@/components/blackjack/ActiveTurnHUD';
 import { RankWidget } from '@/components/blackjack/RankWidget';
 import { TablePlayersSidebar } from '@/components/blackjack/TablePlayersSidebar';
+import { TableSeatButton } from '@/components/blackjack/TableSeatButton';
 import { CurrencyIcon } from '@/components/CurrencyIcon';
 import { useBotBehavior } from '@/hooks/useBotBehavior';
 
@@ -50,7 +49,7 @@ import {
 } from '@/store/uiStore';
 
 export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen }: { onNavigate: (view: 'lobby' | 'create' | 'table' | 'host_table' | 'manage_tables') => boolean | void, onToggleSidebar?: () => void, isSidebarOpen?: boolean }) {
-  const { tables, activeTableId, currentUser, leaveTable, joinTable, placeBet, startGame, hit, stand, doubleDown, split, buyInsurance, gameRecords, unlockTableBalance } = useGameStore();
+  const { tables, activeTableId, currentUser, leaveTable, joinTable, placeBet, startGame, hit, stand, doubleDown, split, buyInsurance, gameRecords, unlockTableBalance, refillGameCoins } = useGameStore();
 
   const userHostedTables = Object.values(tables).filter(t => t.houseId === currentUser?.id);
   const hasHostedTables = userHostedTables.length > 0;
@@ -180,21 +179,26 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
           return;
       }
 
-      const myNotReady = mySeats.filter(sIdx => !table.seats[sIdx].isReady);
-      if (myNotReady.length > 0) {
-         myNotReady.forEach(sIdx => leaveTable(table.id, sIdx, true));
-      }
-      
-      // If none of the remaining players are ready, don't restart the countdown here,
-      // it will be handled by the other useEffect when seats update.
-      const hasReady = table.seats.some(s => s.userId !== null && s.isReady);
-      if (hasReady && (table.houseId === 'system' || table.houseId === currentUser?.id)) {
-         startGame(table.id);
-      } else if (!hasReady) {
-         setDealCountdown(null);
-      }
+      const runCountdownDeal = async () => {
+        const myNotReady = mySeats.filter(sIdx => !table.seats[sIdx].isReady);
+        if (myNotReady.length > 0) {
+          const minBet = table.settings.tournament?.minBetChips || table.settings.minBet || 50;
+          const userAllowance = table.userBalances?.[currentUser.id]?.balance || 0;
+          const desiredBet = parseInt(betAmountStr.replace(/,/g, '') || '0', 10) || minBet;
+          const perSeatBet = Math.min(userAllowance, Math.max(minBet, desiredBet));
+          if (perSeatBet > 0) {
+            await Promise.all(
+              myNotReady.map(sIdx => placeBet(table.id, sIdx, perSeatBet, { pair: 0, twentyOnePlusThree: 0 }).catch(() => {}))
+            );
+          }
+        }
+        if (table.houseId === 'system' || table.houseId === currentUser?.id) {
+          await startGame(table.id);
+        }
+      };
+      runCountdownDeal();
     }
-  }, [dealCountdown, table?.id, table?.status, JSON.stringify(table?.seats), table?.settings.actionTimeLimit, mySeats, leaveTable, startGame, table?.houseId, currentUser?.id, confirmAction]);
+  }, [dealCountdown, table?.id, table?.status, JSON.stringify(table?.seats), table?.settings.actionTimeLimit, mySeats, placeBet, startGame, table?.houseId, currentUser?.id, confirmAction, betAmountStr]);
 
   const scrollSeats = (dir: 'left' | 'right') => {
     if (seatsContainerRef.current) {
@@ -397,47 +401,83 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
 
   const toggleSeatSelection = async (seatIndex: number) => {
     if (table.status !== 'waiting') return;
+    // Requirement 6: For tournament, once a player is seated, they cannot leave or change their seat
+    if (mySeats.length > 0) return;
+
     const clickPan = table.seats.length > 1 ? (seatIndex / (table.seats.length - 1)) * 2 - 1 : 0;
     soundManager.playClick(clickPan);
     
     const seat = table.seats[seatIndex];
     if (seat.userId === null) {
        const userBal = table.userBalances?.[currentUser.id]?.balance || 0;
-       const mySeatsCount = mySeats.length;
        if (table.settings.mode === 'tournament') {
-           if (userBal > 0) { // they already have tournament chips
-               joinTable(table.id, seatIndex);
+           if (userBal > 0) {
+               try {
+                 await joinTable(table.id, seatIndex);
+               } catch (err: any) {
+                 setConfirmAction({
+                   title: "Cannot Join Seat",
+                   message: err?.message || "Unable to join tournament seat.",
+                   confirmText: "OK",
+                   onConfirm: () => setConfirmAction(null)
+                 });
+               }
            } else {
+               const ticketPriceCoins = table.settings.tournament?.ticketPrice || 100;
+               const lockedAllowance = table.settings.tournament?.startingChips || 5000;
+               const canAffordTicket = (currentUser.balance || 0) >= ticketPriceCoins;
                setConfirmAction({
-                 title: "Tournament Entry",
+                 title: "Purchase Tournament Ticket",
                  message: (
                    <div className="space-y-3">
-                     <p>Do you want to pay <span className="font-bold text-yellow-500">{table.settings.tournament?.ticketPrice} Gcoin</span> to enter this tournament and get <span className="font-bold text-emerald-400">{table.settings.tournament?.startingChips} chips</span>?</p>
-                     <div className="bg-yellow-500/10 border border-yellow-500/30 p-2 rounded text-xs text-yellow-300 italic">
-                        Tickets go directly to the prize pool, which is distributed according to the tournament's winning rules.
+                     <p>
+                       Purchase a tournament ticket for <span className="font-bold text-yellow-400">{ticketPriceCoins.toLocaleString()} Game Coins</span> from your wallet (<span className="font-mono text-white">{currentUser.balance.toLocaleString()} Game Coins</span> available)?
+                     </p>
+                     <div className="bg-emerald-500/10 border border-emerald-500/30 p-2.5 rounded text-xs text-emerald-300">
+                       Every player receives an equal locked <span className="font-bold text-white">{lockedAllowance.toLocaleString()} Tournament Allowance</span> for fair competition.
+                     </div>
+                     {!canAffordTicket && (
+                       <div className="bg-red-500/15 border border-red-500/40 p-2 rounded text-xs text-red-300">
+                         Insufficient Game Coins ({currentUser.balance} Game Coins &lt; {ticketPriceCoins} Game Coins ticket price).
+                         {currentUser.balance < ticketPriceCoins && " Click below to claim your free 5,000 Game Coins refill from the server first."}
+                       </div>
+                     )}
+                     <div className="bg-yellow-500/10 border border-yellow-500/30 p-2 rounded text-xs text-yellow-300">
+                       <div className="font-bold mb-1">Winning Rules:</div>
+                       <div>
+                         {table.settings.tournament?.isSurvivorCap ? `• Knockout: Ends when ${table.settings.tournament.targetSurvivors || 1} survivor(s) remain.` : ''}
+                       </div>
+                       <div>
+                         {table.settings.tournament?.isHardCapRounds ? `• Round Cap: Max ${table.settings.tournament.maxRounds || 20} rounds.` : ''}
+                       </div>
+                       <div>
+                         • Payout: {table.settings.tournament?.prizeDistribution === 'splitByChips' ? 'Proportional to Remaining Allowance' : 'Rank Survivor Paytable'} (Paid in Game Coins)
+                       </div>
                      </div>
                      <div className="bg-white/5 border border-white/10 p-2 rounded text-xs text-white/60">
-                        If the tournament is canceled or times out before the minimum seats are reached, your ticket fee will be fully refunded to your balance.
+                        Note: Once seated, you cannot leave your seat, and every player must place a bet each round (no skipping).
                      </div>
                    </div>
                  ),
-                 confirmText: "Pay Ticket & Join",
-                 onConfirm: () => joinTable(table.id, seatIndex)
+                 confirmText: !canAffordTicket ? "Claim 5,000 Game Coins & Buy Ticket" : "Buy Ticket & Sit",
+                 onConfirm: async () => {
+                   try {
+                     if (!canAffordTicket) {
+                       await refillGameCoins(table.id);
+                     }
+                     await joinTable(table.id, seatIndex);
+                   } catch (err: any) {
+                     setConfirmAction({
+                       title: "Ticket Purchase Failed",
+                       message: err?.message || "Insufficient Game Coins to purchase tournament ticket.",
+                       confirmText: "OK",
+                       onConfirm: () => setConfirmAction(null)
+                     });
+                   }
+                 }
                });
            }
-       } else {
-           const requiredMinBal = table.settings.minBuyIn * (mySeatsCount + 1);
-           if (userBal >= requiredMinBal) {
-             joinTable(table.id, seatIndex);
-           } else {
-             setConfirmAction({
-               message: `Do you want to lock ${table.settings.minBuyIn} Gcoin to sit at this seat?`,
-               onConfirm: () => joinTable(table.id, seatIndex)
-             });
-           }
        }
-    } else if (seat.userId === currentUser.id) {
-       await leaveTable(table.id, seatIndex);
     }
   };
 
@@ -460,11 +500,12 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
     if (isNaN(plus3Amt) || !sideBetsEnabled) plus3Amt = 0;
 
     const minBet = table.settings.tournament?.minBetChips || table.settings.minBet;
+    const effectiveMinBet = Math.min(minBet, myUserBal);
     const singleBet = amount + pairAmt + plus3Amt;
     const totalBet = singleBet * mySeats.length;
     const canAfford = myUserBal >= totalBet;
 
-    if (amount >= minBet && canAfford) {
+    if (amount >= effectiveMinBet && amount > 0 && canAfford) {
       try {
         await Promise.all(
           mySeats.map(seatIndex => 
@@ -472,32 +513,37 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
           )
         );
       } catch (err: any) {
-        // If placeBet fails (e.g., game already started), ignore silently or alert
         console.warn("Could not place bet:", err);
       }
     } else {
-      alert(`Invalid bet or insufficient locked balance (Min: ${minBet}, Max: All-in, Total Cost: ${totalBet}, Locked: ${myUserBal})`);
+      setConfirmAction({
+        title: "Invalid Bet",
+        message: `Minimum bet is ${effectiveMinBet} (Total required: ${totalBet}, Locked Allowance: ${myUserBal}). Skipping rounds is not allowed in tournaments.`,
+        confirmText: "OK",
+        onConfirm: () => setConfirmAction(null)
+      });
     }
   };
 
   const getEffectiveSteps = () => {
-    const playerBal = table.userBalances?.[currentUser.id]?.balance || 0;
+    const playerBal = table.userBalances?.[currentUser.id]?.balance ?? (table.settings.tournament?.startingChips || 5000);
     const maxVal = Math.floor(playerBal);
-    const minBet = table.settings.tournament?.minBetChips || table.settings.minBet;
+    const minBet = table.settings.tournament?.minBetChips || table.settings.minBet || 50;
+    const minVal = maxVal > 0 ? Math.min(minBet, maxVal) : minBet;
     
-    let baseSteps = [minBet, minBet * 2, minBet * 5, minBet * 10, minBet * 20, minBet * 50, minBet * 100];
+    let baseSteps = [minVal, minBet, minBet * 2, minBet * 5, minBet * 10, minBet * 20, minBet * 50, minBet * 100];
     
-    let steps = baseSteps.filter(v => v < maxVal);
+    let steps = Array.from(new Set(baseSteps)).filter(v => v >= minVal && v < maxVal).sort((a, b) => a - b);
     if (!steps.includes(maxVal) && maxVal > 0) steps.push(maxVal);
-    if (steps.length === 0) steps = [0];
+    if (steps.length === 0) steps = [minVal];
     
-    return { steps, maxVal, minVal: minBet };
+    return { steps, maxVal, minVal };
   };
 
   const handleMinus = () => {
     soundManager.playClick();
-    const { steps } = getEffectiveSteps();
-    const current = parseFloat(betAmountStr.replace(/,/g, '')) || 0;
+    const { steps, minVal } = getEffectiveSteps();
+    const current = parseFloat(betAmountStr.replace(/,/g, '')) || minVal;
     
     let nextVal = [...steps].reverse().find(v => v < current);
     if (nextVal === undefined) nextVal = steps[0];
@@ -516,15 +562,13 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
   };
 
   const handleBetBlur = () => {
+    const { maxVal, minVal } = getEffectiveSteps();
     if (betAmountStr === '') {
-      const minBet = table.settings.tournament?.minBetChips || table.settings.minBet;
-      setBetAmountStr(minBet.toString());
+      setBetAmountStr(minVal.toString());
       return;
     }
     let current = parseFloat(betAmountStr.replace(/,/g, '')) || 0;
-    const { maxVal } = getEffectiveSteps();
-    const minBet = table.settings.tournament?.minBetChips || table.settings.minBet;
-    if (current < minBet) current = minBet;
+    if (current < minVal) current = minVal;
     if (current > maxVal) current = maxVal;
     setBetAmountStr(current.toLocaleString('en-US'));
   };
@@ -653,32 +697,37 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
             
             <div className="p-4 overflow-y-auto max-h-[60vh]">
                <div className="rounded-xl border border-white/10 bg-black/20 overflow-hidden">
-                 <table className="w-full text-left text-xs">
+                  <table className="w-full text-left text-xs">
                    <thead className="bg-black/40 text-white/50">
                      <tr>
                        <th className="px-3 py-2 font-medium">Trn #</th>
                        <th className="px-3 py-2 font-medium">Seats</th>
                        <th className="px-3 py-2 font-medium">Rounds</th>
-                       <th className="px-3 py-2 font-medium text-right">Ticket</th>
+                       <th className="px-3 py-2 font-medium text-right">Entry</th>
                        <th className="px-3 py-2 font-medium text-right">Winner(s)</th>
                      </tr>
                    </thead>
                    <tbody className="divide-y divide-white/5 font-mono text-white/80">
-                     <tr>
-                        <td colSpan={5} className="px-3 py-6 text-center text-white/40 text-xs font-sans">
+                     {(!table.tournamentHistory || table.tournamentHistory.length === 0) ? (
+                       <tr>
+                         <td colSpan={5} className="px-3 py-6 text-center text-white/40 text-xs font-sans">
                            <History className="w-8 h-8 opacity-20 mx-auto mb-2" />
-                           No historical tournament data
-                        </td>
-                     </tr>
-                     {/* Template for future history items:
-                     <tr className="hover:bg-white/5 transition-colors">
-                       <td className="px-3 py-2 text-white/60">T-0042</td>
-                       <td className="px-3 py-2">6/6</td>
-                       <td className="px-3 py-2">12</td>
-                       <td className="px-3 py-2 text-right text-yellow-400">Gcoin 500</td>
-                       <td className="px-3 py-2 text-right text-emerald-400">Player1 (12k)</td>
-                     </tr>
-                     */}
+                           No historical tournament data yet
+                         </td>
+                       </tr>
+                     ) : (
+                       table.tournamentHistory.map((item) => (
+                         <tr key={item.id} className="hover:bg-white/5 transition-colors">
+                           <td className="px-3 py-2 text-white/60">{item.id}</td>
+                           <td className="px-3 py-2">{item.seatsFilled}/{item.maxSeats}</td>
+                           <td className="px-3 py-2">{item.rounds}</td>
+                           <td className="px-3 py-2 text-right text-yellow-400">{item.ticketPrice} Game Coins</td>
+                           <td className="px-3 py-2 text-right text-emerald-400">
+                             {item.winners.map(w => `${w.name} (+${w.prizeCoins})`).join(', ')}
+                           </td>
+                         </tr>
+                       ))
+                     )}
                    </tbody>
                  </table>
                </div>
@@ -691,15 +740,14 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
         <ConfirmModal action={confirmAction} onClose={() => setConfirmAction(null)} />
       )}
 
-      {/* Invisible global header placeholder or minimal top nav if needed */}
-      <HeaderUI 
-        onLeave={() => {
-           onNavigate('lobby');
-        }}
-        isMuted={isMuted}
-        setIsMuted={setIsMuted}
-        onToggleSidebar={() => onToggleSidebar && onToggleSidebar()}
-      />
+      {/* Top-Left Exit Button on Table Felt (using HeaderUI exit icon) */}
+      <button
+        onClick={() => onNavigate('lobby')}
+        className="fixed top-4 left-4 z-[90] w-10 h-10 flex items-center justify-center text-white/75 hover:text-white rounded-full bg-black/45 hover:bg-black/65 border border-white/15 backdrop-blur-sm transition-colors cursor-pointer pointer-events-auto shadow-lg"
+        title="Return / Exit"
+      >
+        <LogOut className="w-5 h-5 scale-x-[-1]" />
+      </button>
 
       {/* Floating Tables Lobby Button */}
       <div className="fixed left-0 top-[calc(50%-2.5rem)] md:top-[calc(50%-1rem)] -translate-y-1/2 z-[90] flex flex-col gap-[7px] pointer-events-auto">
@@ -730,16 +778,9 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
         gameRecords={gameRecords}
       />
 
-      <CommentsWidget 
-        unreadCount={15} 
-        showFloatingComments={showFloatingComments}
-        setShowFloatingComments={setShowFloatingComments}
-        isOpen={isCommentsOpen}
-        setIsOpen={setIsCommentsOpen}
-      />
       <RankWidget />
 
-      <div className="w-full max-w-[1024px] flex flex-col items-center gap-1 z-40 px-2 sm:px-4 pt-1 sm:pt-2 pb-1 relative pointer-events-none shrink-0">
+      <div className="w-full max-w-[1024px] flex flex-col items-center gap-1 z-40 px-2 sm:px-4 pt-3 sm:pt-4 pb-1 relative pointer-events-none shrink-0">
         <div className="flex flex-row items-center justify-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-[420px] mx-auto mt-[-2px]">
           <div className="relative flex flex-row items-center border-[2px] border-[#6b4c2a] rounded-full bg-gradient-to-b from-[#eac574] via-[#d0a758] to-[#997027] p-1 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8),inset_0_-1px_2px_rgba(0,0,0,0.4),0_4px_10px_rgba(0,0,0,0.5)] justify-between flex-1 h-[40px] sm:h-[44px] min-w-[240px]">
             <div className="absolute left-1 right-1 inset-y-1 bg-[url('https://www.transparenttextures.com/patterns/dark-matter.png')] opacity-20 pointer-events-none rounded-full z-0"></div>
@@ -749,13 +790,27 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                  <CurrencyIcon currency="Chip" className="w-4 h-4" />
                   {(() => {
                     const userBal = table.userBalances?.[currentUser.id];
-                    const displayBalance = userBal ? userBal.balance : 0;
+                    const isSeatedInTournament = mySeats.length > 0 && Boolean(userBal);
+                    const displayBalance = isSeatedInTournament ? userBal.balance : (currentUser.balance || 0);
+                    const ticketPriceCoins = table.settings.tournament?.ticketPrice || 100;
                     return (
-                      <div className="flex items-center">
-                        <span className="text-[#32d5a4] text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-mono">
-                          {displayBalance.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0})} CHIPS
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[#ffc53d] text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-mono">
+                          {displayBalance.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0})} {isSeatedInTournament ? 'ALLOWANCE' : 'GAME COINS'}
                         </span>
-                        {/* Tournament: No unlock button since chips can't be added or unlocked mid-game */}
+                        {!isSeatedInTournament && (currentUser.balance || 0) < ticketPriceCoins && table.status === 'waiting' && (
+                          <button
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              soundManager.playClick();
+                              await refillGameCoins(table.id);
+                            }}
+                            title="Server-side Game Coins Refill (+5,000)"
+                            className="ml-1 px-2 py-0.5 rounded-full bg-emerald-500 hover:bg-emerald-400 text-black font-black text-[9px] uppercase tracking-wider shadow transition-colors cursor-pointer"
+                          >
+                            +5,000 COINS
+                          </button>
+                        )}
                       </div>
                     )
                  })()}
@@ -803,28 +858,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
           <button 
             disabled={isPlayerDealt}
             onClick={() => { 
-                const processNavigate = () => {
-                    const success = onNavigate(hasHostedTables ? 'manage_tables' : 'host_table'); 
-                    if (success !== false) {
-                       leaveTable(table.id);
-                    }
-                };
-                const userBal = table.userBalances?.[currentUser!.id];
-                if (userBal) {
-                    setConfirmAction({
-                        title: "Leave Table",
-                        message: "You have locked chips on this table. Do you want to unlock your funds?",
-                        confirmText: "Unlock & Leave",
-                        cancelText: "Just Leave",
-                        onConfirm: async () => {
-                            await unlockTableBalance(table.id);
-                            processNavigate();
-                        },
-                        onCancel: () => processNavigate()
-                    });
-                } else {
-                    processNavigate();
-                }
+                onNavigate(hasHostedTables ? 'manage_tables' : 'host_table');
             }}
             className={cn("flex text-[10px] sm:text-[11px] font-black uppercase tracking-wider text-white px-2 sm:px-2.5 py-1.5 sm:py-2 rounded-[12px] sm:rounded-[14px] items-center gap-1 shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border transition-transform whitespace-nowrap shrink-0 group relative", isPlayerDealt ? "bg-black/50 border-white/10 opacity-50" : "bg-gradient-to-b from-[#28a19b] to-[#126b6f] hover:from-[#2ebaba] hover:to-[#178287] border-[#0d4f52] hover:scale-105 active:scale-95")}
           >
@@ -945,9 +979,6 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
         </div>
 
       <div className="flex-1 w-full max-w-[1024px] flex flex-col items-center justify-between pb-0 pt-0 mt-0 ml-0 relative min-h-0 overflow-hidden origin-center">
-        
-        {/* Target anchor for floating comments, positioned relative to the overall game board wrapper */}
-        <div id="floating-comments-root" className="absolute top-[50px] md:top-[65px] left-0 right-0 pointer-events-none z-40 flex flex-col gap-1.5 justify-start items-start overflow-visible" />
 
 <AnimatePresence>
              {isShuffling && (
@@ -1013,7 +1044,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
            </div>
 
            {/* Game Rules Center Area */}
-           <div className="absolute top-[35%] sm:top-[40%] left-1/2 -translate-x-1/2 -translate-y-[90%] sm:-translate-y-[100%] md:-translate-y-[105%] mt-[30px] md:mt-[35px] z-10 px-2 sm:px-4 whitespace-nowrap scale-[0.6] sm:scale-[0.8] md:scale-100 flex flex-col items-center gap-1.5 sm:gap-2 pointer-events-none">
+           <div className="absolute top-[48%] sm:top-[50%] left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 px-2 sm:px-4 whitespace-nowrap scale-[0.6] sm:scale-[0.8] md:scale-100 flex flex-col items-center gap-1 sm:gap-1.5 pointer-events-none">
               <span className="text-[#c6a364] text-[11px] md:text-[16px] font-black tracking-[0.3em] uppercase opacity-90" style={{ textShadow: '0px 1px 1px rgba(0,0,0,1), 0px -1px 1px rgba(0,0,0,0.8), 0px 0px 3px rgba(176,142,85,0.4)' }}>
                 Blackjack Pays 3 to 2
               </span>
@@ -1066,18 +1097,29 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                         <span className="text-[8px] uppercase tracking-widest font-bold text-white/50">Ticket</span>
                         <span className="text-yellow-400 font-mono font-bold text-xs flex items-center gap-1 mt-0.5">
                             <div className="w-2 h-2 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08]"></div>
-                            {table.settings.tournament?.ticketPrice}
+                            {table.settings.tournament?.ticketPrice} Game Coins
                         </span>
                     </div>
                     <div className="flex flex-col items-center border-r border-white/10 px-2">
-                        <span className="text-[8px] uppercase tracking-widest font-bold text-white/50">Start Chips</span>
-                        <span className="text-blue-400 font-mono font-bold text-xs flex items-center gap-1 mt-0.5">
-                            <div className="w-2 h-2 rounded-full bg-blue-400 border-[1px] border-blue-500"></div>
-                            {table.settings.tournament?.startingChips}
+                        <span className="text-[8px] uppercase tracking-widest font-bold text-white/50">Allowance</span>
+                        <span className="text-emerald-300 font-mono font-bold text-xs flex items-center gap-1 mt-0.5">
+                            {(table.settings.tournament?.startingChips || 5000).toLocaleString()}
+                        </span>
+                    </div>
+                    <div className="flex flex-col items-center border-r border-white/10 px-2">
+                        <span className="text-[8px] uppercase tracking-widest font-bold text-white/50">Round</span>
+                        <span className="text-emerald-400 font-mono font-bold text-xs flex items-center gap-1 mt-0.5">
+                            {(table.roundsPlayed || 0) + 1}{table.settings.tournament?.isHardCapRounds ? `/${table.settings.tournament?.maxRounds}` : ''}
+                        </span>
+                    </div>
+                    <div className="flex flex-col items-center border-r border-white/10 px-2">
+                        <span className="text-[8px] uppercase tracking-widest font-bold text-white/50">Win Rule</span>
+                        <span className="text-blue-300 font-mono font-bold text-xs flex items-center gap-1 mt-0.5">
+                            {table.settings.tournament?.isSurvivorCap ? `Top ${table.settings.tournament.targetSurvivors || 1}` : 'Coin Split'}
                         </span>
                     </div>
                     <div className="flex flex-col items-start border-r border-white/10 pr-2 pl-2">
-                        <span className="text-[8px] uppercase tracking-widest font-bold text-white/50">Min Blind</span>
+                        <span className="text-[8px] uppercase tracking-widest font-bold text-white/50">Min Bet</span>
                         <span className="text-red-400 font-mono font-bold text-xs flex items-center gap-1 mt-0.5">
                             <div className="w-2 h-2 rounded-full bg-red-400 border-[1px] border-red-500"></div>
                             {table.settings.tournament?.minBetChips || 50}
@@ -1087,33 +1129,11 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                         <span className="text-[8px] uppercase tracking-widest font-bold text-[#fbc531]">Prize Pool</span>
                         <span className="text-yellow-400 font-mono font-bold text-xs flex items-center gap-1 mt-0.5">
                             <div className="w-2 h-2 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08]"></div>
-                            {Math.round((table.settings.tournament?.ticketPrice || 0) * (table.settings.maxSeats || 3) * (1 - ((table.settings.tournament?.hostFeePct || 3) + (table.settings.tournament?.platformFeePct || 2)) / 100))}
+                            {table.liquidity > 0
+                              ? Math.round(table.liquidity * (1 - ((table.settings.tournament?.hostFeePct || 3) + (table.settings.tournament?.platformFeePct || 2)) / 100))
+                              : Math.round((table.settings.tournament?.ticketPrice || 0) * (table.settings.maxSeats || 3) * (1 - ((table.settings.tournament?.hostFeePct || 3) + (table.settings.tournament?.platformFeePct || 2)) / 100))} Game Coins
                         </span>
                     </div>
-                 </div>
-              )}
-              {table.settings.mode === 'tournament' && table.status === 'waiting' && table.seats.some(s => s.userId === currentUser?.id) && (
-                 <div className="pointer-events-auto mt-2">
-                    <button 
-                       onClick={() => {
-                          setConfirmAction({
-                             title: "Leave Tournament",
-                             message: "Are you sure you want to leave? Since the tournament hasn't started yet, your entry ticket will be refunded.",
-                             confirmText: "Refund & Leave",
-                             cancelText: "Stay",
-                             onConfirm: async () => {
-                               await unlockTableBalance(table.id);
-                               setConfirmAction(null);
-                               const success = onNavigate('lobby');
-                               if (success !== false) leaveTable(table.id);
-                             },
-                             onCancel: () => setConfirmAction(null)
-                          });
-                       }}
-                       className="px-4 py-1.5 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-400 rounded-full text-xs font-bold uppercase tracking-wider transition-colors shadow-lg"
-                    >
-                       Leave & Refund
-                    </button>
                  </div>
               )}
            </div>
@@ -1365,53 +1385,17 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                        </div>
                      )}
 
-                     {/* If waiting, render the select overlay */}
-                       <motion.div 
-                         onClick={() => toggleSeatSelection(seatIdx)}
-                         animate={shakeSeats && !isSelected && seat.userId === null ? { x: [-10, 10, -10, 10, 0] } : {}}
-                         transition={{ duration: 0.4 }}
-                         className={cn(
-                           "absolute bottom-[5px] sm:bottom-[10px] left-1/2 -translate-x-1/2 w-[45px] h-[45px] sm:w-[50px] sm:h-[50px] md:w-[60px] md:h-[60px] text-[10px] sm:text-[12px] z-50 shadow-xl bg-black/60 rounded-full",
-                           "flex flex-col items-center justify-center border transition-all cursor-pointer font-bold uppercase tracking-widest leading-none",
-                           seat.isReady
-                             ? "border-[#32d5a4] text-[#32d5a4] bg-[#32d5a4]/30 shadow-[0_0_15px_rgba(50,213,164,0.3)] backdrop-blur-[2px]" 
-                             : (isSelected ? "border-amber-400/80 text-amber-400 bg-black/40 shadow-[0_0_15px_rgba(251,191,36,0.3)] backdrop-blur-[2px]" : 
-                                (seat.userId !== null ? "border-white/20 text-white/50 bg-black/40" : "border-white/10 text-white bg-black/60 shadow-lg hover:border-white/50 backdrop-blur-[2px]")
-                               ),
-                           shakeSeats && !isSelected && seat.userId === null && "border-red-500/80 text-white bg-red-500/60"
-                         )}
-                       >
-                         {seat.isReady ? (
-                             <div className="flex flex-col items-center justify-center w-full h-full relative">
-                               <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${seat.userId}`} alt="Avatar" className={cn("w-[80%] h-[80%] rounded-full opacity-100", isSelected ? "ring-2 ring-offset-1 ring-offset-black ring-[#32d5a4] shadow-[0_0_15px_rgba(50,213,164,0.8)]" : "shadow-[0_0_10px_rgba(50,213,164,0.5)]")} />
-                               {dealCountdown !== null && (
-                                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[70%] h-[70%] flex flex-col items-center justify-center bg-black/60 rounded-full z-10 shadow-[inset_0_0_10px_rgba(50,213,164,0.2)]">
-                                   <span className="text-[6px] sm:text-[8px] font-black text-[#32d5a4] uppercase mt-0.5" style={{WebkitTextStroke: '0.2px black'}}>READY</span>
-                                 </div>
-                               )}
-                               {isSelected && <div className="absolute -bottom-2 sm:-bottom-2.5 bg-amber-500 text-black text-[6px] sm:text-[7px] font-black uppercase px-2 py-0.5 rounded shadow-lg z-20 whitespace-nowrap">You</div>}
-                             </div>
-                          ) : (
-                           isSelected ? (
-                             <div className="flex flex-col items-center justify-center w-full h-full relative">
-                               <div className="absolute inset-[3px] rounded-full ring-2 ring-amber-400 ring-offset-0 animate-pulse shadow-[0_0_20px_rgba(251,191,36,0.8)] z-0"></div>
-                               <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${currentUser.id}`} alt="Avatar" className="w-[80%] h-[80%] rounded-full opacity-100 relative z-10" />
-                               <div className="absolute -bottom-2 sm:-bottom-2.5 bg-amber-500 text-black text-[6px] sm:text-[7px] font-black uppercase px-2 py-0.5 rounded shadow-lg z-20 whitespace-nowrap">You</div>
-                             </div>
-                           ) : (
-                             seat.userId !== null ? (
-                               <div className="flex flex-col items-center justify-center w-full h-full relative">
-                                 <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${seat.userId}`} alt="Avatar" className="w-[80%] h-[80%] rounded-full opacity-60 grayscale" />
-                               </div>
-                             ) : (
-                                <div className="flex flex-col items-center gap-[1px]">
-                                  <span className="text-[8px] sm:text-[10px] md:text-[12px] text-white/50 tracking-widest font-mono uppercase">SEAT {table.seats.length - seatIdx}</span>
-                                  <span>Sit</span>
-                                </div>
-                              )
-                           )
-                         )}
-                       </motion.div>
+                     {/* Seat selection & player profile button */}
+                      <TableSeatButton
+                        seat={seat}
+                        seatIdx={seatIdx}
+                        totalSeats={table.seats.length}
+                        currentUser={currentUser}
+                        isSelected={isSelected}
+                        dealCountdown={dealCountdown}
+                        shakeSeats={shakeSeats}
+                        onClick={() => toggleSeatSelection(seatIdx)}
+                      />
                    </div>
                  );
                })}
@@ -1451,7 +1435,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
               onPlus3Plus={handlePlus3Plus}
               onDeal={handleStartGame}
               dealCountdown={dealCountdown}
-              isTournament={false}
+              isTournament={true}
               onSideBetsToggle={() => setSideBetsEnabled(!sideBetsEnabled)}
               className="absolute bottom-2 w-full flex flex-col items-center z-[100] px-4 pointer-events-none"
             />

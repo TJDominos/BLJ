@@ -1,62 +1,17 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Trophy, X, Zap, Medal, Clock, CalendarDays, Coins } from 'lucide-react';
-
-// Rank entry interface
-export interface RankEntry {
-  id: string;
-  userId: string;
-  name: string;
-  avatar: string;
-  rank: number;
-  value: number;
-  valueLabel?: string;
-}
-
-const mockNames = ["Alice", "Bob", "Charlie", "Dave", "Eve", "Frank", "Grace", "Heidi", "Ivan", "Judy", "Mallory", "Victor", "Peggy"];
-
-function generateMockLeaderboard(seed: number, dimension: 'rounds' | 'amount', currentUserId?: string, userCurrentRounds: number = 0, userCurrentAmount: number = 0): RankEntry[] {
-  const entries: RankEntry[] = [];
-  let baseValue = dimension === 'rounds' ? 500 : 500000;
-  
-  for (let i = 0; i < 50; i++) {
-    // Determine random names and avatars
-    const randomIdx = (seed + i * 13) % mockNames.length;
-    const name = mockNames[randomIdx] + (Math.floor((seed + i) % 99) + 1);
-    const userId = `mock_${i}_${seed}`;
-    const avatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${name}`;
-    
-    // Add random variance to value
-    const decrease = dimension === 'rounds' ? (Math.random() * 5 + 1) : (Math.random() * 5000 + 1000);
-    baseValue -= decrease;
-    
-    entries.push({
-      id: userId,
-      userId,
-      name,
-      avatar,
-      rank: i + 1,
-      value: Math.max(0, baseValue)
-    });
-  }
-
-  return entries;
-}
+import { User, X, Trophy, Coins, Zap, Shield, Flame, ChevronRight, History, Award } from 'lucide-react';
+import { useGameStore, GameRecord } from '@/store/gameStore';
+import { useNavigate } from 'react-router-dom';
+import { cn } from '@/lib/utils';
+import { CurrencyIcon } from '@/components/CurrencyIcon';
 
 export const RankWidget: React.FC = () => {
+  const { gameRecords, currentUser, tables } = useGameStore();
+  const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
-  const [profileUserId, setProfileUserId] = useState<string | null>(null);
-  
-  const [activeDimension, setActiveDimension] = useState<'rounds' | 'amount'>('amount');
-  const [activeTimeframe, setActiveTimeframe] = useState<'allTime' | '30Days'>('allTime');
-  const [isLoading, setIsLoading] = useState(false);
-
-  // Generate deterministic mock data based on selected dimension/timeframe
-  const currentData = useMemo(() => {
-    const seed = (activeDimension === 'rounds' ? 100 : 200) + (activeTimeframe === 'allTime' ? 10 : 20);
-    return generateMockLeaderboard(seed, activeDimension);
-  }, [activeDimension, activeTimeframe]);
+  const [activeTab, setActiveTab] = useState<'all' | 'regular' | 'tournament'>('all');
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(max-width: 767px)');
@@ -74,36 +29,159 @@ export const RankWidget: React.FC = () => {
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, []);
 
-  const getRankAppearance = (rank: number) => {
-    if (rank === 1) return { color: 'text-yellow-400', bg: 'bg-yellow-400/20', border: 'border-yellow-400', icon: true };
-    if (rank === 2) return { color: 'text-zinc-300', bg: 'bg-zinc-300/20', border: 'border-zinc-300', icon: true };
-    if (rank === 3) return { color: 'text-amber-600', bg: 'bg-amber-600/20', border: 'border-amber-600', icon: true };
-    return { color: 'text-zinc-500', bg: 'bg-zinc-800', border: 'border-transparent', icon: false };
+  // Filter player's personal records across all tables
+  const playerRecords = useMemo(() => {
+    if (!currentUser) return [];
+    return gameRecords.filter(r => {
+      return (r.seatResults || []).some(sr => sr.userId === currentUser.id);
+    });
+  }, [gameRecords, currentUser]);
+
+  // Aggregate personal stats: cross-table, distinguishing regular and tournament
+  const stats = useMemo(() => {
+    let regularRounds = 0;
+    let regularWins = 0;
+    let regularNet = 0;
+    let regularBlackjacks = 0;
+    let regularDoubles = 0;
+    let regularSplits = 0;
+    let bestSingleWin = 0;
+
+    let tournamentRounds = 0;
+    let tournamentWins = 0;
+    let tournamentNet = 0;
+    let tournamentBlackjacks = 0;
+
+    for (const record of playerRecords) {
+      const targetTable = tables[record.tableId];
+      const isTournament = targetTable?.settings.mode === 'tournament';
+      const mySeats = (record.seatResults || []).filter(sr => sr.userId === currentUser?.id);
+
+      for (const seat of mySeats) {
+        const net = seat.net || 0;
+        const isWin = seat.action.includes('won') || seat.action.includes('blackjack') || net > 0;
+        const isBJ = seat.action.includes('blackjack');
+
+        if (net > bestSingleWin) {
+          bestSingleWin = net;
+        }
+
+        if (isTournament) {
+          tournamentRounds += 1;
+          if (isWin) tournamentWins += 1;
+          if (isBJ) tournamentBlackjacks += 1;
+          tournamentNet += net;
+        } else {
+          regularRounds += 1;
+          if (isWin) regularWins += 1;
+          if (isBJ) regularBlackjacks += 1;
+          if (seat.action.includes('double') || seat.bet > (targetTable?.settings.minBet || 10) * 1.5) regularDoubles += 1;
+          if (seat.isSplit) regularSplits += 1;
+          regularNet += net;
+        }
+      }
+    }
+
+    // Check tournament history from tables for tournament placement wins
+    let tournamentsEntered = 0;
+    let tournamentsWon = 0;
+    let tournamentPrizeCoinsWon = 0;
+
+    for (const t of Object.values(tables)) {
+      if (t.settings.mode === 'tournament' && t.tournamentHistory) {
+        for (const th of t.tournamentHistory) {
+          const myIndex = th.winners.findIndex(w => w.userId === currentUser?.id);
+          if (myIndex !== -1) {
+            const myWin = th.winners[myIndex];
+            tournamentsEntered += 1;
+            tournamentPrizeCoinsWon += (myWin.prizeCoins || 0);
+            if (myIndex === 0) tournamentsWon += 1;
+          }
+        }
+      }
+      // Also check if currently seated in an active tournament
+      if (t.settings.mode === 'tournament' && t.seats.some(s => s.userId === currentUser?.id)) {
+        tournamentsEntered = Math.max(tournamentsEntered, 1);
+      }
+    }
+
+    const totalRounds = regularRounds + tournamentRounds;
+    const totalWins = regularWins + tournamentWins;
+    const totalNet = regularNet + tournamentNet + tournamentPrizeCoinsWon;
+    const overallWinRate = totalRounds > 0 ? Math.round((totalWins / totalRounds) * 100) : 0;
+    const regularWinRate = regularRounds > 0 ? Math.round((regularWins / regularRounds) * 100) : 0;
+    const tournamentWinRate = tournamentRounds > 0 ? Math.round((tournamentWins / tournamentRounds) * 100) : 0;
+
+    return {
+      totalRounds,
+      totalWins,
+      overallWinRate,
+      totalNet,
+      bestSingleWin,
+      regular: {
+        rounds: regularRounds,
+        wins: regularWins,
+        winRate: regularWinRate,
+        net: regularNet,
+        blackjacks: regularBlackjacks,
+        doubles: regularDoubles,
+        splits: regularSplits,
+      },
+      tournament: {
+        entered: tournamentsEntered,
+        topFinishes: tournamentsWon,
+        rounds: tournamentRounds,
+        wins: tournamentWins,
+        winRate: tournamentWinRate,
+        net: tournamentNet + tournamentPrizeCoinsWon,
+        blackjacks: tournamentBlackjacks,
+      }
+    };
+  }, [playerRecords, tables, currentUser]);
+
+  // Filtered recent game records
+  const filteredRecords = useMemo(() => {
+    return playerRecords.filter(r => {
+      const isTournament = tables[r.tableId]?.settings.mode === 'tournament';
+      if (activeTab === 'regular') return !isTournament;
+      if (activeTab === 'tournament') return isTournament;
+      return true;
+    });
+  }, [playerRecords, tables, activeTab]);
+
+  const handleJoinTable = (targetTableId: string) => {
+    navigate(`/t/${targetTableId}`);
+    setIsOpen(false);
   };
 
   return (
     <>
-      {/* Floating Rank Button */}
-      <div className="fixed right-0 top-[calc(50%+2.5rem)] md:top-[calc(50%+3.5rem)] -translate-y-1/2 z-[90] flex flex-col gap-[7px] pointer-events-auto">
-        <div 
-          className="bg-zinc-950 border-y-2 border-l-2 border-yellow-500 rounded-l-2xl p-2 md:p-3 pr-2.5 md:pr-4 shadow-[0_0_15px_rgba(234,179,8,0.3)] transition-transform hover:-translate-x-1 cursor-pointer flex flex-col items-center group relative"
+      {/* Floating My Stats Trigger Button */}
+      <div className="fixed right-0 top-[calc(50%+2.5rem)] md:top-[calc(50%+3.5rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
+        <button
+          type="button"
           onClick={() => setIsOpen(true)}
+          title="My Stats (Personal Data · 个人数据)"
+          className="bg-zinc-950 border-y-2 border-l-2 border-[#d4af37] rounded-l-2xl p-2.5 md:p-3 pr-3 md:pr-4 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:-translate-x-1 cursor-pointer flex flex-col items-center group relative"
         >
-          <Trophy className="w-5 h-5 md:w-6 md:h-6 text-yellow-400" />
-        </div>
+          <User className="w-5 h-5 md:w-6 md:h-6 text-[#ffd86b] group-hover:scale-110 transition-transform" />
+          <span className="text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">
+            Stats
+          </span>
+        </button>
       </div>
 
-      {/* Rank Panel / Modal */}
+      {/* Personal Stats Slide-Over Panel */}
       <AnimatePresence>
         {isOpen && (
           <>
             {/* Backdrop */}
             <motion.div
-              initial={isMobile ? { opacity: 0 } : { opacity: 1 }}
-              animate={isMobile ? { opacity: 1 } : { opacity: 1 }}
-              exit={isMobile ? { opacity: 0 } : { opacity: 1 }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
               onClick={() => setIsOpen(false)}
-              className={`fixed inset-0 z-[90] pointer-events-auto ${isMobile ? 'bg-black/60 backdrop-blur-[4px]' : 'bg-transparent'}`}
+              className="fixed inset-0 z-[90] bg-black/60 backdrop-blur-sm pointer-events-auto"
             />
 
             {/* Panel */}
@@ -111,144 +189,344 @@ export const RankWidget: React.FC = () => {
               initial={isMobile ? { y: '100%' } : { x: '100%' }}
               animate={isMobile ? { y: 0 } : { x: 0 }}
               exit={isMobile ? { y: '100%' } : { x: '100%' }}
-              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className={`fixed z-[100] bg-[#18181b] flex flex-col overflow-hidden shadow-2xl border-l-[1px] border-zinc-800 pointer-events-auto
-                ${isMobile 
-                  ? 'bottom-0 left-0 right-0 h-[85vh] rounded-t-[21px]' 
-                  : 'top-0 right-0 bottom-0 w-[320px]'
-                }`}
+              transition={{ type: 'spring', damping: 25, stiffness: 220 }}
+              className={cn(
+                'fixed z-[100] bg-[#101713] flex flex-col overflow-hidden shadow-2xl border-l border-[#d4af37]/30 pointer-events-auto',
+                isMobile
+                  ? 'bottom-0 left-0 right-0 h-[88vh] rounded-t-2xl'
+                  : 'top-0 right-0 bottom-0 w-[380px]'
+              )}
             >
               {/* Header */}
-              <div className="flex items-center justify-between p-[14px] border-b-[1px] border-zinc-800 bg-zinc-900 shrink-0">
-                <div className="flex items-center gap-[10.5px]">
-                  <button onClick={() => setIsOpen(false)} className="p-[3.5px] hover:bg-zinc-800 rounded-full transition-colors">
-                    <X className="w-5 h-5 text-zinc-400" />
+              <div className="p-4 border-b border-white/10 bg-[#0c120e] shrink-0 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setIsOpen(false)}
+                    className="p-1 hover:bg-white/10 rounded-full transition-colors cursor-pointer text-slate-400 hover:text-white"
+                  >
+                    <X className="w-5 h-5" />
                   </button>
-                  <h2 className="text-[15.75px] font-semibold text-white flex items-center gap-[7px]">
-                    <Trophy className="w-5 h-5 text-yellow-400" />
-                    Game Ranks
-                  </h2>
+                  <div className="flex items-center gap-2">
+                    <User className="w-5 h-5 text-[#ffd86b]" />
+                    <h2 className="text-base font-bold text-white tracking-wide">
+                      My Stats <span className="text-xs text-slate-400 font-normal">(个人数据)</span>
+                    </h2>
+                  </div>
+                </div>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
+                  Cross-Table
+                </span>
+              </div>
+
+              {/* Player Identity Card */}
+              <div className="p-4 bg-gradient-to-r from-[#14231a] to-[#0d1611] border-b border-white/10 shrink-0 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-full bg-zinc-900 border border-[#d4af37]/60 overflow-hidden shrink-0 shadow-md">
+                    <img
+                      src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(currentUser?.name || 'Player')}`}
+                      alt="Player Avatar"
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-white truncate">
+                      {currentUser?.name || 'Player'}
+                    </div>
+                    <div className="text-xs text-slate-400 font-mono flex items-center gap-1.5 mt-0.5">
+                      <CurrencyIcon currency="Chip" className="w-3.5 h-3.5" />
+                      <span className="text-[#ffd86b] font-bold">
+                        {(currentUser?.balance ?? 5000).toLocaleString()}
+                      </span>
+                      <span>Coins</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="text-right shrink-0">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-wider">Net P/L</div>
+                  <div className={cn(
+                    'text-sm font-mono font-black mt-0.5',
+                    stats.totalNet >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                  )}>
+                    {stats.totalNet >= 0 ? '+' : ''}{stats.totalNet.toLocaleString()}
+                  </div>
                 </div>
               </div>
 
-              {/* Sub-Header / Filters */}
-              <div className="p-[14px] bg-zinc-900/50 border-b-[1px] border-zinc-800 shrink-0 flex flex-col gap-[10.5px]">
-                {/* Dimension Toggle */}
-                <div className="flex bg-zinc-950 rounded-[10.5px] p-[3.5px] border-[1px] border-zinc-800">
+              {/* Mode Tabs (Distinguishing Regular Table & Tournament) */}
+              <div className="p-3 bg-black/40 border-b border-white/10 shrink-0">
+                <div className="grid grid-cols-3 gap-1 bg-[#141b16] p-1 rounded-xl border border-white/10 text-xs font-semibold">
                   <button
-                    onClick={() => setActiveDimension('rounds')}
-                    className={`flex-1 flex items-center justify-center gap-[7px] py-[7px] text-[12.25px] font-semibold rounded-[7px] transition-colors ${
-                      activeDimension === 'rounds' ? 'bg-zinc-800 text-yellow-400 shadow-sm' : 'text-zinc-500 hover:text-zinc-300'
-                    }`}
+                    onClick={() => setActiveTab('all')}
+                    className={cn(
+                      'py-1.5 px-2 rounded-lg transition-all cursor-pointer truncate',
+                      activeTab === 'all'
+                        ? 'bg-[#d4af37] text-[#090d0b] font-bold shadow'
+                        : 'text-slate-300 hover:text-white'
+                    )}
                   >
-                    <Zap className="w-4 h-4" /> Win Rounds
+                    All Modes
                   </button>
                   <button
-                    onClick={() => setActiveDimension('amount')}
-                    className={`flex-1 flex items-center justify-center gap-[7px] py-[7px] text-[12.25px] font-semibold rounded-[7px] transition-colors ${
-                      activeDimension === 'amount' ? 'bg-zinc-800 text-emerald-400 shadow-sm' : 'text-zinc-500 hover:text-zinc-300'
-                    }`}
+                    onClick={() => setActiveTab('regular')}
+                    className={cn(
+                      'py-1.5 px-2 rounded-lg transition-all cursor-pointer truncate',
+                      activeTab === 'regular'
+                        ? 'bg-emerald-500 text-slate-950 font-bold shadow'
+                        : 'text-slate-300 hover:text-white'
+                    )}
                   >
-                    <Coins className="w-4 h-4" /> Win Amount
-                  </button>
-                </div>
-
-                {/* Timeframe Toggle */}
-                <div className="flex bg-zinc-950 rounded-[7px] p-[3.5px] border-[1px] border-zinc-800 w-2/3 mx-auto">
-                  <button
-                    onClick={() => setActiveTimeframe('30Days')}
-                    className={`flex-1 flex items-center justify-center gap-[5.25px] py-[5.25px] text-[10.5px] font-semibold rounded-[5.25px] transition-colors ${
-                      activeTimeframe === '30Days' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'
-                    }`}
-                  >
-                    <CalendarDays className="w-3 h-3" /> 30 Days
+                    Regular
                   </button>
                   <button
-                    onClick={() => setActiveTimeframe('allTime')}
-                    className={`flex-1 flex items-center justify-center gap-[5.25px] py-[5.25px] text-[10.5px] font-semibold rounded-[5.25px] transition-colors ${
-                      activeTimeframe === 'allTime' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'
-                    }`}
+                    onClick={() => setActiveTab('tournament')}
+                    className={cn(
+                      'py-1.5 px-2 rounded-lg transition-all cursor-pointer truncate',
+                      activeTab === 'tournament'
+                        ? 'bg-amber-500 text-slate-950 font-bold shadow'
+                        : 'text-slate-300 hover:text-white'
+                    )}
                   >
-                    <Clock className="w-3 h-3" /> All-Time
+                    Tournament
                   </button>
                 </div>
               </div>
 
-              {/* Content Area */}
-              <div className="flex-1 overflow-y-auto p-[14px] [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-                <div className="flex flex-col gap-[7px]">
-                  <AnimatePresence mode="wait">
-                    <motion.div
-                      key={`${activeDimension}_${activeTimeframe}`}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -10 }}
-                      transition={{ duration: 0.2 }}
-                      className="flex flex-col gap-[7px]"
-                    >
-                      {currentData.length === 0 ? (
-                        <div className="px-[10.5px] py-[21px] text-center text-[12px] text-zinc-500">
-                          {isLoading ? 'Loading ranking data...' : 'No ranking data yet.'}
-                        </div>
-                      ) : currentData.map((player) => {
-                        const style = getRankAppearance(player.rank);
-                        const valueLabel = player.valueLabel
-                          ? player.valueLabel
-                          : activeDimension === 'rounds'
-                            ? `${Math.floor(player.value)}`
-                            : player.value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-                        
+              {/* Scrollable Content */}
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                {/* 1. Aggregate Stats Metrics Cards */}
+                {activeTab === 'all' && (
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Total Rounds</div>
+                      <div className="text-xl font-mono font-bold text-white mt-1">
+                        {stats.totalRounds}
+                      </div>
+                      <div className="text-[10px] text-emerald-400 font-mono mt-0.5">
+                        {stats.totalWins} wins ({stats.overallWinRate}%)
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Total Net Won</div>
+                      <div className={cn(
+                        'text-xl font-mono font-bold mt-1',
+                        stats.totalNet >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                      )}>
+                        {stats.totalNet >= 0 ? '+' : ''}{stats.totalNet.toLocaleString()}
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                        Coins
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Blackjacks</div>
+                      <div className="text-xl font-mono font-bold text-[#ffd86b] mt-1">
+                        {stats.regular.blackjacks + stats.tournament.blackjacks}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">Natural 21s</div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Best Single Win</div>
+                      <div className="text-xl font-mono font-bold text-emerald-400 mt-1">
+                        +{stats.bestSingleWin.toLocaleString()}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">Highest Hand Net</div>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'regular' && (
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Regular Hands</div>
+                      <div className="text-xl font-mono font-bold text-white mt-1">
+                        {stats.regular.rounds}
+                      </div>
+                      <div className="text-[10px] text-emerald-400 font-mono mt-0.5">
+                        {stats.regular.wins} wins ({stats.regular.winRate}%)
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Regular Net Won</div>
+                      <div className={cn(
+                        'text-xl font-mono font-bold mt-1',
+                        stats.regular.net >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                      )}>
+                        {stats.regular.net >= 0 ? '+' : ''}{stats.regular.net.toLocaleString()}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">Coins</div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Double Downs</div>
+                      <div className="text-xl font-mono font-bold text-[#ffd86b] mt-1">
+                        {stats.regular.doubles}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">2x Multipliers</div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Natural BJ</div>
+                      <div className="text-xl font-mono font-bold text-emerald-400 mt-1">
+                        {stats.regular.blackjacks}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">Pays 3:2</div>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'tournament' && (
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Tournaments Entered</div>
+                      <div className="text-xl font-mono font-bold text-white mt-1">
+                        {stats.tournament.entered}
+                      </div>
+                      <div className="text-[10px] text-amber-300 font-mono mt-0.5">
+                        {stats.tournament.topFinishes} 1st Place Wins
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Tournament Net</div>
+                      <div className={cn(
+                        'text-xl font-mono font-bold mt-1',
+                        stats.tournament.net >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                      )}>
+                        {stats.tournament.net >= 0 ? '+' : ''}{stats.tournament.net.toLocaleString()}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">Prizes & Payouts</div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Rounds Survived</div>
+                      <div className="text-xl font-mono font-bold text-[#ffd86b] mt-1">
+                        {stats.tournament.rounds}
+                      </div>
+                      <div className="text-[10px] text-emerald-400 font-mono mt-0.5">
+                        {stats.tournament.wins} hands won
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Tournament Win Rate</div>
+                      <div className="text-xl font-mono font-bold text-amber-400 mt-1">
+                        {stats.tournament.winRate}%
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">Per-hand win rate</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 2. Recent Cross-Table Round History */}
+                <div className="space-y-2 pt-2">
+                  <div className="flex items-center justify-between px-1">
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                      <History className="w-3.5 h-3.5 text-[#ffd86b]" />
+                      Recent Game History
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      {filteredRecords.length} records
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    {filteredRecords.length === 0 ? (
+                      <div className="p-6 rounded-xl bg-white/[0.02] border border-white/5 text-center text-xs text-slate-400 space-y-1">
+                        <p className="font-semibold text-slate-300">No round history recorded yet.</p>
+                        <p>Play hands at any table to build your cross-table stats.</p>
+                      </div>
+                    ) : (
+                      filteredRecords.slice(0, 30).map((record) => {
+                        const targetTable = tables[record.tableId];
+                        const isTournament = targetTable?.settings.mode === 'tournament';
+                        const mySeat = (record.seatResults || []).find(sr => sr.userId === currentUser?.id);
+                        const net = mySeat?.net ?? record.amountWon ?? 0;
+                        const isWin = record.result === 'win' || record.result === 'blackjack' || net > 0;
+                        const isBJ = record.result === 'blackjack' || (mySeat?.action || '').includes('blackjack');
+                        const isPush = record.result === 'push' || net === 0;
+
                         return (
-                          <div 
-                            key={player.id} 
-                            className="flex items-center gap-[10.5px] p-[8.75px] bg-zinc-800/40 hover:bg-zinc-800/80 transition-colors rounded-[10.5px] border-[1px] border-white/5"
+                          <div
+                            key={record.id}
+                            className="p-3 rounded-xl bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 transition-colors space-y-2"
                           >
-                            <div className={`w-[28px] h-[28px] rounded-full flex items-center justify-center border-2 shrink-0 ${style.bg} ${style.border}`}>
-                              {style.icon ? (
-                                <Medal className={`w-4 h-4 ${style.color}`} />
-                              ) : (
-                                <span className={`text-[10.5px] font-bold font-mono ${style.color}`}>
-                                  {player.rank}
+                            <div className="flex items-center justify-between gap-2">
+                              {/* Table Badge with Click-to-Join */}
+                              <div className="min-w-0 flex items-center gap-1.5">
+                                <span className={cn(
+                                  'px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider',
+                                  isTournament
+                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                    : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                )}>
+                                  {isTournament ? 'Tournament' : 'Regular'}
                                 </span>
-                              )}
-                            </div>
-                            
-                            <div className="shrink-0">
-                              <img src={player.avatar} alt={player.name} className="w-8 h-8 rounded-full border border-white/10 bg-zinc-900" />
-                            </div>
-                            
-                            <div className="flex-1 min-w-0">
-                              <div className="font-semibold text-zinc-200 text-sm truncate">
-                                {player.name}
-                              </div>
-                              {player.rank <= 3 && (
-                                <p className={`text-[10px] uppercase tracking-wider font-bold ${style.color}`}>
-                                  {player.rank === 1 ? '1st Place' : player.rank === 2 ? '2nd Place' : '3rd Place'}
-                                </p>
-                              )}
-                            </div>
-                            
-                            <div className="text-right shrink-0">
-                              <div className={`${activeDimension === 'rounds' ? 'text-yellow-400' : 'text-emerald-400'} font-mono font-bold text-[14px]`}>
-                                {activeDimension === 'rounds' ? valueLabel : (
-                                  <span className="inline-flex items-center gap-1 whitespace-nowrap">
-                                    <span className="text-xs">$</span>
-                                    <span>{valueLabel}</span>
+
+                                {targetTable ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleJoinTable(targetTable.id)}
+                                    className="text-xs font-semibold text-slate-200 hover:text-[#ffd86b] truncate transition-colors flex items-center gap-0.5 cursor-pointer max-w-[130px]"
+                                    title={`Join ${targetTable.name}`}
+                                  >
+                                    <span className="truncate">{targetTable.name}</span>
+                                    <ChevronRight className="w-3 h-3 shrink-0 opacity-60" />
+                                  </button>
+                                ) : (
+                                  <span className="text-xs text-slate-400 truncate">
+                                    Table #{record.tableId.substring(record.tableId.length - 4)}
                                   </span>
                                 )}
+                              </div>
+
+                              {/* Result Badge */}
+                              <span className={cn(
+                                'px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shrink-0',
+                                isBJ
+                                  ? 'bg-[#ffd86b]/20 text-[#ffd86b] border border-[#ffd86b]/40 font-extrabold'
+                                  : isWin
+                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                  : isPush
+                                  ? 'bg-slate-500/20 text-slate-300 border border-slate-500/40'
+                                  : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                              )}>
+                                {isBJ ? 'Blackjack 3:2' : isWin ? 'Won' : isPush ? 'Push' : 'Lost'}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center justify-between text-xs text-slate-300 pt-1 border-t border-white/5">
+                              <div className="flex items-center gap-2 text-[11px] font-mono text-slate-400">
+                                <span>Score: {mySeat?.score ?? '-'}</span>
+                                {record.dealerScore !== undefined && (
+                                  <span>vs Dealer {record.dealerScore}</span>
+                                )}
+                              </div>
+
+                              <div className={cn(
+                                'font-mono font-bold text-xs',
+                                net > 0 ? 'text-emerald-400' : net < 0 ? 'text-rose-400' : 'text-slate-400'
+                              )}>
+                                {net > 0 ? '+' : ''}{net.toLocaleString()} Coins
                               </div>
                             </div>
                           </div>
                         );
-                      })}
-                    </motion.div>
-                  </AnimatePresence>
+                      })
+                    )}
+                  </div>
                 </div>
               </div>
-              
-              {/* Footer text */}
-              <div className="p-[10.5px] bg-zinc-900 border-t-[1px] border-zinc-800 text-center shrink-0">
-                <p className="text-[10px] text-zinc-500 font-mono">Showing Top 50 Global Players ({activeDimension === 'rounds' ? 'Rounds' : 'Wins'})</p>
+
+              {/* Footer */}
+              <div className="p-3 bg-[#0c120e] border-t border-white/10 text-center shrink-0">
+                <p className="text-[10px] text-slate-400 font-mono">
+                  Personal records auto-synced across all regular & tournament tables
+                </p>
               </div>
             </motion.div>
           </>

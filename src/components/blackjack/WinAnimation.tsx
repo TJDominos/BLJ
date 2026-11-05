@@ -58,7 +58,7 @@ export function WinAnimation() {
   );
 }
 
-function CoinAnimation({ coin }: { coin: any }) {
+function CoinAnimation({ coin }: { coin: any; key?: React.Key }) {
   const [positions, setPositions] = useState<{ start: {x: number, y: number}, mid: {x: number, y: number}, end: {x: number, y: number} } | null>(null);
 
   useEffect(() => {

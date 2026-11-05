@@ -73,33 +73,36 @@ export function DealerArea({
       </div>
 
       {dealerHand ? (
-        <div className="flex flex-col items-center gap-4 mt-5">
+        <div className="flex flex-col items-center gap-2 mt-2 sm:mt-3 relative z-30">
           <div className="flex relative">
             <AnimatePresence>
               {dealerHand.cards.map((c, i) => (
                 <PlayingCard key={i} card={c} index={i} globalDelayIndex={i < 2 ? i * (totalSeats + 1) + totalSeats : 0} />
               ))}
             </AnimatePresence>
+
+            {/* Dealer Score Badge pinned to the cards with 100% opaque, high-contrast dark green/gold pill */}
+            {dealerHand && dealerHand.cards.length > 0 && (
+              <motion.div 
+                key="score"
+                initial={{ opacity: 0, scale: 0.85 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.25 }}
+                className="absolute -bottom-3.5 left-1/2 -translate-x-1/2 z-40 bg-[#09120c] px-3.5 py-0.5 rounded-full shadow-[0_4px_14px_rgba(0,0,0,0.95)] border-2 border-[#d4af37] font-mono text-xs sm:text-sm font-extrabold text-[#ffd86b] whitespace-nowrap flex items-center justify-center min-w-[32px]"
+              >
+                <DelayedScore 
+                  score={dealerHand.score} 
+                  cardsLength={dealerHand.cards.length} 
+                  totalSeats={totalSeats} 
+                  isDealer={true} 
+                  tableStatus={dealerHand.cards.some(c => c.isHidden) ? 'playing' : 'dealer_turn'}
+                />
+              </motion.div>
+            )}
           </div>
-          {dealerHand && dealerHand.cards.length > 0 && (
-            <motion.div 
-              key="score"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.3 }}
-              className="bg-black/30 px-3 py-1 rounded shadow-inner border border-white/5 font-mono text-xs text-white">
-              <DelayedScore 
-                score={dealerHand.score} 
-                cardsLength={dealerHand.cards.length} 
-                totalSeats={totalSeats} 
-                isDealer={true} 
-                tableStatus={dealerHand.cards.some(c => c.isHidden) ? 'playing' : 'dealer_turn'}
-              />
-            </motion.div>
-          )}
         </div>
       ) : (
-        <div className="w-[42px] h-[62px] sm:w-[56px] sm:h-[80px] md:w-[72px] md:h-[104px] lg:w-[92px] lg:h-[130px] border border-dashed border-white/10 rounded-lg opacity-20 flex items-center justify-center mt-5">
+        <div className="w-[42px] h-[62px] sm:w-[56px] sm:h-[80px] md:w-[72px] md:h-[104px] lg:w-[92px] lg:h-[130px] border border-dashed border-white/10 rounded-lg opacity-20 flex items-center justify-center mt-3">
         </div>
       )}
     </div>

@@ -38,15 +38,19 @@ export function RulesModal({ onClose, winningRule, settings }: { onClose: () => 
           
           {isTournament && (
              <div className="space-y-4 mb-6 bg-yellow-500/10 border border-yellow-500/20 p-4 rounded-xl">
-               <h3 className="text-yellow-400 font-bold uppercase tracking-widest text-xs flex items-center gap-2"><Trophy className="w-3.5 h-3.5" /> Prize Pool: Gcoin {prizePool.toLocaleString()}</h3>
+               <h3 className="text-yellow-400 font-bold uppercase tracking-widest text-xs flex items-center gap-2"><Trophy className="w-3.5 h-3.5" /> Prize Pool: {prizePool.toLocaleString()} Game Coins</h3>
                <div className="space-y-2 mt-3">
                  <div className="flex justify-between text-xs border-b border-white/5 pb-1">
                    <span className="text-white/60">Ticket Price</span>
-                   <span className="font-mono text-white">Gcoin {settings.tournament?.ticketPrice || 0}</span>
+                   <span className="font-mono text-yellow-400">{settings.tournament?.ticketPrice || 0} Game Coins</span>
                  </div>
                  <div className="flex justify-between text-xs border-b border-white/5 pb-1">
-                   <span className="text-white/60">Starting Chips</span>
-                   <span className="font-mono text-white">{settings.tournament?.startingChips || 0} CHIPS</span>
+                   <span className="text-white/60">Locked Tournament Allowance</span>
+                   <span className="font-mono text-emerald-400">{(settings.tournament?.startingChips || 5000).toLocaleString()}</span>
+                 </div>
+                 <div className="flex justify-between text-xs border-b border-white/5 pb-1">
+                   <span className="text-white/60">Min Bet</span>
+                   <span className="font-mono text-white">{settings.tournament?.minBetChips || settings.minBet || 50}</span>
                  </div>
                  <div className="flex justify-between text-xs border-b border-white/5 pb-1">
                    <span className="text-white/60">Prize Distribution</span>
@@ -69,14 +73,14 @@ export function RulesModal({ onClose, winningRule, settings }: { onClose: () => 
                  <div className="flex justify-between text-xs border-b border-white/5 pb-1">
                    <span className="text-white/60">Escalation</span>
                    <span className="font-mono text-white text-right">
-                     {settings.tournament?.isScheduledEscalation ? `Ante Multiplier per ${settings.tournament.escalationRounds} Rounds` : 'No Scheduled Escalation'}
+                     {settings.tournament?.isScheduledEscalation ? `Min Bet 2x per ${settings.tournament.escalationRounds} Rounds` : 'No Scheduled Escalation'}
                    </span>
                  </div>
                  {settings.tournament?.isForcedAnte && (
                    <div className="flex justify-between text-xs border-b border-white/5 pb-1">
                      <span className="text-white/60">Forced Ante</span>
                      <span className="font-mono text-white text-right">
-                       {settings.tournament.antePct}% (of Player's Chip Stack)
+                       {settings.tournament.antePct}% (Game Coins)
                      </span>
                    </div>
                  )}

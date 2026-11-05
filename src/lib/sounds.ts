@@ -30,6 +30,9 @@ export class SoundManager {
 
     public setMuted(muted: boolean) {
         this.isMuted = muted;
+        if (!muted && this.audioCtx && this.audioCtx.state === 'suspended') {
+            this.audioCtx.resume().catch(() => {});
+        }
     }
 
     private playTone(freq: number, type: OscillatorType | string, duration: number, vol: number, pan: number = 0, isNoise: boolean = false) {
