@@ -50,7 +50,7 @@ export const hostTableApi = {
       settings: normalizedSettings,
       seats: Array.from({ length: normalizedSettings.maxSeats }).map(() => ({ userId: null, isReady: false, hand: null })),
       userBalances: {},
-      inviteLink: `https://ais-pre.run.app/t/${tableId}`,
+      inviteLink: `/t/${tableId}`,
       status: 'waiting',
       dealerHand: null,
       deck: [],

@@ -2,6 +2,7 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { PlayerSeat, User } from '@/store/gameStore';
+import { getAvatarUrl } from '@/utils/avatar';
 
 interface TableSeatButtonProps {
   seat: PlayerSeat;
@@ -30,7 +31,7 @@ export function TableSeatButton({
   // Correct avatar and name resolution (authoritative identity from session/user/seat)
   const seatAvatar =
     (isCurrentUser ? currentUser?.avatar : seat.avatar) ||
-    (seat.userId ? `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(seat.userId)}` : undefined);
+    (seat.userId ? getAvatarUrl(seat.userId, seat.avatar) : undefined);
 
   const seatName = (isCurrentUser ? currentUser?.name : seat.name) || 'Player';
 

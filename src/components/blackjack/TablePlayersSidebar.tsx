@@ -4,6 +4,7 @@ import { X, Users, Crown, Zap, Coins, ChevronRight } from 'lucide-react';
 import { Table, GameRecord, useGameStore } from '@/store/gameStore';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
+import { getAvatarUrl } from '@/utils/avatar';
 
 interface TablePlayersSidebarProps {
   isOpen: boolean;
@@ -233,7 +234,7 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
                                 <div className="col-span-5 flex items-center gap-2 min-w-0 pr-1">
                                   <div className="relative shrink-0">
                                     <img
-                                      src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${user.userId}`}
+                                      src={getAvatarUrl(user.userId)}
                                       alt="avatar"
                                       className="w-7 h-7 rounded-full bg-black/40 border border-white/10"
                                     />
@@ -315,7 +316,7 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
                                 <div className="col-span-5 flex items-center gap-2 min-w-0 pr-1">
                                   <div className="relative shrink-0">
                                     <img
-                                      src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${user.userId}`}
+                                      src={getAvatarUrl(user.userId)}
                                       alt="avatar"
                                       className="w-7 h-7 rounded-full bg-black/40 border border-white/10"
                                     />

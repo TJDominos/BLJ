@@ -654,7 +654,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
       
       {/* FULL WIDTH TABLE BACKGROUND */}
       <div className="absolute inset-0 z-0 bg-gradient-to-b from-[#134226] via-[#1a5b33] to-[#0f341d] shadow-[inset_0_0_100px_rgba(0,0,0,0.8)]">
-        <div className="absolute inset-0 opacity-40 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')] mix-blend-overlay"></div>
+        <div className="absolute inset-0 opacity-20 bg-[radial-gradient(#ffffff_1px,transparent_1px)] [background-size:20px_20px] mix-blend-overlay"></div>
         {/* Soft vignette at edges to blend */}
         <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse at 50% 50%, transparent 50%, rgba(0,0,0,0.5) 100%)'}}></div>
       </div>
@@ -710,7 +710,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
       <div className="w-full max-w-[1024px] flex flex-col items-center gap-1 z-40 px-2 sm:px-4 pt-3 sm:pt-4 pb-1 relative pointer-events-none shrink-0">
         <div className="flex flex-row items-center justify-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-[420px] mx-auto mt-[-2px]">
           <div className="relative flex flex-row items-center border-[2px] border-[#6b4c2a] rounded-full bg-gradient-to-b from-[#eac574] via-[#d0a758] to-[#997027] p-1 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8),inset_0_-1px_2px_rgba(0,0,0,0.4),0_4px_10px_rgba(0,0,0,0.5)] justify-between flex-1 h-[40px] sm:h-[44px] min-w-[240px]">
-            <div className="absolute left-1 right-1 inset-y-1 bg-[url('https://www.transparenttextures.com/patterns/dark-matter.png')] opacity-20 pointer-events-none rounded-full z-0"></div>
+            <div className="absolute left-1 right-1 inset-y-1 bg-black/20 pointer-events-none rounded-full z-0"></div>
 
               <div id="balance-container" className="flex-1 flex flex-row items-center justify-between h-full w-full relative z-10 bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full px-3 sm:px-4 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6),0_1px_1px_rgba(255,255,255,0.4)] border border-[#3a2510]">
                <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold tracking-wider">

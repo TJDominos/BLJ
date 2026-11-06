@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, ChevronRight, Loader2, CheckCircle2, ExternalLink } from 'lucide-react';
+import { X, ChevronRight, Loader2, CheckCircle2, Wallet, ShieldCheck, Coins } from 'lucide-react';
 
 interface WalletSelectorProps {
   isOpen: boolean;
@@ -10,134 +10,72 @@ interface WalletSelectorProps {
   onSelect: () => void;
 }
 
-const DEFAULT_ICONS: Record<string, string> = {
-  metamask: "https://upload.wikimedia.org/wikipedia/commons/3/36/MetaMask_Fox.svg",
-  okx: "https://cryptologos.cc/logos/okb-okb-logo.svg",
-  binance: "https://upload.wikimedia.org/wikipedia/commons/f/fc/Binance-coin-bnb-logo.png",
-  phantom: "data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgMTA4IDEwOCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTA4IiBoZWlnaHQ9IjEwOCIgcng9IjU0IiBmaWxsPSIjQUI5RkYyIi8+PHBhdGggZD0iTTMwIDgwQzIyIDcwIDI1IDUwIDQyIDM2QzU0IDI2IDcxIDIyIDg4IDM0QzEwNSA0NSAxMDEgNzQgODggODJDNzcgODggNzQgODAgNzEgNzJDNjggNjQgNjIgODcgNTMgODdDNDUgODcgNDYgNzUgNDEgODFDMzggODUgMzUgODUgMzAgODBaIiBmaWxsPSJ3aGl0ZSIvPjxlbGxpcHNlIGN4PSI2NiIgY3k9IjQ4IiByeD0iNiIgcnk9IjciIGZpbGw9IiNBQjlGRjIiLz48ZWxsaXBzZSBjeD0iODQiIGN5PSI0OCIgcng9IjYiIHJ5PSI3IiBmaWxsPSIjQUI5RkYyIi8+PC9zdmc+"
-};
-
 type Step = 'SELECT_WALLET' | 'CONNECTING' | 'PENDING' | 'SUCCESS';
 
+interface WalletOption {
+  id: string;
+  name: string;
+  description: string;
+  badge?: string;
+}
+
+const WALLET_OPTIONS: WalletOption[] = [
+  { id: 'randseed', name: 'RandSeed Account', description: 'Platform connected session', badge: 'Fastest' },
+  { id: 'solana', name: 'Solana Network', description: 'SOL / SPL Token liquidity' },
+  { id: 'evm', name: 'EVM Network', description: 'Ethereum / Arbitrum / BSC' },
+  { id: 'instant', name: 'Direct Deposit', description: 'Instant table liquidity' },
+];
+
 export function WalletSelector({ isOpen, onClose, depositAmount, currency, onSelect }: WalletSelectorProps) {
-  const [wallets, setWallets] = useState<{ id: string, name: string, installed: boolean, icon?: string, url?: string }[]>([]);
   const [step, setStep] = useState<Step>('SELECT_WALLET');
-  const [selectedWallet, setSelectedWallet] = useState<{name: string, icon?: string} | null>(null);
+  const [selectedWallet, setSelectedWallet] = useState<WalletOption | null>(null);
 
-  useEffect(() => {
-    if (!isOpen) {
-      // Reset state on close after a delay
-      setTimeout(() => setStep('SELECT_WALLET'), 300);
-      return;
-    }
-
-    // Basic detection
-    const detected = [
-      {
-        id: 'metamask',
-        name: 'MetaMask',
-        installed: !!(window as any).ethereum?.isMetaMask,
-        icon: DEFAULT_ICONS.metamask,
-        url: 'https://metamask.io/download/'
-      },
-      {
-        id: 'okx',
-        name: 'OKX Wallet',
-        installed: !!(window as any).okxwallet,
-        icon: DEFAULT_ICONS.okx,
-        url: 'https://www.okx.com/web3/build/projects/wallets'
-      },
-      {
-        id: 'binance',
-        name: 'Binance Wallet',
-        installed: !!(window as any).BinanceChain,
-        icon: DEFAULT_ICONS.binance,
-        url: 'https://www.bnbchain.org/en/binance-wallet'
-      },
-      {
-        id: 'phantom',
-        name: 'Phantom',
-        installed: !!(window as any).phantom?.solana,
-        icon: DEFAULT_ICONS.phantom,
-        url: 'https://phantom.app/'
-      }
-    ];
-
-    // Listen for EIP-6963 providers
-    const handleInjectedProvider = (e: any) => {
-      const providerDetail = e.detail;
-      if (providerDetail && providerDetail.info) {
-        setWallets(prev => {
-          if (!prev.find(w => w.name === providerDetail.info.name)) {
-            return [...prev, { 
-              id: providerDetail.info.uuid, 
-              name: providerDetail.info.name, 
-              installed: true,
-              icon: providerDetail.info.icon // EIP-6963 often includes a data URI icon
-            }];
-          }
-          return prev;
-        });
-      }
-    };
-    
-    window.addEventListener('eip6963:announceProvider', handleInjectedProvider);
-    window.dispatchEvent(new Event('eip6963:requestProvider'));
-
-    setWallets(prev => {
-      const all = [...prev];
-      detected.forEach(d => {
-        // deduplicate by name loosely
-        if (!all.find(w => 
-          w.name.toLowerCase() === d.name.toLowerCase() || 
-          (w.name.toLowerCase().includes('metamask') && d.name.toLowerCase().includes('metamask'))
-        )) {
-          all.push(d);
-        }
-      });
-      return all;
-    });
-
-    return () => window.removeEventListener('eip6963:announceProvider', handleInjectedProvider);
-  }, [isOpen]);
-
-  const handleWalletSelect = (wallet: {name: string, icon?: string}) => {
+  const handleWalletSelect = (wallet: WalletOption) => {
     setSelectedWallet(wallet);
     setStep('CONNECTING');
-    
-    // Simulate flow
+
     setTimeout(() => {
-      setStep('PENDING'); // e.g. user approved transaction in wallet, now waiting on chain
-      
+      setStep('PENDING');
+
       setTimeout(() => {
-        setStep('SUCCESS'); // transaction mined
-        
+        setStep('SUCCESS');
+
         setTimeout(() => {
           onClose();
           onSelect();
-        }, 1500); // close after 1.5s
-      }, 3000);
-    }, 2000);
+          setStep('SELECT_WALLET');
+        }, 1200);
+      }, 1500);
+    }, 1000);
+  };
+
+  const handleClose = () => {
+    if (step === 'CONNECTING' || step === 'PENDING') return;
+    setStep('SELECT_WALLET');
+    onClose();
   };
 
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center pointer-events-auto bg-black/40 backdrop-blur-sm sm:px-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center pointer-events-auto bg-black/60 backdrop-blur-sm sm:px-4">
           <motion.div 
-            initial={{ opacity: 0, y: 100, scale: 1 }} 
+            initial={{ opacity: 0, y: 100, scale: 0.95 }} 
             animate={{ opacity: 1, y: 0, scale: 1 }} 
-            exit={{ opacity: 0, y: 100, scale: 1 }}
+            exit={{ opacity: 0, y: 100, scale: 0.95 }}
             transition={{ type: "spring", damping: 25, stiffness: 300 }}
-            className="bg-[#ebedf5] w-full sm:max-w-sm rounded-t-[32px] sm:rounded-3xl shadow-2xl relative overflow-hidden flex flex-col max-h-[85vh]"
+            className="bg-[#181a20] border border-white/10 w-full sm:max-w-md rounded-t-[32px] sm:rounded-2xl shadow-2xl relative overflow-hidden flex flex-col max-h-[85vh] text-white"
           >
-            <div className="flex items-center justify-between px-6 py-4 border-b border-black/5 bg-white">
-              <h3 className="font-bold text-slate-800 tracking-wide">
-                {step === 'SELECT_WALLET' ? 'Connect Wallet' : 'Deposit Status'}
-              </h3>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-[#1e2029]">
+              <div className="flex items-center gap-2">
+                <Coins className="w-5 h-5 text-[#2ebaba]" />
+                <h3 className="font-bold text-white tracking-wide">
+                  {step === 'SELECT_WALLET' ? 'Deposit Liquidity' : 'Processing Deposit'}
+                </h3>
+              </div>
               <button 
-                onClick={onClose}
-                className="p-2 -mr-2 text-slate-400 hover:text-slate-800 hover:bg-black/5 rounded-full transition-colors"
+                onClick={handleClose}
+                className="p-2 -mr-2 text-white/50 hover:text-white hover:bg-white/10 rounded-full transition-colors"
                 disabled={step === 'PENDING' || step === 'CONNECTING'}
               >
                 <X className="w-5 h-5" />
@@ -146,80 +84,81 @@ export function WalletSelector({ isOpen, onClose, depositAmount, currency, onSel
             
             <div className="p-4 sm:p-6 overflow-y-auto w-full">
               {step === 'SELECT_WALLET' && (
-                <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
-                  <p className="text-sm text-slate-500 mb-4 px-2">
-                    Select an installed wallet to sign your deposit transaction of <span className="font-bold text-slate-700">{depositAmount} {currency}</span>.
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                  <div className="bg-[#126b6f]/15 border border-[#126b6f]/30 rounded-xl p-3 mb-4 text-xs text-[#6ee7b7] flex items-center justify-between">
+                    <span>Deposit Amount</span>
+                    <span className="font-bold text-sm text-white">{depositAmount} {currency}</span>
+                  </div>
+
+                  <p className="text-xs text-white/60 mb-3 px-1">
+                    Select source to fund this table's host liquidity pool:
                   </p>
+
                   <div className="space-y-2">
-                    {wallets.length === 0 ? (
-                      <div className="p-4 text-center rounded-xl bg-white border border-black/5 text-slate-500 text-sm">
-                        No compatible wallets detected.
-                      </div>
-                    ) : (
-                      wallets.map(w => (
-                        <button
-                          key={w.id}
-                          onClick={() => w.installed ? handleWalletSelect(w) : (w.url && window.open(w.url, '_blank'))}
-                          className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all ${w.installed ? 'bg-white border-black/5 hover:border-[#126b6f] hover:shadow-md cursor-pointer' : 'bg-white/50 border-black/5 hover:bg-white/80 cursor-pointer opacity-70'}`}
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 flex items-center justify-center rounded-lg overflow-hidden shrink-0">
-                              {w.icon ? (
-                                 <img src={w.icon} className="w-full h-full object-contain" alt={`${w.name} logo`} />
-                              ) : (
-                                 <div className="w-full h-full bg-slate-200 text-slate-500 font-bold flex items-center justify-center text-xs">{w.name.charAt(0)}</div>
+                    {WALLET_OPTIONS.map((w) => (
+                      <button
+                        key={w.id}
+                        onClick={() => handleWalletSelect(w)}
+                        className="w-full flex items-center justify-between p-3.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 hover:border-[#126b6f] transition-all text-left cursor-pointer group"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-lg bg-[#2ebaba]/10 border border-[#2ebaba]/20 flex items-center justify-center text-[#2ebaba] shrink-0 group-hover:scale-105 transition-transform">
+                            <Wallet className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <div className="font-semibold text-sm text-white flex items-center gap-2">
+                              {w.name}
+                              {w.badge && (
+                                <span className="text-[10px] font-bold text-[#2ebaba] bg-[#2ebaba]/15 px-1.5 py-0.5 rounded">
+                                  {w.badge}
+                                </span>
                               )}
                             </div>
-                            <span className={`font-semibold ${w.installed ? 'text-slate-800' : 'text-slate-500'}`}>{w.name}</span>
+                            <div className="text-xs text-white/50">{w.description}</div>
                           </div>
-                          {w.installed ? (
-                            <div className="flex items-center gap-2">
-                               <span className="text-[10px] uppercase font-bold text-[#126b6f] bg-[#126b6f]/10 px-2 py-0.5 rounded-full">Installed</span>
-                               <ChevronRight className="w-4 h-4 text-slate-400" />
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-1">
-                               <span className="text-[10px] uppercase font-bold text-slate-400">Get</span>
-                               <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
-                            </div>
-                          )}
-                        </button>
-                      ))
-                    )}
+                        </div>
+                        <ChevronRight className="w-4 h-4 text-white/40 group-hover:text-white group-hover:translate-x-0.5 transition-all" />
+                      </button>
+                    ))}
                   </div>
                 </motion.div>
               )}
 
               {step === 'CONNECTING' && (
-                <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center justify-center py-8 text-center space-y-4">
-                   <div className="relative">
-                     {selectedWallet?.icon && <img src={selectedWallet.icon} className="w-16 h-16 object-contain z-10 relative" alt="Wallet icon" />}
-                     <div className="absolute inset-0 bg-[#126b6f] blur-xl opacity-20 rounded-full animate-pulse"></div>
-                   </div>
-                   <div>
-                     <h4 className="font-bold text-lg text-slate-800">Approve transaction</h4>
-                     <p className="text-sm text-slate-500 mt-1 max-w-[200px] mx-auto">Please open your {selectedWallet?.name} extension to sign the message.</p>
-                   </div>
+                <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center justify-center py-8 text-center space-y-4">
+                  <div className="relative">
+                    <div className="w-16 h-16 rounded-2xl bg-[#126b6f]/20 border border-[#126b6f]/40 flex items-center justify-center text-[#2ebaba]">
+                      <ShieldCheck className="w-8 h-8" />
+                    </div>
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-base text-white">Connecting Source</h4>
+                    <p className="text-xs text-white/60 mt-1 max-w-[240px] mx-auto">
+                      Preparing authorization for {selectedWallet?.name}...
+                    </p>
+                  </div>
                 </motion.div>
               )}
 
               {step === 'PENDING' && (
-                <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center justify-center py-8 text-center space-y-4">
-                   <Loader2 className="w-16 h-16 text-[#126b6f] animate-spin" />
-                   <div>
-                     <h4 className="font-bold text-lg text-slate-800">Transaction Pending</h4>
-                     <p className="text-sm text-slate-500 mt-1">Waiting for on-chain confirmation. This may take a few seconds.</p>
-                   </div>
+                <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center justify-center py-8 text-center space-y-4">
+                  <Loader2 className="w-12 h-12 text-[#2ebaba] animate-spin" />
+                  <div>
+                    <h4 className="font-bold text-base text-white">Confirming Liquidity Deposit</h4>
+                    <p className="text-xs text-white/60 mt-1">
+                      Crediting {depositAmount} {currency} to table liquidity bankroll...
+                    </p>
+                  </div>
                 </motion.div>
               )}
 
               {step === 'SUCCESS' && (
-                <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center justify-center py-8 text-center space-y-4">
-                   <CheckCircle2 className="w-16 h-16 text-emerald-500" />
-                   <div>
-                     <h4 className="font-bold text-lg text-emerald-600">Deposit Successful!</h4>
-                     <p className="text-sm text-slate-500 mt-1">Your liquidity has been added.</p>
-                   </div>
+                <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center justify-center py-8 text-center space-y-4">
+                  <CheckCircle2 className="w-12 h-12 text-emerald-400" />
+                  <div>
+                    <h4 className="font-bold text-base text-emerald-400">Liquidity Deposited!</h4>
+                    <p className="text-xs text-white/60 mt-1">Your table has been successfully funded.</p>
+                  </div>
                 </motion.div>
               )}
             </div>

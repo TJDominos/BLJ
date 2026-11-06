@@ -5,6 +5,7 @@ import { useGameStore, GameRecord } from '@/store/gameStore';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { CurrencyIcon } from '@/components/CurrencyIcon';
+import { getAvatarUrl } from '@/utils/avatar';
 
 export const RankWidget: React.FC = () => {
   const { gameRecords, currentUser, tables } = useGameStore();
@@ -223,7 +224,7 @@ export const RankWidget: React.FC = () => {
                 <div className="flex items-center gap-3 min-w-0">
                   <div className="w-10 h-10 rounded-full bg-zinc-900 border border-[#d4af37]/60 overflow-hidden shrink-0 shadow-md">
                     <img
-                      src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(currentUser?.name || 'Player')}`}
+                      src={currentUser?.avatar || getAvatarUrl(currentUser?.id || currentUser?.name || 'Player')}
                       alt="Player Avatar"
                       className="w-full h-full object-cover"
                     />

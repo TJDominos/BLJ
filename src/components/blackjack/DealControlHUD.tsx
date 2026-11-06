@@ -70,7 +70,7 @@ export function DealControlHUD({
         <div 
           className="relative flex flex-row items-center border-[2px] border-[#6b4c2a] rounded-full bg-gradient-to-b from-[#eac574] via-[#d0a758] to-[#997027] p-1 md:p-2 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8),inset_0_-1px_2px_rgba(0,0,0,0.4)] max-w-full w-full sm:w-[460px] h-[44px] sm:h-[60px]"
         >
-          <div className="absolute left-1 right-1 inset-y-1 bg-[url('https://www.transparenttextures.com/patterns/dark-matter.png')] opacity-20 pointer-events-none rounded-full"></div>
+          <div className="absolute left-1 right-1 inset-y-1 bg-black/20 pointer-events-none rounded-full"></div>
 
           {/* Left Filigree */}
           <div className="flex w-6 sm:w-10 flex-shrink-0 items-center justify-center text-[#5c3e1b] opacity-80 z-10 mr-1 sm:mr-1">
@@ -184,7 +184,7 @@ export function DealControlHUD({
 
         {sideBetsEnabled && (
           <div className="bg-gradient-to-b from-[#2b1c0e] to-[#1a1005] border border-t-0 border-[#513518] rounded-b-2xl pb-1.5 sm:pb-3 shadow-[0_10px_20px_rgba(0,0,0,0.6)] flex flex-row gap-2 sm:gap-4 justify-center items-center z-0 relative w-[90%] max-w-[360px] mx-auto -mt-6 sm:-mt-6">
-              <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/black-scales.png')] opacity-20 pointer-events-none rounded-b-2xl"></div>
+              <div className="absolute inset-0 bg-black/20 pointer-events-none rounded-b-2xl"></div>
               
               <div className="flex flex-col gap-0.5 items-center pt-8 sm:pt-8 w-full">
                 <div className="flex flex-row justify-center gap-4 sm:gap-6 w-full">

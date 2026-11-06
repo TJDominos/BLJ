@@ -251,7 +251,7 @@ function GameLayout() {
 
   return (
     <div className="w-full h-[100dvh] flex flex-col items-center justify-center relative overflow-hidden bg-gradient-to-br from-[#1a0f0a] via-[#0d0905] to-[#140b08] text-slate-200 font-sans selection:bg-[#c6a364]/30 selection:text-amber-200">
-      <div className="absolute inset-0 pointer-events-none opacity-30 bg-[url('https://www.transparenttextures.com/patterns/black-floral-pattern.png')] mix-blend-overlay z-0"></div>
+      <div className="absolute inset-0 pointer-events-none opacity-15 bg-[radial-gradient(#c6a364_1px,transparent_1px)] [background-size:24px_24px] mix-blend-overlay z-0"></div>
       
       {/* Luxury Caesars Palace style background elements */}
       <div className="absolute top-0 left-0 bottom-0 w-32 md:w-64 opacity-20 pointer-events-none bg-gradient-to-r from-[#c6a364]/20 to-transparent"></div>

@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { HeaderUI } from '@/components/blackjack/HeaderUI';
 import { ConfirmModal } from '@/components/blackjack/ConfirmModal';
+import { getAvatarUrl } from '@/utils/avatar';
 
 export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }: { onNavigate: (view: 'lobby' | 'create' | 'table' | 'host_table' | 'manage_tables', editId?: string) => boolean | void, onToggleSidebar?: () => void, initialTableId?: string | null }) {
   const { tables, currentUser, gameRecords, closeTable } = useGameStore();
@@ -645,7 +646,7 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                           <td className="px-4 py-3 text-white/60 whitespace-nowrap">{new Date(sr.time).toLocaleTimeString()}</td>
                           <td className="px-4 py-3 text-white/60 font-mono">Seat {sr.seatIndex + 1}</td>
                           <td className="px-4 py-3">
-                             <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${sr.userId}`} alt="Avatar" className="w-6 h-6 rounded-full bg-white/10" />
+                             <img src={getAvatarUrl(sr.userId || 'Player')} alt="Avatar" className="w-6 h-6 rounded-full bg-white/10" />
                           </td>
                           <td className="px-4 py-3 font-bold text-white">{sr.userId?.startsWith('bot_') ? `Bot ${sr.userId.split('_')[1]}` : sr.userId || 'Empty'}</td>
                           <td className="px-4 py-3 text-right font-mono text-white/80">${sr.bet.toLocaleString()}</td>

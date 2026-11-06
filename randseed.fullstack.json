@@ -1,0 +1,17 @@
+{
+  "name": "royal-blackjack",
+  "version": "1.0.0",
+  "frontend": {
+    "buildDir": "dist"
+  },
+  "backend": {
+    "dockerfile": "Dockerfile",
+    "context": ".",
+    "port": 8080
+  },
+  "runtime": {
+    "tier": "lite",
+    "inactivityTimeoutSeconds": 300,
+    "enableInternet": false
+  }
+}

@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { PlayingCard } from './PlayingCardUI';
 import { Trophy } from 'lucide-react';
 import { PlayingCard as PlayingCardType, Hand } from '@/store/gameStore';
+import { getAvatarUrl } from '@/utils/avatar';
 
 import { DelayedScore } from './DelayedScore';
 
@@ -48,7 +49,7 @@ export function DealerArea({
             <CloverAvatar className="w-full h-full object-cover z-10" />
           ) : (
             <img 
-              src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${name}&backgroundColor=b6e3f4,c0aede,d1d4f9,ffdfbf,ffd5dc`} 
+              src={getAvatarUrl(name)} 
               alt={name}
               className="w-full h-full object-cover"
             />

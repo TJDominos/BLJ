@@ -519,10 +519,14 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                     <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-white/5 shadow-sm overflow-hidden">
                       <div className="flex flex-col flex-1 min-w-0 pr-2">
                         <span className="text-xs font-semibold text-white/50 mb-1">Invite Link</span>
-                        <span className="text-sm font-mono text-white truncate">https://randseed.org/blackjack/table/{mockTableId}</span>
+                        <span className="text-sm font-mono text-white truncate">{typeof window !== 'undefined' ? `${window.location.origin}/t/${mockTableId}` : `/t/${mockTableId}`}</span>
                       </div>
                       <button 
-                        onClick={(e) => { e.preventDefault(); copyToClipboard(`https://randseed.org/blackjack/table/${mockTableId}`); }} 
+                        onClick={(e) => { 
+                          e.preventDefault(); 
+                          const link = typeof window !== 'undefined' ? `${window.location.origin}/t/${mockTableId}` : `/t/${mockTableId}`;
+                          copyToClipboard(link); 
+                        }} 
                         className="p-2 bg-white/5 hover:bg-white/10 rounded-lg text-white/50 hover:text-white transition-colors shrink-0"
                       >
                         <Copy className="w-4 h-4" />
