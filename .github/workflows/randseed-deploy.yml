@@ -1,4 +1,4 @@
-# randseed-workflow-version: 11
+# randseed-workflow-version: 12
 name: Deploy to RandSeed Sandbox
 
 on:
@@ -71,7 +71,7 @@ jobs:
 
       # 步骤 2: 检出目标提交的代码仓库
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.commit_sha }}
 
@@ -136,9 +136,9 @@ jobs:
 
       # 步骤 4: 初始化 Node.js 运行环境
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
 
       # 步骤 5: 安装依赖并构建或提取静态文件
       - name: Install dependencies and build or stage static files
@@ -846,15 +846,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout default branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Prepare SDK update changes
         id: sdk_update
