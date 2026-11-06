@@ -1,26 +1,32 @@
-# randseed-workflow-version: 6
+# randseed-workflow-version: 11
 name: Deploy to RandSeed Sandbox
 
 on:
   workflow_dispatch:
     inputs:
       deployment_id:
+        description: 平台分配的部署单唯一标识
         required: true
         type: string
       commit_sha:
+        description: 待部署的代码提交哈希
         required: true
         type: string
       game_id:
+        description: 游戏全局唯一标识
         required: true
         type: string
       deployment_environment:
-        description: RandSeed deployment environment
+        description: RandSeed 部署环境
         required: true
         type: choice
         options:
           - dev
           - test
           - production
+  repository_dispatch:
+    types:
+        - randseed-sdk-release
 
 permissions:
   contents: read
@@ -28,11 +34,13 @@ permissions:
 
 jobs:
   build-and-deploy:
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
     runs-on: ubuntu-latest
     steps:
+      # 步骤 1: 解析部署环境与平台 API 端点及 OIDC 受众
       - name: Resolve RandSeed deployment environment
         id: target_environment
         shell: bash
@@ -60,16 +68,83 @@ jobs:
           esac
           printf 'api_url=%s\n' "$API_URL" >> "$GITHUB_OUTPUT"
           printf 'oidc_audience=%s\n' "$OIDC_AUDIENCE" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+
+      # 步骤 2: 检出目标提交的代码仓库
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.commit_sha }}
-      - uses: actions/setup-node@v4
+
+      # 步骤 3: 自适应分支检测（探测是否存在 randseed.fullstack.json 契约）
+      - name: Detect deployment mode and parse manifest
+        id: detect_mode
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const configPath = path.resolve('randseed.fullstack.json');
+          if (!fs.existsSync(configPath)) {
+            console.log('未检测到 randseed.fullstack.json，启用经典纯静态 Web 游戏构建轨道');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'is_fullstack=false\n');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'frontend_build_dir=dist\n');
+            process.exit(0);
+          }
+
+          console.log('检测到 randseed.fullstack.json 契约，启用全栈私有容器归档构建轨道');
+          let config;
+          try {
+            config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          } catch (err) {
+            console.error('randseed.fullstack.json 解析失败，必须为合法的 JSON 文件:', err.message);
+            process.exit(1);
+          }
+
+          const frontendBuildDir = (config.frontend && (config.frontend.assetsPath || config.frontend.output_dir || config.frontend.buildDir)) || 'dist';
+          const backendDockerfile = (config.backend && config.backend.dockerfile) || 'Dockerfile';
+          const backendContext = (config.backend && config.backend.context) || '.';
+          const backendPort = (config.backend && config.backend.port) || 8080;
+          const runtimeTier = (config.runtime && (config.runtime.spec || config.runtime.tier)) || 'lite';
+          const inactivityTimeout = (config.runtime && (config.runtime.inactivityTimeoutSeconds || (config.runtime.inactivity_timeout_ms ? Math.round(config.runtime.inactivity_timeout_ms / 1000) : 300))) || 300;
+          const enableInternet = Boolean(config.runtime && (config.runtime.enableInternet || config.runtime.enable_internet));
+
+          // 路径防逃逸防御性校验
+          if (frontendBuildDir.includes('..') || path.isAbsolute(frontendBuildDir)) {
+            console.error('前端构建输出目录必须为仓库内相对路径，严禁路径逃逸');
+            process.exit(1);
+          }
+          if (backendDockerfile.includes('..') || path.isAbsolute(backendDockerfile)) {
+            console.error('Dockerfile 路径必须为仓库内相对路径，严禁路径逃逸');
+            process.exit(1);
+          }
+          if (backendContext.includes('..') || path.isAbsolute(backendContext)) {
+            console.error('Docker 构建上下文必须为仓库内相对路径，严禁路径逃逸');
+            process.exit(1);
+          }
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, 'is_fullstack=true\n');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `frontend_build_dir=${frontendBuildDir}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `backend_dockerfile=${backendDockerfile}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `backend_context=${backendContext}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `backend_port=${backendPort}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `runtime_tier=${runtimeTier}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `inactivity_timeout=${inactivityTimeout}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `enable_internet=${enableInternet}\n`);
+          NODE
+
+      # 步骤 4: 初始化 Node.js 运行环境
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      # 步骤 5: 安装依赖并构建或提取静态文件
       - name: Install dependencies and build or stage static files
         shell: bash
         env:
-          BUILD_DIR: dist
+          BUILD_DIR: ${{ steps.detect_mode.outputs.frontend_build_dir }}
         run: |
           set -Eeuo pipefail
           if [ -f package.json ]; then
@@ -142,6 +217,66 @@ jobs:
             echo "No package.json build project or root index.html found" >&2
             exit 1
           fi
+
+      # 步骤 6: 初始化 Docker Buildx 构建器（全栈专属，在开启上传会话前完成构建以避免会话过期）
+      - name: Set up Docker Buildx
+        if: steps.detect_mode.outputs.is_fullstack == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      # 步骤 7: 构建 linux/amd64 容器镜像归档（全栈专属，零外部镜像仓库依赖）
+      - name: Build backend OCI container image archive
+        id: build_docker
+        if: steps.detect_mode.outputs.is_fullstack == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.detect_mode.outputs.backend_context }}
+          file: ${{ steps.detect_mode.outputs.backend_dockerfile }}
+          platforms: linux/amd64
+          tags: randseed-backend:${{ inputs.deployment_id }}
+          outputs: type=docker,dest=/tmp/randseed-backend-image.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 步骤 8: 计算容器镜像归档 SHA-256 与 R2 寻址元数据（全栈专属）
+      - name: Prepare OCI image metadata
+        id: prep_image
+        if: steps.detect_mode.outputs.is_fullstack == 'true'
+        shell: bash
+        env:
+          GAME_ID: ${{ inputs.game_id }}
+          ARCHIVE_PATH: /tmp/randseed-backend-image.tar
+        run: |
+          set -Eeuo pipefail
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { createReadStream, appendFileSync, statSync } from 'node:fs';
+
+          const archivePath = process.env.ARCHIVE_PATH;
+          const gameId = process.env.GAME_ID;
+          if (!/^[A-Za-z0-9_-]{1,64}$/.test(gameId || '')) {
+            console.error('Invalid RandSeed game identifier');
+            process.exit(1);
+          }
+          const stat = statSync(archivePath);
+          if (!stat.isFile() || stat.size <= 0 || stat.size > 512 * 1024 * 1024) {
+            console.error(`Backend image archive size (${stat.size} bytes) is out of allowed bounds`);
+            process.exit(1);
+          }
+          const hash = createHash('sha256');
+          for await (const chunk of createReadStream(archivePath)) {
+            hash.update(chunk);
+          }
+          const sha256 = hash.digest('hex');
+          const imageUri = `r2://runtime-images/${gameId}/sha256-${sha256}.tar`;
+          appendFileSync(process.env.GITHUB_OUTPUT, `archive_path=${archivePath}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `archive_sha256=${sha256}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `archive_size=${stat.size}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `image_uri=${imageUri}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `image_digest=sha256:${sha256}\n`);
+          console.log(`Prepared backend image archive: ${imageUri} (${stat.size} bytes)`);
+          NODE
+
+      # 步骤 9: 构建失败回调通知（覆盖前端构建与后端 Docker 构建）
       - name: Report build failure
         if: failure()
         env:
@@ -172,11 +307,14 @@ jobs:
             echo "RandSeed build failure callback failed ($HTTP_STATUS)" >&2
             exit 1
           fi
+
+      # 步骤 10: 创建前端静态产物哈希清单
       - name: Create manifest
+        id: create_manifest
         env:
           DEPLOYMENT_ID: ${{ inputs.deployment_id }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
-          BUILD_DIR: dist
+          BUILD_DIR: ${{ steps.detect_mode.outputs.frontend_build_dir }}
         run: |
           set -Eeuo pipefail
           node <<'NODE' > /tmp/randseed-manifest.json
@@ -187,12 +325,29 @@ jobs:
           function walk(dir) { for (const entry of fs.readdirSync(dir, { withFileTypes: true })) { const full = path.join(dir, entry.name); if (entry.isDirectory()) walk(full); else { const relative = path.relative(root, full).split(path.sep).join('/'); const bytes = fs.readFileSync(full); files.push({ path: relative, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), size: bytes.length }); } } }
           walk(root); files.sort((a, b) => a.path.localeCompare(b.path));
           const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+          const manifest = { deployment_id: process.env.DEPLOYMENT_ID, commit_sha: process.env.COMMIT_SHA, root, files, total_bytes: totalBytes };
+          const definitionPath = path.resolve('randseed.game-definition.json');
+          if (fs.existsSync(definitionPath)) {
+            const stat = fs.lstatSync(definitionPath);
+            if (!stat.isFile() || stat.isSymbolicLink()) { console.error('Game definition must be a regular JSON file'); process.exit(1); }
+            if (stat.size > 512 * 1024) { console.error('Game definition file exceeds the 512 KiB limit'); process.exit(1); }
+            let definition;
+            try { definition = JSON.parse(fs.readFileSync(definitionPath, 'utf8')); }
+            catch { console.error('randseed.game-definition.json must contain valid JSON'); process.exit(1); }
+            if (!definition || typeof definition !== 'object' || Array.isArray(definition)) { console.error('Game definition must be a JSON object'); process.exit(1); }
+            if (Buffer.byteLength(JSON.stringify(definition), 'utf8') > 512 * 1024) { console.error('Game definition exceeds the 512 KiB limit'); process.exit(1); }
+            manifest.game_definition = definition;
+          }
           console.error(`RandSeed artifact manifest: ${files.length} files, ${totalBytes} bytes`);
-          console.log(JSON.stringify({ deployment_id: process.env.DEPLOYMENT_ID, commit_sha: process.env.COMMIT_SHA, root, files, total_bytes: totalBytes }));
+          console.log(JSON.stringify(manifest));
           NODE
+          CAS_HASH=$(node -e "const fs=require('fs'),crypto=require('crypto');const m=fs.readFileSync('/tmp/randseed-manifest.json');console.log(crypto.createHash('sha256').update(m).digest('hex'))")
+          printf 'cas_hash=%s\n' "$CAS_HASH" >> "$GITHUB_OUTPUT"
+
+      # 步骤 11: 前端静态资源安全脱敏校验
       - name: Validate browser runtime artifact
         env:
-          BUILD_DIR: dist
+          BUILD_DIR: ${{ steps.detect_mode.outputs.frontend_build_dir }}
         run: |
           set -Eeuo pipefail
           node <<'NODE'
@@ -238,7 +393,123 @@ jobs:
           if (totalBytes > maxBytes) fail(`build output is ${totalBytes} bytes; the artifact limit is ${maxBytes} bytes`);
           console.log(`RandSeed browser runtime validation passed: ${files.length} files, ${totalBytes} bytes, root ${root}`);
           NODE
+
+      - name: Generate SDK adoption report
+        id: sdk_adoption_report
+        continue-on-error: true
+        env:
+          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          GAME_ID: ${{ inputs.game_id }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          IS_FULLSTACK: ${{ steps.detect_mode.outputs.is_fullstack }}
+          SDK_REPORT_PATH: /tmp/randseed-sdk-adoption-report.json
+        run: |
+          set -Eeuo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const sourceExtensions = new Set(['.cjs', '.html', '.htm', '.js', '.jsx', '.mjs', '.mts', '.rs', '.ts', '.tsx']);
+          const excludedDirectories = new Set([
+            '.git', '.next', '.nuxt', '.turbo', 'build', 'coverage', 'dist', 'docs',
+            'examples', 'fixtures', 'node_modules', 'target', 'test', 'tests',
+            'vendor', '__tests__',
+          ]);
+          let scanIncomplete = false;
+          const definitions = [
+            { id: 'browser.runtime_client', label: 'RuntimeClient integration', scope: 'browser', pattern: /\bRuntimeClient\b/ },
+            { id: 'browser.runtime_handshake', label: 'Runtime protocol handshake', scope: 'browser', detect: files => {
+              for (const file of files) {
+                const names = [...file.content.matchAll(/\b(?:const|let|var)\s+([\w$]+)\s*=\s*new\s+RuntimeClient\s*\(/g)].map(match => match[1]);
+                if (names.some(name => new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\.\\s*connect\\s*\\(`).test(file.content))) {
+                  return [file.path];
+                }
+              }
+              return [];
+            } },
+            { id: 'browser.game_ready', label: 'Game Ready signal', scope: 'browser', pattern: /\.markReady\s*\(/ },
+            { id: 'browser.viewport', label: 'Runtime viewport', scope: 'browser', pattern: /\bsetViewport\s*\(|\bviewport\s*:/ },
+            { id: 'browser.host_capabilities', label: 'Host state, sound, or navigation', scope: 'browser', pattern: /\bgetCapabilities\s*\(|\bonStateChanged\s*\(|\bruntime\.getState\b|\bsound\.setMuted\b|\bnavigation\.goHome\b/ },
+            { id: 'browser.save_read', label: 'Cloud save read', scope: 'browser', pattern: /\.getProgress\s*\(/ },
+            { id: 'browser.save_write_sync', label: 'Cloud save write and sync', scope: 'browser', pattern: /\.saveProgress\s*\(|\.onSyncStatusChanged\s*\(|\.flush\s*\(/ },
+            { id: 'browser.room_client', label: 'RoomClient connection', scope: 'room', pattern: /\bRoomClient\b|\bnew\s+RoomClient\s*\(/ },
+            { id: 'browser.room_snapshot', label: 'Room snapshot validation', scope: 'room', pattern: /\breadRoomSnapshotState\s*\(|\bonSnapshot\s*:/ },
+            { id: 'browser.room_actions', label: 'Room input and lifecycle', scope: 'room', pattern: /\.sendInput\s*\(|\.sendSocketInput\s*\(|\.readyForNextMatch\s*\(/ },
+            { id: 'server.lifecycle', label: 'Server SDK manifest and lifecycle', scope: 'server', pattern: /\bGameServer\b|\bcreateGameServer\s*\(|\brun_game_server\s*\(|\bcreate_game_router\s*\(/ },
+            { id: 'server.results_agent_views', label: 'Server Result Units or Agent player views', scope: 'server', pattern: /\bresultDefinition\b|\bresult_definition\b|\bresultUnits\b|\bresult_units\b|\bagentPlayerContract\b|\bagent_player_contract\b|\bprojectAgentPlayerView\b|\bproject_agent_player_view\b/ },
+          ];
+
+          function collectSources(directory, relativeDirectory = '') {
+            const result = [];
+            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+              const relativePath = path.posix.join(relativeDirectory, entry.name);
+              const fullPath = path.join(directory, entry.name);
+              if (entry.isDirectory()) {
+                if (!excludedDirectories.has(entry.name)) result.push(...collectSources(fullPath, relativePath));
+                continue;
+              }
+              if (!entry.isFile() || !sourceExtensions.has(path.extname(entry.name).toLowerCase())) continue;
+              if (relativePath.split('/').some(part => excludedDirectories.has(part))) continue;
+              try {
+                if (fs.statSync(fullPath).size > 1024 * 1024) {
+                  scanIncomplete = true;
+                  continue;
+                }
+                result.push({ path: relativePath, content: fs.readFileSync(fullPath, 'utf8') });
+              } catch {
+                scanIncomplete = true;
+              }
+            }
+            return result;
+          }
+
+          function makeReport(fullstack, sources) {
+            const browserFiles = sources.filter(file => /\.(?:cjs|html|htm|js|jsx|mjs|mts|ts|tsx)$/i.test(file.path));
+            const serverFiles = sources.filter(file => /\.(?:cjs|js|mjs|mts|rs|ts|tsx)$/i.test(file.path));
+            const filesByScope = { browser: browserFiles, room: browserFiles, server: serverFiles };
+            const items = definitions.map(definition => {
+              if ((definition.scope === 'room' || definition.scope === 'server') && !fullstack) {
+                return { id: definition.id, mark: 'not_applicable', evidence: [] };
+              }
+              const files = filesByScope[definition.scope];
+              if (files.length === 0) return { id: definition.id, mark: 'not_verifiable', evidence: [] };
+              const evidence = definition.detect
+                ? definition.detect(files)
+                : files.filter(file => definition.pattern.test(file.content)).map(file => file.path).slice(0, 3);
+              return {
+                id: definition.id,
+                mark: evidence.length > 0 ? 'detected' : scanIncomplete ? 'not_verifiable' : 'not_detected',
+                evidence: evidence.slice(0, 3),
+              };
+            });
+            return {
+              schema_version: 1,
+              deployment_id: process.env.DEPLOYMENT_ID,
+              game_id: process.env.GAME_ID,
+              commit_sha: process.env.COMMIT_SHA,
+              items,
+            };
+          }
+
+          try {
+            let fullstack = process.env.IS_FULLSTACK === 'true';
+            const manifestPath = path.resolve('randseed.fullstack.json');
+            if (fullstack && fs.existsSync(manifestPath)) {
+              const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+              fullstack = Boolean(manifest.backend && typeof manifest.backend === 'object');
+            }
+            const report = makeReport(fullstack, collectSources(process.cwd()));
+            fs.writeFileSync(process.env.SDK_REPORT_PATH || reportPath, JSON.stringify(report));
+            console.log(`SDK adoption report generated: ${report.items.length} checklist items`);
+          } catch (error) {
+            console.error(`SDK adoption scan could not verify source: ${error instanceof Error ? error.message : 'unknown error'}`);
+            const fallback = makeReport(process.env.IS_FULLSTACK === 'true', []);
+            fs.writeFileSync(process.env.SDK_REPORT_PATH || reportPath, JSON.stringify(fallback));
+          }
+          NODE
+
+      # 步骤 12: 申请 R2 CAS 增量上传会话
       - name: Request upload session
+        id: request_upload
         env:
           RANDSEED_API_URL: ${{ steps.target_environment.outputs.api_url }}
           OIDC_AUDIENCE: ${{ steps.target_environment.outputs.oidc_audience }}
@@ -282,7 +553,6 @@ jobs:
           NODE
           )
           echo "::add-mask::$OIDC_TOKEN"
-          echo "OIDC_TOKEN=$OIDC_TOKEN" >> "$GITHUB_ENV"
           node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync('/tmp/randseed-manifest.json'));fs.writeFileSync('/tmp/randseed-upload-request.json',JSON.stringify({manifest:m}))"
           HTTP_STATUS=$(curl -sS -o /tmp/randseed-session.json -w '%{http_code}' -X POST "$RANDSEED_API_URL/api/deployments/$DEPLOYMENT_ID/upload-session" -H "Authorization: Bearer $OIDC_TOKEN" -H 'Content-Type: application/json' --data-binary @/tmp/randseed-upload-request.json)
           if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
@@ -296,11 +566,13 @@ jobs:
             process.exit(1);
           }
           NODE
+
+      # 步骤 13: 仅增量上传 R2 缺失的内容可寻址文件
       - name: Upload missing content-addressed files
         env:
           RANDSEED_API_URL: ${{ steps.target_environment.outputs.api_url }}
           DEPLOYMENT_ID: ${{ inputs.deployment_id }}
-          BUILD_DIR: dist
+          BUILD_DIR: ${{ steps.detect_mode.outputs.frontend_build_dir }}
         run: |
           set -Eeuo pipefail
           UPLOAD_TOKEN=$(node -e "console.log(require('/tmp/randseed-session.json').upload_token)")
@@ -315,16 +587,223 @@ jobs:
               node -e "const fs=require('fs');const body=fs.readFileSync('/tmp/randseed-upload-response','utf8');console.error('RandSeed artifact upload failed ('+process.argv[2]+', '+process.argv[1]+'): '+body.replace(/\\s+/g,' ').slice(0,1000));process.exit(1)" "$HTTP_STATUS" "$FILE_PATH"
             fi
           done
-      - name: Verify and publish
+
+      # 步骤 14: 分片流式上传全栈容器镜像归档至平台私有 R2（全栈专属）
+      - name: Upload backend container image archive
+        if: steps.detect_mode.outputs.is_fullstack == 'true'
+        shell: bash
         env:
           RANDSEED_API_URL: ${{ steps.target_environment.outputs.api_url }}
           DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          ARCHIVE_PATH: ${{ steps.prep_image.outputs.archive_path }}
+          ARCHIVE_SHA256: ${{ steps.prep_image.outputs.archive_sha256 }}
+          ARCHIVE_SIZE: ${{ steps.prep_image.outputs.archive_size }}
         run: |
           set -Eeuo pipefail
-          HTTP_STATUS=$(curl -sS -o /tmp/randseed-complete-response -w '%{http_code}' -X POST "$RANDSEED_API_URL/api/deployments/$DEPLOYMENT_ID/upload-complete" -H "Authorization: Bearer $OIDC_TOKEN" -H 'Content-Type: application/json' --data "$(node -e "const fs=require('fs');console.log(JSON.stringify({manifest:JSON.parse(fs.readFileSync('/tmp/randseed-manifest.json'))}))")")
+          UPLOAD_TOKEN=$(node -e "console.log(require('/tmp/randseed-session.json').upload_token)")
+          echo "::add-mask::$UPLOAD_TOKEN"
+          UPLOAD_TOKEN="$UPLOAD_TOKEN" node --input-type=module <<'NODE'
+          import { closeSync, openSync, readSync } from 'node:fs';
+
+          const apiUrl = process.env.RANDSEED_API_URL.replace(/\/$/, '');
+          const depId = process.env.DEPLOYMENT_ID;
+          const token = process.env.UPLOAD_TOKEN;
+          const archivePath = process.env.ARCHIVE_PATH;
+          const sha256 = process.env.ARCHIVE_SHA256;
+          const size = Number(process.env.ARCHIVE_SIZE);
+          const baseUrl = `${apiUrl}/api/deployments/${encodeURIComponent(depId)}/backend-image`;
+
+          async function requestJson(url, options, attempts = 3) {
+            let lastError = '';
+            for (let attempt = 1; attempt <= attempts; attempt += 1) {
+              try {
+                const res = await fetch(url, { ...options, signal: AbortSignal.timeout(120_000) });
+                const text = await res.text();
+                let parsed = null;
+                try { parsed = JSON.parse(text); } catch {}
+                if (res.ok && parsed && parsed.success === true) {
+                  return parsed.data;
+                }
+                lastError = `${res.status}: ${(parsed && (parsed.code + ': ' + (parsed.error || parsed.message))) || text.slice(0, 500)}`;
+                if (res.status < 500 && res.status !== 429) break;
+              } catch (err) {
+                lastError = err && err.message ? err.message : String(err);
+              }
+              if (attempt < attempts) {
+                await new Promise((r) => setTimeout(r, attempt * 1500));
+              }
+            }
+            throw new Error(`RandSeed backend image upload failed (${lastError})`);
+          }
+
+          const session = await requestJson(`${baseUrl}/session`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sha256, size }),
+          });
+
+          if (session.already_uploaded) {
+            console.log(`Backend image archive already exists in R2 (${session.object_key})`);
+            process.exit(0);
+          }
+
+          const partSize = Number(session.part_size) || 16 * 1024 * 1024;
+          const totalParts = Math.ceil(size / partSize);
+          const fd = openSync(archivePath, 'r');
+          const parts = [];
+          try {
+            for (let partNumber = 1; partNumber <= totalParts; partNumber += 1) {
+              const offset = (partNumber - 1) * partSize;
+              const length = Math.min(partSize, size - offset);
+              const buffer = Buffer.allocUnsafe(length);
+              let readOffset = 0;
+              while (readOffset < length) {
+                const bytesRead = readSync(fd, buffer, readOffset, length - readOffset, offset + readOffset);
+                if (bytesRead <= 0) throw new Error('Unexpected EOF reading backend image archive');
+                readOffset += bytesRead;
+              }
+              const query = new URLSearchParams({ sha256, part_number: String(partNumber) });
+              if (session.mode === 'multipart' && session.upload_id) {
+                query.set('upload_id', session.upload_id);
+              }
+              const uploaded = await requestJson(`${baseUrl}/part?${query.toString()}`, {
+                method: 'PUT',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/octet-stream',
+                  'Content-Length': String(length),
+                },
+                body: buffer,
+              });
+              parts.push({ part_number: partNumber, etag: uploaded.etag });
+              console.log(`Uploaded backend image part ${partNumber}/${totalParts} (${length} bytes)`);
+            }
+          } finally {
+            closeSync(fd);
+          }
+
+          if (session.mode === 'multipart') {
+            await requestJson(`${baseUrl}/complete`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ upload_id: session.upload_id, sha256, size, parts }),
+            });
+          }
+          console.log(`Completed backend image archive upload: ${session.image_uri}`);
+          NODE
+          rm -f "$ARCHIVE_PATH"
+
+      # 步骤 15: 装配复合发布元数据描述文件
+      - name: Assemble composite deployment manifest
+        shell: bash
+        env:
+          IS_FULLSTACK: ${{ steps.detect_mode.outputs.is_fullstack }}
+          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          GAME_ID: ${{ inputs.game_id }}
+          FRONTEND_CAS_HASH: ${{ steps.create_manifest.outputs.cas_hash || '' }}
+          BACKEND_IMAGE_URI: ${{ steps.prep_image.outputs.image_uri || '' }}
+          BACKEND_IMAGE_DIGEST: ${{ steps.prep_image.outputs.image_digest || '' }}
+          BACKEND_DOCKERFILE: ${{ steps.detect_mode.outputs.backend_dockerfile || '' }}
+          BACKEND_PORT: ${{ steps.detect_mode.outputs.backend_port || 8080 }}
+          RUNTIME_TIER: ${{ steps.detect_mode.outputs.runtime_tier || 'lite' }}
+          INACTIVITY_TIMEOUT: ${{ steps.detect_mode.outputs.inactivity_timeout || 300 }}
+          ENABLE_INTERNET: ${{ steps.detect_mode.outputs.enable_internet || 'false' }}
+          SDK_REPORT_PATH: /tmp/randseed-sdk-adoption-report.json
+        run: |
+          set -Eeuo pipefail
+          node <<'NODE' > /tmp/randseed-composite-manifest.json
+          const fs = require('fs');
+          const isFullstack = process.env.IS_FULLSTACK === 'true';
+          const frontendManifest = JSON.parse(fs.readFileSync('/tmp/randseed-manifest.json', 'utf8'));
+
+          const payload = {
+            manifest: frontendManifest,
+            ["deployment_id"]: process.env.DEPLOYMENT_ID,
+            ["commit_sha"]: process.env.COMMIT_SHA,
+            ["game_id"]: process.env.GAME_ID,
+            deployment_mode: isFullstack ? 'fullstack' : 'static',
+            frontend: {
+              manifest: frontendManifest,
+              cas_hash: process.env.FRONTEND_CAS_HASH,
+            },
+          };
+
+          try {
+            payload.sdk_adoption_report = JSON.parse(fs.readFileSync(process.env.SDK_REPORT_PATH, 'utf8'));
+          } catch {
+            console.error('SDK adoption report is unavailable; the deployment will continue without a report');
+          }
+
+          if (isFullstack) {
+            payload.backend = {
+              image_uri: process.env.BACKEND_IMAGE_URI,
+              image_digest: process.env.BACKEND_IMAGE_DIGEST,
+              platforms: ['linux/amd64'],
+              dockerfile: process.env.BACKEND_DOCKERFILE,
+              port: Number(process.env.BACKEND_PORT),
+              health_check: '/health',
+              wire_protocol_version: '1.0',
+            };
+            payload.fullstack = {
+              version: '1.0.0',
+              image_ref: process.env.BACKEND_IMAGE_URI,
+              image_digest: process.env.BACKEND_IMAGE_DIGEST,
+              config: {
+                backend: {
+                  port: Number(process.env.BACKEND_PORT),
+                  dockerfile: process.env.BACKEND_DOCKERFILE,
+                },
+                runtime: {
+                  tier: process.env.RUNTIME_TIER,
+                  inactivity_timeout_seconds: Number(process.env.INACTIVITY_TIMEOUT),
+                  enable_internet: process.env.ENABLE_INTERNET === 'true',
+                },
+              },
+            };
+            payload.runtime = {
+              tier: process.env.RUNTIME_TIER,
+              inactivity_timeout_seconds: Number(process.env.INACTIVITY_TIMEOUT),
+              enable_internet: process.env.ENABLE_INTERNET === 'true',
+              persistent_table: true,
+            };
+          }
+
+          console.log(JSON.stringify(payload));
+          NODE
+          echo "复合发布元数据装配就绪"
+
+      # 步骤 16: 原子提交发布确认并流转部署状态（刷新 OIDC 令牌避免长时上传过期）
+      - name: Verify and publish
+        env:
+          RANDSEED_API_URL: ${{ steps.target_environment.outputs.api_url }}
+          OIDC_AUDIENCE: ${{ steps.target_environment.outputs.oidc_audience }}
+          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+        run: |
+          set -Eeuo pipefail
+          OIDC_TOKEN=$(node --input-type=module <<'NODE'
+          const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+          const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+          const audience = process.env.OIDC_AUDIENCE;
+          if (!requestUrl || !requestToken || !audience) { console.error('GitHub Actions OIDC environment variables are missing'); process.exit(1); }
+          const url = new URL(requestUrl);
+          url.searchParams.set('audience', audience);
+          const response = await fetch(url, { headers: { Accept: 'application/json', Authorization: `bearer ${requestToken}` } });
+          const body = await response.text();
+          if (!response.ok) { console.error(`RandSeed completion token request failed (${response.status})`); process.exit(1); }
+          let payload;
+          try { payload = JSON.parse(body); } catch { console.error('GitHub OIDC token endpoint returned invalid JSON'); process.exit(1); }
+          if (typeof payload.value !== 'string' || payload.value.length === 0) { console.error('GitHub OIDC token endpoint returned no token'); process.exit(1); }
+          process.stdout.write(payload.value);
+          NODE
+          )
+          echo "::add-mask::$OIDC_TOKEN"
+          HTTP_STATUS=$(curl -sS -o /tmp/randseed-complete-response -w '%{http_code}' -X POST "$RANDSEED_API_URL/api/deployments/$DEPLOYMENT_ID/upload-complete" -H "Authorization: Bearer $OIDC_TOKEN" -H 'Content-Type: application/json' --data-binary @/tmp/randseed-composite-manifest.json)
           if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
             node -e "const fs=require('fs');const body=fs.readFileSync('/tmp/randseed-complete-response','utf8');let message=body;try { const parsed=JSON.parse(body); message=parsed.code+': '+(parsed.error||parsed.message||body); } catch {} console.error('RandSeed deployment completion failed ('+process.argv[1]+'): '+message.replace(/\\s+/g,' ').slice(0,1000));process.exit(1)" "$HTTP_STATUS"
           fi
+
+      # 步骤 17: 部署异常兜底上报
       - name: Report deployment failure
         if: failure()
         env:
@@ -354,4 +833,296 @@ jobs:
           if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
             echo "RandSeed deployment failure callback failed ($HTTP_STATUS)" >&2
             exit 1
+          fi
+
+  sdk-update:
+    if: github.event_name == 'repository_dispatch' && github.event.action == 'randseed-sdk-release'
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: randseed-sdk-update-${{ github.repository }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Prepare SDK update changes
+        id: sdk_update
+        env:
+          SDK_RELEASE_SOURCE: ${{ github.event.client_payload.source }}
+          SDK_RELEASE_PACKAGE: ${{ github.event.client_payload.package }}
+          SDK_RELEASE_VERSION: ${{ github.event.client_payload.version }}
+          SDK_RELEASE_WORKFLOW_CONTENT: ${{ github.event.client_payload.workflow_content }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { spawnSync } = require('node:child_process');
+
+          function fail(message) {
+            console.error(message);
+            process.exit(1);
+          }
+
+          function run(command, args, options = {}) {
+            const { capture = false, ...spawnOptions } = options;
+            const result = spawnSync(command, args, {
+              cwd: process.cwd(),
+              encoding: 'utf8',
+              stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+              env: process.env,
+              ...spawnOptions,
+            });
+            if (result.error) throw result.error;
+            if (result.status !== 0) {
+              throw new Error(`${command} failed with status ${result.status}`);
+            }
+            return capture ? result.stdout : '';
+          }
+
+          function parseStableVersion(value) {
+            if (typeof value !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value)) {
+              return null;
+            }
+            return value.split('.').map(Number);
+          }
+
+          function compareVersions(left, right) {
+            const a = parseVersionRequirement(left);
+            const b = parseStableVersion(right);
+            if (!a || !b) throw new Error('SDK registry returned an unsupported stable version.');
+            for (let index = 0; index < 3; index += 1) {
+              if (a.parts[index] !== b[index]) return a.parts[index] - b[index];
+            }
+            return a.prerelease ? -1 : 0;
+          }
+
+          function parseVersionRequirement(value) {
+            if (typeof value !== 'string') return null;
+            const match = value.replace(/^[~^=]/, '').match(
+              /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/,
+            );
+            if (!match) return null;
+            return { parts: match.slice(1, 4).map(Number), prerelease: Boolean(match[4]) };
+          }
+
+          async function getJson(url, label) {
+            const response = await fetch(url, { headers: { 'User-Agent': 'RandSeed-SDK-Updater' } });
+            if (!response.ok) throw new Error(`${label} registry request failed (${response.status}).`);
+            return response.json();
+          }
+
+          function dependencySection(manifest, packageName) {
+            return ['dependencies', 'devDependencies', 'optionalDependencies']
+              .find(section => manifest[section] && Object.hasOwn(manifest[section], packageName));
+          }
+
+          function updateNpmProject(version) {
+            const manifestPath = path.resolve('package.json');
+            if (!fs.existsSync(manifestPath)) return false;
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+            const section = dependencySection(manifest, '@randseed/game-sdk');
+            if (!section) return false;
+            if (manifest.workspaces) {
+              throw new Error('Automatic SDK updates currently require a single-package npm repository.');
+            }
+            if (manifest.packageManager && !manifest.packageManager.startsWith('npm@')) {
+              throw new Error('The game repository uses an unsupported package manager for SDK updates.');
+            }
+            for (const lockfile of ['pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb', 'npm-shrinkwrap.json']) {
+              if (fs.existsSync(lockfile)) {
+                throw new Error(`Automatic SDK updates do not support ${lockfile}.`);
+              }
+            }
+            const existing = manifest[section]['@randseed/game-sdk'];
+            const currentVersion = typeof existing === 'string'
+              ? existing.replace(/^[~^=]/, '')
+              : '';
+            if (!parseVersionRequirement(currentVersion)) {
+              throw new Error('The existing npm SDK dependency must use a supported registry version range.');
+            }
+            if (compareVersions(currentVersion, version) >= 0) return false;
+            const sectionFlag = section === 'devDependencies'
+              ? '--save-dev'
+              : section === 'optionalDependencies'
+                ? '--save-optional'
+                : '--save-prod';
+            run('npm', ['install', '--save-exact', sectionFlag, `@randseed/game-sdk@${version}`]);
+            return true;
+          }
+
+          function cargoDependencyMetadata() {
+            const rootManifest = path.resolve('Cargo.toml');
+            if (!fs.existsSync(rootManifest)) return null;
+            const metadataText = run('cargo', ['metadata', '--no-deps', '--format-version', '1'], { capture: true });
+            const metadata = JSON.parse(metadataText);
+            const packages = metadata.packages.filter(pkg =>
+              pkg.dependencies.some(dependency => dependency.name === 'randseed-game-sdk'));
+            return packages.length ? { rootManifest, metadata, packages } : null;
+          }
+
+          function updateRustProject(version) {
+            const cargo = cargoDependencyMetadata();
+            if (!cargo) return false;
+            for (const pkg of cargo.packages) {
+              const dependency = pkg.dependencies.find(item => item.name === 'randseed-game-sdk');
+              if (dependency.source && !dependency.source.startsWith('registry+https://github.com/rust-lang/crates.io-index')) {
+                throw new Error('Automatic updates only support randseed-game-sdk dependencies from crates.io.');
+              }
+              const args = ['add', '--manifest-path', pkg.manifest_path];
+              if (dependency.kind === 'dev') args.push('--dev');
+              if (dependency.kind === 'build') args.push('--build');
+              if (dependency.target) args.push('--target', dependency.target);
+              if (dependency.optional) args.push('--optional');
+              if (dependency.rename) args.push('--rename', dependency.rename);
+              args.push(`randseed-game-sdk@=${version}`);
+              run('cargo', args);
+            }
+            run('cargo', [
+              'update',
+              '--manifest-path',
+              cargo.rootManifest,
+              '--package',
+              'randseed-game-sdk',
+              '--precise',
+              version,
+            ]);
+            return true;
+          }
+
+          async function main() {
+            const source = process.env.SDK_RELEASE_SOURCE;
+            const packageName = process.env.SDK_RELEASE_PACKAGE;
+            const eventVersion = process.env.SDK_RELEASE_VERSION;
+            const workflowContent = process.env.SDK_RELEASE_WORKFLOW_CONTENT;
+            const expectedPackages = {
+              npm: '@randseed/game-sdk',
+              randseedsdk: 'randseed-game-sdk',
+            };
+            if (expectedPackages[source] !== packageName
+              || !parseStableVersion(eventVersion)
+              || !workflowContent
+              || workflowContent.length > 65000
+              || !/^# randseed-workflow-version: (?:1[1-9]|[2-9]\d+)\s*$/m.test(workflowContent)) {
+              fail('The SDK release dispatch payload is invalid.');
+            }
+
+            if (source === 'npm') {
+              const eventMetadata = await getJson(
+                `https://registry.npmjs.org/@randseed%2fgame-sdk/${eventVersion}`,
+                'npm',
+              );
+              if (eventMetadata.name !== packageName || eventMetadata.version !== eventVersion) {
+                fail('The npm SDK release is not available in the registry.');
+              }
+            } else {
+              const eventMetadata = await getJson(
+                `https://crates.io/api/v1/crates/randseed-game-sdk/${eventVersion}`,
+                'crates.io',
+              );
+              if (eventMetadata.version?.crate !== packageName
+                || eventMetadata.version?.num !== eventVersion
+                || eventMetadata.version?.yanked === true) {
+                fail('The Rust SDK release is not available in crates.io.');
+              }
+            }
+
+            const npmMetadata = await getJson('https://registry.npmjs.org/@randseed%2fgame-sdk/latest', 'npm');
+            let npmVersion = npmMetadata.version;
+            if (!parseStableVersion(npmVersion)) fail('npm latest does not point to a stable SDK version.');
+            if (source === 'npm' && compareVersions(eventVersion, npmVersion) > 0) {
+              npmVersion = eventVersion;
+            }
+
+            const cratesMetadata = await getJson('https://crates.io/api/v1/crates/randseed-game-sdk', 'crates.io');
+            let rustVersion = cratesMetadata.crate?.max_stable_version;
+            if (!parseStableVersion(rustVersion)) fail('crates.io did not return a stable SDK version.');
+            if (source === 'randseedsdk' && compareVersions(eventVersion, rustVersion) > 0) {
+              rustVersion = eventVersion;
+            }
+
+            const branch = 'randseed/sdk-updates';
+            run('git', ['checkout', '-B', branch, process.env.GITHUB_SHA]);
+            const npmUpdated = updateNpmProject(npmVersion);
+            const rustUpdated = updateRustProject(rustVersion);
+            if (!npmUpdated && !rustUpdated) {
+              console.log('No declared RandSeed SDK dependency needs an update.');
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, 'pull_request_needed=false\n');
+              return;
+            }
+
+            const workflowPath = '.github/workflows/randseed-deploy.yml';
+            fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+            fs.writeFileSync(workflowPath, workflowContent.endsWith('\n') ? workflowContent : `${workflowContent}\n`);
+
+            run('git', ['add', '-A']);
+            const changedFiles = run('git', ['diff', '--cached', '--name-only'], { capture: true })
+              .split(/\r?\n/).filter(Boolean);
+            const allowedPath = file =>
+              file === workflowPath
+              || file === 'package.json'
+              || file === 'package-lock.json'
+              || file === 'Cargo.toml'
+              || file === 'Cargo.lock'
+              || /^.+\/Cargo\.toml$/.test(file)
+              || /^.+\/Cargo\.lock$/.test(file);
+            if (changedFiles.some(file => !allowedPath(file))) {
+              fail('The SDK updater changed an unexpected file; refusing to create a pull request.');
+            }
+            if (changedFiles.length === 0) {
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, 'pull_request_needed=false\n');
+              return;
+            }
+
+            const title = 'Update RandSeed SDK dependencies and deployment workflow';
+            run('git', ['config', 'user.name', 'github-actions[bot]']);
+            run('git', ['config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com']);
+            run('git', ['-c', 'core.hooksPath=/dev/null', 'commit', '-m', title]);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'pull_request_needed=true\n');
+          }
+
+          main().catch(error => fail(error instanceof Error ? error.message : 'SDK update failed.'));
+          NODE
+
+      - name: Push SDK update branch and open pull request
+        if: steps.sdk_update.outputs.pull_request_needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SDK_UPDATE_BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          SDK_UPDATE_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ ! "$SDK_UPDATE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "Invalid GitHub repository context" >&2
+            exit 1
+          fi
+          branch="randseed/sdk-updates"
+          git remote set-url origin "https://github.com/$SDK_UPDATE_REPOSITORY.git"
+          git -c core.hooksPath=/dev/null -c credential.helper= -c 'credential.helper=!gh auth git-credential' ls-remote --heads origin "$branch" > "$RUNNER_TEMP/randseed-sdk-branch"
+          if [[ -s "$RUNNER_TEMP/randseed-sdk-branch" ]]; then
+            git -c core.hooksPath=/dev/null -c credential.helper= -c 'credential.helper=!gh auth git-credential' fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+          fi
+          git -c core.hooksPath=/dev/null -c credential.helper= -c 'credential.helper=!gh auth git-credential' push --force-with-lease origin "HEAD:refs/heads/$branch"
+
+          title="Update RandSeed SDK dependencies and deployment workflow"
+          body=$'This pull request updates already-declared RandSeed SDK dependencies and lockfiles to the latest stable registry versions.\nIt also refreshes `.github/workflows/randseed-deploy.yml` from the trusted SDK release dispatch.\n\nReview and merge this pull request manually. It does not deploy or merge automatically.'
+          pull_requests=$(gh pr list --state open --head "$branch" --base "$SDK_UPDATE_BASE_BRANCH" --json number)
+          pull_request_number=$(node -e 'const list = JSON.parse(process.argv[1]); if (list.length) process.stdout.write(String(list[0].number));' "$pull_requests")
+          if [[ -n "$pull_request_number" ]]; then
+            gh pr edit "$pull_request_number" --title "$title" --body "$body"
+          else
+            gh pr create --base "$SDK_UPDATE_BASE_BRANCH" --head "$branch" --title "$title" --body "$body"
           fi
