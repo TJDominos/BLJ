@@ -5,19 +5,19 @@ on:
   workflow_dispatch:
     inputs:
       deployment_id:
-        description: 平台分配的部署单唯一标识
+        description: Unique deployment identifier assigned by the platform
         required: true
         type: string
       commit_sha:
-        description: 待部署的代码提交哈希
+        description: Git commit SHA to deploy
         required: true
         type: string
       game_id:
-        description: 游戏全局唯一标识
+        description: Globally unique game identifier
         required: true
         type: string
       deployment_environment:
-        description: RandSeed 部署环境
+        description: RandSeed deployment environment
         required: true
         type: choice
         options:
@@ -40,7 +40,7 @@ jobs:
       id-token: write
     runs-on: ubuntu-latest
     steps:
-      # 步骤 1: 解析部署环境与平台 API 端点及 OIDC 受众
+      # Step 1: Resolve the deployment environment, platform API endpoint, and OIDC audience
       - name: Resolve RandSeed deployment environment
         id: target_environment
         shell: bash
@@ -69,13 +69,13 @@ jobs:
           printf 'api_url=%s\n' "$API_URL" >> "$GITHUB_OUTPUT"
           printf 'oidc_audience=%s\n' "$OIDC_AUDIENCE" >> "$GITHUB_OUTPUT"
 
-      # 步骤 2: 检出目标提交的代码仓库
+      # Step 2: Check out the repository at the target commit
       - name: Checkout code
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.commit_sha }}
 
-      # 步骤 3: 自适应分支检测（探测是否存在 randseed.fullstack.json 契约）
+      # Step 3: Detect the deployment mode and inspect the manifest contract
       - name: Detect deployment mode and parse manifest
         id: detect_mode
         shell: bash
@@ -87,18 +87,18 @@ jobs:
 
           const configPath = path.resolve('randseed.fullstack.json');
           if (!fs.existsSync(configPath)) {
-            console.log('未检测到 randseed.fullstack.json，启用经典纯静态 Web 游戏构建轨道');
+            console.log('randseed.fullstack.json not found; using the classic static web game build path');
             fs.appendFileSync(process.env.GITHUB_OUTPUT, 'is_fullstack=false\n');
             fs.appendFileSync(process.env.GITHUB_OUTPUT, 'frontend_build_dir=dist\n');
             process.exit(0);
           }
 
-          console.log('检测到 randseed.fullstack.json 契约，启用全栈私有容器归档构建轨道');
+          console.log('randseed.fullstack.json contract found; using the full-stack private container archive build path');
           let config;
           try {
             config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
           } catch (err) {
-            console.error('randseed.fullstack.json 解析失败，必须为合法的 JSON 文件:', err.message);
+            console.error('Failed to parse randseed.fullstack.json; expected valid JSON:', err.message);
             process.exit(1);
           }
 
@@ -110,17 +110,17 @@ jobs:
           const inactivityTimeout = (config.runtime && (config.runtime.inactivityTimeoutSeconds || (config.runtime.inactivity_timeout_ms ? Math.round(config.runtime.inactivity_timeout_ms / 1000) : 300))) || 300;
           const enableInternet = Boolean(config.runtime && (config.runtime.enableInternet || config.runtime.enable_internet));
 
-          // 路径防逃逸防御性校验
+          // Validate that configured paths stay within the repository
           if (frontendBuildDir.includes('..') || path.isAbsolute(frontendBuildDir)) {
-            console.error('前端构建输出目录必须为仓库内相对路径，严禁路径逃逸');
+            console.error('Frontend build directory must be repository-relative; path traversal is not allowed');
             process.exit(1);
           }
           if (backendDockerfile.includes('..') || path.isAbsolute(backendDockerfile)) {
-            console.error('Dockerfile 路径必须为仓库内相对路径，严禁路径逃逸');
+            console.error('Dockerfile path must be repository-relative; path traversal is not allowed');
             process.exit(1);
           }
           if (backendContext.includes('..') || path.isAbsolute(backendContext)) {
-            console.error('Docker 构建上下文必须为仓库内相对路径，严禁路径逃逸');
+            console.error('Docker build context must be repository-relative; path traversal is not allowed');
             process.exit(1);
           }
 
@@ -134,13 +134,13 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `enable_internet=${enableInternet}\n`);
           NODE
 
-      # 步骤 4: 初始化 Node.js 运行环境
+      # Step 4: Set up Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 24
 
-      # 步骤 5: 安装依赖并构建或提取静态文件
+      # Step 5: Install dependencies and build or stage static assets
       - name: Install dependencies and build or stage static files
         shell: bash
         env:
@@ -218,12 +218,12 @@ jobs:
             exit 1
           fi
 
-      # 步骤 6: 初始化 Docker Buildx 构建器（全栈专属，在开启上传会话前完成构建以避免会话过期）
+      # Step 6: Set up Docker Buildx (full-stack only; finish building before opening an upload session to avoid session expiry)
       - name: Set up Docker Buildx
         if: steps.detect_mode.outputs.is_fullstack == 'true'
         uses: docker/setup-buildx-action@v3
 
-      # 步骤 7: 构建 linux/amd64 容器镜像归档（全栈专属，零外部镜像仓库依赖）
+      # Step 7: Build a linux/amd64 container image archive (full-stack only; no external image registry required)
       - name: Build backend OCI container image archive
         id: build_docker
         if: steps.detect_mode.outputs.is_fullstack == 'true'
@@ -237,7 +237,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 步骤 8: 计算容器镜像归档 SHA-256 与 R2 寻址元数据（全栈专属）
+      # Step 8: Calculate the container image archive SHA-256 and R2 addressing metadata (full-stack only)
       - name: Prepare OCI image metadata
         id: prep_image
         if: steps.detect_mode.outputs.is_fullstack == 'true'
@@ -276,7 +276,7 @@ jobs:
           console.log(`Prepared backend image archive: ${imageUri} (${stat.size} bytes)`);
           NODE
 
-      # 步骤 9: 构建失败回调通知（覆盖前端构建与后端 Docker 构建）
+      # Step 9: Report build failures (frontend build and backend Docker build)
       - name: Report build failure
         if: failure()
         env:
@@ -308,7 +308,7 @@ jobs:
             exit 1
           fi
 
-      # 步骤 10: 创建前端静态产物哈希清单
+      # Step 10: Create a hash manifest for frontend build artifacts
       - name: Create manifest
         id: create_manifest
         env:
@@ -344,7 +344,7 @@ jobs:
           CAS_HASH=$(node -e "const fs=require('fs'),crypto=require('crypto');const m=fs.readFileSync('/tmp/randseed-manifest.json');console.log(crypto.createHash('sha256').update(m).digest('hex'))")
           printf 'cas_hash=%s\n' "$CAS_HASH" >> "$GITHUB_OUTPUT"
 
-      # 步骤 11: 前端静态资源安全脱敏校验
+      # Step 11: Scan frontend static assets for sensitive data
       - name: Validate browser runtime artifact
         env:
           BUILD_DIR: ${{ steps.detect_mode.outputs.frontend_build_dir }}
@@ -507,7 +507,7 @@ jobs:
           }
           NODE
 
-      # 步骤 12: 申请 R2 CAS 增量上传会话
+      # Step 12: Request an R2 CAS incremental upload session
       - name: Request upload session
         id: request_upload
         env:
@@ -567,7 +567,7 @@ jobs:
           }
           NODE
 
-      # 步骤 13: 仅增量上传 R2 缺失的内容可寻址文件
+      # Step 13: Upload only missing content-addressed files to R2
       - name: Upload missing content-addressed files
         env:
           RANDSEED_API_URL: ${{ steps.target_environment.outputs.api_url }}
@@ -588,7 +588,7 @@ jobs:
             fi
           done
 
-      # 步骤 14: 分片流式上传全栈容器镜像归档至平台私有 R2（全栈专属）
+      # Step 14: Stream the full-stack container image archive to the platform's private R2 in chunks (full-stack only)
       - name: Upload backend container image archive
         if: steps.detect_mode.outputs.is_fullstack == 'true'
         shell: bash
@@ -693,7 +693,7 @@ jobs:
           NODE
           rm -f "$ARCHIVE_PATH"
 
-      # 步骤 15: 装配复合发布元数据描述文件
+      # Step 15: Assemble the composite release metadata
       - name: Assemble composite deployment manifest
         shell: bash
         env:
@@ -771,9 +771,9 @@ jobs:
 
           console.log(JSON.stringify(payload));
           NODE
-          echo "复合发布元数据装配就绪"
+          echo "Composite release metadata assembly is ready"
 
-      # 步骤 16: 原子提交发布确认并流转部署状态（刷新 OIDC 令牌避免长时上传过期）
+      # Step 16: Atomically commit release confirmation and advance deployment state (refresh the OIDC token to prevent expiry during long uploads)
       - name: Verify and publish
         env:
           RANDSEED_API_URL: ${{ steps.target_environment.outputs.api_url }}
@@ -803,7 +803,7 @@ jobs:
             node -e "const fs=require('fs');const body=fs.readFileSync('/tmp/randseed-complete-response','utf8');let message=body;try { const parsed=JSON.parse(body); message=parsed.code+': '+(parsed.error||parsed.message||body); } catch {} console.error('RandSeed deployment completion failed ('+process.argv[1]+'): '+message.replace(/\\s+/g,' ').slice(0,1000));process.exit(1)" "$HTTP_STATUS"
           fi
 
-      # 步骤 17: 部署异常兜底上报
+      # Step 17: Report deployment failures as a fallback
       - name: Report deployment failure
         if: failure()
         env:
