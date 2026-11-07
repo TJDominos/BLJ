@@ -1,4 +1,4 @@
-# randseed-workflow-version: 12
+# randseed-workflow-version: 13
 name: Deploy to RandSeed Sandbox
 
 on:
@@ -344,7 +344,7 @@ jobs:
           CAS_HASH=$(node -e "const fs=require('fs'),crypto=require('crypto');const m=fs.readFileSync('/tmp/randseed-manifest.json');console.log(crypto.createHash('sha256').update(m).digest('hex'))")
           printf 'cas_hash=%s\n' "$CAS_HASH" >> "$GITHUB_OUTPUT"
 
-      # Step 11: Scan frontend static assets for sensitive data
+      # Step 11: Validate browser assets and scan for shell escapes before upload
       - name: Validate browser runtime artifact
         env:
           BUILD_DIR: ${{ steps.detect_mode.outputs.frontend_build_dir }}
@@ -361,6 +361,7 @@ jobs:
             '.php', '.pl', '.ps1', '.py', '.rb', '.sh', '.so', '.toml',
             '.wrangler', '.yaml', '.yml', '.jsonc',
           ]);
+          const blockedShellEscapes = ['window.top', 'top.location', 'parent.location', 'window.parent'];
           function fail(message) {
             console.error(`RandSeed browser runtime validation failed: ${message}`);
             console.error('Build a static browser export with a root index.html and browser-loaded assets. Server processes and native binaries are not available at play time.');
@@ -377,6 +378,14 @@ jobs:
                 }
                 files.push(...walk(fullPath, relativePath));
               } else if (entry.isFile()) {
+                const extension = path.extname(entry.name).toLowerCase();
+                if (['.html', '.htm', '.js', '.mjs'].includes(extension)) {
+                  const content = fs.readFileSync(fullPath, 'utf8').toLowerCase();
+                  const blockedPattern = blockedShellEscapes.find(pattern => content.includes(pattern));
+                  if (blockedPattern) {
+                    fail(`${relativePath} contains blocked shell escape pattern "${blockedPattern}"; remove the reference or dependency and rebuild`);
+                  }
+                }
                 files.push({ path: relativePath, size: fs.statSync(fullPath).size });
               }
             }
