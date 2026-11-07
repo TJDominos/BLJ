@@ -29,7 +29,7 @@ function GameLayout() {
     syncStateFromServer
   } = useGameStore();
   const navigate = useNavigate();
-  const location = useLocation();
+  const routeState = useLocation();
   const [confirmAction, setConfirmAction] = useState<any>(null);
 
   // Private table 4-digit code prompt state
@@ -91,7 +91,7 @@ function GameLayout() {
 
   // Sync activeTableId with URL param if on a table view
   useEffect(() => {
-    const pathMatch = location.pathname.match(/^\/t\/([\w_-]+)/);
+    const pathMatch = routeState.routePath.match(/^\/t\/([\w_-]+)/);
     if (pathMatch && pathMatch[1]) {
       const tableId = pathMatch[1];
       if (tables[tableId]) {
@@ -107,10 +107,10 @@ function GameLayout() {
         }
       }
     }
-  }, [location.pathname, tables, observeTable, activeTableId, currentUser?.id, unlockedTableIds]);
+  }, [routeState.routePath, tables, observeTable, activeTableId, currentUser?.id, unlockedTableIds]);
 
   useEffect(() => {
-    if (activeTableId && tables[activeTableId]?.status === 'closed' && activeTableId !== 'table_1' && location.pathname.startsWith('/t/')) {
+    if (activeTableId && tables[activeTableId]?.status === 'closed' && activeTableId !== 'table_1' && routeState.routePath.startsWith('/t/')) {
         if (!closedRedirectMessage) {
             setClosedRedirectMessage('This table is closed. You will be directed to the default official table in a few seconds.');
             setTimeout(() => {
@@ -119,7 +119,7 @@ function GameLayout() {
             }, 3000);
         }
     }
-  }, [activeTableId, tables, closedRedirectMessage, navigate, location.pathname]);
+  }, [activeTableId, tables, closedRedirectMessage, navigate, routeState.routePath]);
 
   const executeNavigation = (view: string, tableId?: string) => {
     if (view === 'lobby') {
@@ -136,10 +136,10 @@ function GameLayout() {
   };
 
   const handleNavigate = (view: string, tableId?: string): boolean => {
-    const pathMatch = location.pathname.match(/^\/t\/([\w_-]+)/);
+    const pathMatch = routeState.routePath.match(/^\/t\/([\w_-]+)/);
     const currentUrlTableId = pathMatch?.[1] || activeTableId;
     const isLeavingCurrentTable =
-      location.pathname.startsWith('/t/') &&
+      routeState.routePath.startsWith('/t/') &&
       currentUrlTableId &&
       (view !== 'table' || (tableId && tableId !== currentUrlTableId));
 
@@ -177,10 +177,10 @@ function GameLayout() {
   const activeTables = Object.values(tables).filter(t => t.status !== 'closed' && t.status !== 'closing');
 
   const proceedToTable = (id: string) => {
-    const pathMatch = location.pathname.match(/^\/t\/([\w_-]+)/);
+    const pathMatch = routeState.routePath.match(/^\/t\/([\w_-]+)/);
     const currentUrlTableId = pathMatch?.[1] || activeTableId;
 
-    if (location.pathname.startsWith('/t/') && currentUrlTableId && currentUrlTableId !== id && tables[currentUrlTableId] && currentUser) {
+    if (routeState.routePath.startsWith('/t/') && currentUrlTableId && currentUrlTableId !== id && tables[currentUrlTableId] && currentUser) {
       if (shouldPromptCreatorCloseOnLeave(currentUrlTableId)) {
         const leavingId = currentUrlTableId;
         const leavingTable = tables[leavingId];

@@ -12,7 +12,7 @@ import {
 } from './db';
 import { botApi } from './botApi';
 import { emitBlackjackHandSettlementUnit } from './platformContract';
-import { createDeterministicShoe, calculateHandScore } from './royalBlackjackRoomServer';
+import { createDeterministicShoe, calculateHandScore } from './gameRules';
 
 const calculateScore = (cards: PlayingCard[]): number => calculateHandScore(cards, false);
 

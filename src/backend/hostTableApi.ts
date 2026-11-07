@@ -46,7 +46,7 @@ export const hostTableApi = {
       visits: 0,
       liquidity,
       initialLiquidity: liquidity,
-      safeAccountAddress: `0x${Math.random().toString(16).substr(2, 40)}`,
+      safeAccountAddress: '',
       settings: normalizedSettings,
       seats: Array.from({ length: normalizedSettings.maxSeats }).map(() => ({ userId: null, isReady: false, hand: null })),
       userBalances: {},

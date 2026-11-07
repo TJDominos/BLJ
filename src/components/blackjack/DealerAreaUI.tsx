@@ -10,7 +10,7 @@ import { DelayedScore } from './DelayedScore';
 const CloverAvatar = ({ className }: { className?: string }) => {
   const heartPath = "M12 21.05C12 21.05 1.5 14.5 1.5 8.5C1.5 4.5 4.5 1.5 8 1.5C10 1.5 11.5 2.5 12 4C12.5 2.5 14 1.5 16 1.5C20.5 1.5 22.5 4.5 22.5 8.5C22.5 14.5 12 21.05 12 21.05Z";
   return (
-    <svg viewBox="0 0 100 100" className={className} xmlns="http://www.w3.org/2000/svg">
+    <svg viewBox="0 0 100 100" className={className}>
       <rect width="100" height="100" fill="white" />
       <g transform="translate(50, 50)">
         <g><path d={heartPath} fill="#f48232" transform="scale(1.5) translate(-12, -20.5)" /></g>

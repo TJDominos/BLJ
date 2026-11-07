@@ -1,17 +1,17 @@
 import React, { createContext, useContext, useState, useMemo, useCallback, useEffect } from 'react';
 
-interface LocationState {
-  pathname: string;
+interface RouteState {
+  routePath: string;
 }
 
 interface RouterContextValue {
-  location: LocationState;
+  routeState: RouteState;
   navigate: (to: string, options?: { replace?: boolean }) => void;
   params: Record<string, string>;
 }
 
 const RouterContext = createContext<RouterContextValue>({
-  location: { pathname: '/' },
+  routeState: { routePath: '/' },
   navigate: () => {},
   params: {},
 });
@@ -19,27 +19,27 @@ const RouterContext = createContext<RouterContextValue>({
 const ParamsContext = createContext<Record<string, string>>({});
 
 export function BrowserRouter({ children }: { children: React.ReactNode }) {
-  const [pathname, setPathname] = useState<string>('/');
+  const [routePath, setRoutePath] = useState<string>('/');
 
   const navigate = useCallback((to: string, _options?: { replace?: boolean }) => {
     const normalized = to.startsWith('/') ? to : `/${to}`;
-    setPathname(normalized);
+    setRoutePath(normalized);
   }, []);
 
   const value = useMemo(
     () => ({
-      location: { pathname },
+      routeState: { routePath },
       navigate,
       params: {},
     }),
-    [pathname, navigate]
+    [routePath, navigate]
   );
 
   return <RouterContext.Provider value={value}>{children}</RouterContext.Provider>;
 }
 
-export function useLocation(): LocationState {
-  return useContext(RouterContext).location;
+export function useLocation(): RouteState {
+  return useContext(RouterContext).routeState;
 }
 
 export function useNavigate() {
@@ -59,10 +59,10 @@ export function Route(_props: RouteProps): React.ReactElement | null {
   return null;
 }
 
-function matchPath(pattern: string, pathname: string): Record<string, string> | null {
+function matchPath(pattern: string, routePath: string): Record<string, string> | null {
   if (pattern === '*') return {};
   const patternParts = pattern.split('/').filter(Boolean);
-  const pathParts = pathname.split('/').filter(Boolean);
+  const pathParts = routePath.split('/').filter(Boolean);
   if (patternParts.length !== pathParts.length) return null;
 
   const params: Record<string, string> = {};
@@ -79,14 +79,14 @@ function matchPath(pattern: string, pathname: string): Record<string, string> | 
 }
 
 export function Routes({ children }: { children: React.ReactNode }) {
-  const { location } = useContext(RouterContext);
+  const { routeState } = useContext(RouterContext);
   const childArray = React.Children.toArray(children);
 
   for (const child of childArray) {
     if (!React.isValidElement<RouteProps>(child)) continue;
     const { path, element } = child.props;
     if (typeof path !== 'string') continue;
-    const matchedParams = matchPath(path, location.pathname);
+    const matchedParams = matchPath(path, routeState.routePath);
     if (matchedParams !== null) {
       return <ParamsContext.Provider value={matchedParams}>{element}</ParamsContext.Provider>;
     }

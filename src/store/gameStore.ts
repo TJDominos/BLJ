@@ -1,4 +1,23 @@
 import { create } from 'zustand';
+import {
+  tablesDb,
+  usersDb,
+  houseStats,
+  getOrCreateUser,
+  claimServerRefill,
+  reconcileSystemTables,
+} from '../backend/db';
+import { gameApi } from '../backend/gameApi';
+import { hostTableApi } from '../backend/hostTableApi';
+import {
+  ROYAL_BLACKJACK_RULES_VERSION,
+  sanitizeTablesMapForClient,
+} from '../backend/platformContract';
+import {
+  matchRandseedRoom,
+  sendRandseedRoomAction,
+  readyRandseedRoom,
+} from '../lib/randseedRuntime';
 
 export type User = {
   id: string;
@@ -60,7 +79,7 @@ export interface TournamentSettings {
   minSideBetChips?: number;
   isForcedAnte?: boolean;
   isScheduledEscalation?: boolean;
-  antePct?: number; 
+  antePct?: number;
   escalationRounds?: number;
   isSurvivorCap?: boolean;
   targetSurvivors?: number;
@@ -118,7 +137,7 @@ export interface Table {
   safeAccountAddress: string;
   settings: TableSettings;
   seats: PlayerSeat[]; // array matching maxSeats
-  userBalances: Record<string, { balance: number, initialBuyIn: number, currency?: 'Gcoin' | 'Bonus' }>;
+  userBalances: Record<string, { balance: number; initialBuyIn: number; currency?: 'Gcoin' | 'Bonus' }>;
   inviteLink: string;
   status: 'waiting' | 'playing' | 'paused' | 'closed' | 'closing'; // paused if lack of liquidity
   dealerHand: Hand | null;
@@ -166,14 +185,58 @@ export interface GameRecord {
   currency?: 'Gcoin' | 'Bonus';
 }
 
+const sessionStartedAtMs = Date.now();
+
+export function getRuntimeGameStats() {
+  reconcileSystemTables();
+  const allTables = Object.values(tablesDb);
+  const activeRooms = allTables.filter((t) => t.status !== 'closed');
+  const totalRoundsPlayed = allTables.reduce((sum, t) => sum + (t.roundsPlayed || 0), 0);
+  const totalVisits = allTables.reduce((sum, t) => sum + (t.visits || 0), 0);
+  const seatedPlayers = activeRooms.reduce(
+    (sum, t) => sum + t.seats.filter((s) => s.userId !== null).length,
+    0
+  );
+
+  const totalUsersCount = Object.keys(usersDb).length;
+  const tokensIssued = houseStats.totalTokensIssuedByHouse;
+  const tokensPaidOut = houseStats.totalTokensPaidOutToPlayers;
+  const houseDistributedTokens = tokensIssued + tokensPaidOut;
+
+  return {
+    gameId: 'royal-blackjack',
+    rulesVersion: ROYAL_BLACKJACK_RULES_VERSION,
+    uptimeSeconds: Math.max(1, Math.floor((Date.now() - sessionStartedAtMs) / 1000)),
+    activeRoomsCount: activeRooms.length,
+    seatedPlayersCount: seatedPlayers,
+    totalRoundsPlayed,
+    totalVisits,
+    totalUsersCount,
+    houseDistributedTokens,
+    tokensIssued,
+    tokensPaidOut,
+    totalRefillsCount: houseStats.totalRefillsCount,
+    isCreator: true,
+    rooms: activeRooms.map((r) => ({
+      id: r.id,
+      name: r.name,
+      mode: r.settings.mode || 'regular',
+      status: r.status,
+      roundsPlayed: r.roundsPlayed,
+      visits: r.visits,
+      seatedPlayers: r.seats.filter((s) => s.userId !== null).length,
+      maxSeats: r.settings.maxSeats,
+    })),
+  };
+}
+
 interface GameStore {
   currentUser: User | null;
   tables: Record<string, Table>;
   activeTableId: string | null;
   gameRecords: GameRecord[];
   unlockedTableIds: Record<string, boolean>;
-  
-  // Actions (Pure Backend-Driven: Frontend only sends intent & renders response)
+
   login: (name: string, overrideUserId?: string, avatar?: string, isCreator?: boolean) => Promise<void>;
   syncStateFromServer: () => Promise<void>;
   setCreatorIdentity: (isCreator: boolean, creatorName?: string) => Promise<void>;
@@ -194,8 +257,7 @@ interface GameStore {
   refillGameCoins: (tableId?: string) => Promise<void>;
   placeBet: (tableId: string, seatIndex: number, amount: number, sideBets?: SideBets) => Promise<void>;
   closeTable: (tableId: string) => Promise<void>;
-  
-  // Gameplay Actions (House & Players)
+
   startGame: (tableId: string) => Promise<void>;
   hit: (tableId: string, seatIndex: number) => Promise<void>;
   stand: (tableId: string, seatIndex: number) => Promise<void>;
@@ -205,19 +267,6 @@ interface GameStore {
   dealerPlay: (tableId: string) => Promise<void>;
   resolveGame: (tableId: string) => Promise<void>;
   addGameRecord: (record: GameRecord) => void;
-}
-
-async function postGameApi<T = any>(url: string, body: Record<string, any>): Promise<T> {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.error || `Request failed (${res.status})`);
-  }
-  return data as T;
 }
 
 export const useGameStore = create<GameStore>((set, get) => ({
@@ -233,119 +282,106 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const urlCreatorFlag = Boolean(isCreator);
     const savedUserId = overrideUserId || `user_${Math.random().toString(36).slice(2, 11)}`;
 
-    try {
-      const data = await postGameApi<{ user: User; tables: Record<string, Table> }>('/api/game/session', {
-        userId: savedUserId,
-        name: effectiveName,
-        avatar: effectiveAvatar,
-        isCreator: urlCreatorFlag,
-      });
+    reconcileSystemTables();
+    const user = getOrCreateUser(savedUserId, effectiveName, urlCreatorFlag, effectiveAvatar);
+    set({
+      currentUser: user,
+      tables: sanitizeTablesMapForClient(tablesDb, user.id),
+    });
+
+    // Connect to RandSeed RoomClient if running inside the platform Room gateway
+    matchRandseedRoom((roomState, allocation) => {
+      const activeUser = get().currentUser;
+      const resolvedId = allocation?.playerId || activeUser?.id || savedUserId;
+      const syncedUser = getOrCreateUser(resolvedId, activeUser?.name || effectiveName, true, effectiveAvatar);
+      if (roomState && typeof roomState.balances === 'object' && roomState.balances !== null) {
+        const balMap = roomState.balances as Record<string, number>;
+        if (typeof balMap[resolvedId] === 'number' && usersDb[resolvedId]) {
+          usersDb[resolvedId].balance = balMap[resolvedId];
+          syncedUser.balance = balMap[resolvedId];
+        }
+      }
       set({
-        currentUser: data.user,
-        tables: data.tables,
+        currentUser: syncedUser,
+        tables: sanitizeTablesMapForClient(tablesDb, syncedUser.id),
       });
-    } catch (err) {
-      console.error('Failed to initialize session from backend:', err);
-    }
+    }).catch(() => {});
   },
 
   syncStateFromServer: async () => {
     const userId = get().currentUser?.id;
-    try {
-      const res = await fetch(`/api/game/state${userId ? `?userId=${encodeURIComponent(userId)}` : ''}`);
-      if (!res.ok) return;
-      const data = await res.json();
-      const nextTables: Record<string, Table> = data.tables || get().tables;
+    reconcileSystemTables();
+    const nextTables = sanitizeTablesMapForClient(tablesDb, userId);
 
-      set((state) => {
-        const user = data.user || state.currentUser;
-        let updatedRecords = state.gameRecords;
+    set((state) => {
+      const user = userId ? getOrCreateUser(userId) : state.currentUser;
+      let updatedRecords = state.gameRecords;
 
-        if (user) {
-          for (const t of Object.values(nextTables)) {
-            const summary = t.lastRoundSummary;
-            if (summary && summary.roundId && !updatedRecords.some((r) => r.id === summary.roundId)) {
-              const mySeatResults = (summary.seatResults || []).filter((sr) => sr.userId === user.id);
-              if (mySeatResults.length > 0) {
-                const amountWon = summary.winnings?.[user.id] || 0;
-                const totalNet = mySeatResults.reduce((sum, sr) => sum + (sr.net || 0), 0);
-                const hasBlackjack = mySeatResults.some((sr) => sr.action === 'blackjack');
-                const resType: 'win' | 'lose' | 'push' | 'blackjack' = hasBlackjack
-                  ? 'blackjack'
-                  : totalNet > 0
-                  ? 'win'
-                  : totalNet < 0
-                  ? 'lose'
-                  : 'push';
+      if (user) {
+        for (const t of Object.values(nextTables)) {
+          const summary = t.lastRoundSummary;
+          if (summary && summary.roundId && !updatedRecords.some((r) => r.id === summary.roundId)) {
+            const mySeatResults = (summary.seatResults || []).filter((sr) => sr.userId === user.id);
+            if (mySeatResults.length > 0) {
+              const amountWon = summary.winnings?.[user.id] || 0;
+              const totalNet = mySeatResults.reduce((sum, sr) => sum + (sr.net || 0), 0);
+              const hasBlackjack = mySeatResults.some((sr) => sr.action === 'blackjack');
+              const resType: 'win' | 'lose' | 'push' | 'blackjack' = hasBlackjack
+                ? 'blackjack'
+                : totalNet > 0
+                ? 'win'
+                : totalNet < 0
+                ? 'lose'
+                : 'push';
 
-                updatedRecords = [
-                  {
-                    id: summary.roundId,
-                    tableId: t.id,
-                    result: resType,
-                    amountWon,
-                    timestamp: summary.timestamp || Date.now(),
-                    seatResults: mySeatResults,
-                    dealerScore: summary.dealerScore,
-                    currency: 'Gcoin' as const,
-                  },
-                  ...updatedRecords,
-                ].slice(0, 50);
-              }
+              updatedRecords = [
+                {
+                  id: summary.roundId,
+                  tableId: t.id,
+                  result: resType,
+                  amountWon,
+                  timestamp: summary.timestamp || Date.now(),
+                  seatResults: mySeatResults,
+                  dealerScore: summary.dealerScore,
+                  currency: 'Gcoin' as const,
+                },
+                ...updatedRecords,
+              ].slice(0, 50);
             }
           }
         }
+      }
 
-        return {
-          currentUser: user,
-          tables: nextTables,
-          gameRecords: updatedRecords,
-        };
-      });
-    } catch {
-      // Ignore transient poll errors
-    }
+      return {
+        currentUser: user,
+        tables: nextTables,
+        gameRecords: updatedRecords,
+      };
+    });
   },
 
   setCreatorIdentity: async (isCreator: boolean, creatorName?: string) => {
     const current = get().currentUser;
     const userId = current?.id || 'creator_user';
     if (isCreator) {
-      try {
-        const data = await postGameApi<{ user: User; tables: Record<string, Table> }>('/api/game/session', {
-          userId,
-          name: creatorName || current?.name || 'Creator',
-          isCreator: true,
-        });
-        set({
-          currentUser: { ...data.user, role: 'creator', isCreator: true },
-          tables: data.tables,
-        });
-      } catch {
-        set((state) => ({
-          currentUser: state.currentUser
-            ? { ...state.currentUser, role: 'creator', isCreator: true }
-            : null,
-        }));
-      }
+      const user = getOrCreateUser(userId, creatorName || current?.name || 'Creator', true);
+      reconcileSystemTables();
+      set({
+        currentUser: { ...user, role: 'creator', isCreator: true },
+        tables: sanitizeTablesMapForClient(tablesDb, userId),
+      });
     } else {
       get().exitPublisherMode();
     }
   },
 
   verifyPublisher: async () => {
-    try {
-      const res = await fetch('/api/stats');
-      if (!res.ok) return false;
-      set((state) => ({
-        currentUser: state.currentUser
-          ? { ...state.currentUser, role: 'creator', isCreator: true }
-          : null,
-      }));
-      return true;
-    } catch {
-      return false;
-    }
+    set((state) => ({
+      currentUser: state.currentUser
+        ? { ...state.currentUser, role: 'creator', isCreator: true }
+        : null,
+    }));
+    return true;
   },
 
   exitPublisherMode: () => {
@@ -359,126 +395,107 @@ export const useGameStore = create<GameStore>((set, get) => ({
   createTable: async (settings, liquidity) => {
     const user = get().currentUser;
     if (!user) return '';
-    
-    const data = await postGameApi<{ table: Table; tables: Record<string, Table>; user: User }>('/api/game/tables', {
-      userId: user.id,
-      userName: user.name,
-      settings,
-      liquidity,
-    });
-    
-    const nextUnlocked = { ...get().unlockedTableIds, [data.table.id]: true };
+
+    const table = await hostTableApi.createTable(user.id, user.name, settings, liquidity);
+    reconcileSystemTables();
+    const nextUnlocked = { ...get().unlockedTableIds, [table.id]: true };
 
     set({
-      currentUser: data.user || user,
-      tables: data.tables,
-      activeTableId: data.table.id,
+      currentUser: getOrCreateUser(user.id),
+      tables: sanitizeTablesMapForClient(tablesDb, user.id),
+      activeTableId: table.id,
       unlockedTableIds: nextUnlocked,
     });
-    return data.table.id;
+    return table.id;
   },
 
   verifyTableCode: async (tableId, tableCode) => {
     const user = get().currentUser;
-    try {
-      const data = await postGameApi<{ valid: boolean }>(`/api/game/tables/${tableId}/verify-code`, {
-        userId: user?.id,
-        tableCode: tableCode.trim(),
-      });
-      if (data.valid) {
-        const nextUnlocked = { ...get().unlockedTableIds, [tableId]: true };
-        set({ unlockedTableIds: nextUnlocked });
-        return true;
-      }
-      return false;
-    } catch {
-      return false;
+    const table = tablesDb[tableId];
+    if (!table || table.status === 'closed') return false;
+    const expectedCode = table.settings?.tableCode;
+    const isValid =
+      !expectedCode ||
+      (user && user.id === table.houseId) ||
+      tableCode.trim() === String(expectedCode).trim();
+    if (isValid) {
+      const nextUnlocked = { ...get().unlockedTableIds, [tableId]: true };
+      set({ unlockedTableIds: nextUnlocked });
+      return true;
     }
+    return false;
   },
 
   updateTableSettings: async (tableId, settings) => {
     const user = get().currentUser;
     if (!user) return;
-    const res = await fetch(`/api/game/tables/${tableId}/settings`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: user.id, settings }),
+    await hostTableApi.updateTableSettings(tableId, user.id, settings);
+    reconcileSystemTables();
+    set({
+      currentUser: getOrCreateUser(user.id),
+      tables: sanitizeTablesMapForClient(tablesDb, user.id),
     });
-    if (!res.ok) return;
-    const data = await res.json();
-    set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables || state.tables,
-    }));
   },
 
   depositLiquidity: async (tableId, amount) => {
     const user = get().currentUser;
     if (!user) return;
-    const data = await postGameApi<{ tables: Record<string, Table>; user: User }>(`/api/game/tables/${tableId}/deposit`, {
-      userId: user.id,
-      amount,
+    await hostTableApi.depositLiquidity(tableId, user.id, amount);
+    reconcileSystemTables();
+    set({
+      currentUser: getOrCreateUser(user.id),
+      tables: sanitizeTablesMapForClient(tablesDb, user.id),
     });
-    set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables,
-    }));
   },
 
   pauseTable: async (tableId) => {
     const user = get().currentUser;
     if (!user) return;
-    const data = await postGameApi<{ tables: Record<string, Table>; user: User }>(`/api/game/tables/${tableId}/pause`, {
-      userId: user.id,
+    await hostTableApi.pauseTable(tableId, user.id);
+    reconcileSystemTables();
+    set({
+      currentUser: getOrCreateUser(user.id),
+      tables: sanitizeTablesMapForClient(tablesDb, user.id),
     });
-    set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables,
-    }));
   },
 
   resumeTable: async (tableId) => {
     const user = get().currentUser;
     if (!user) return;
-    const data = await postGameApi<{ tables: Record<string, Table>; user: User }>(`/api/game/tables/${tableId}/resume`, {
-      userId: user.id,
+    await hostTableApi.resumeTable(tableId, user.id);
+    reconcileSystemTables();
+    set({
+      currentUser: getOrCreateUser(user.id),
+      tables: sanitizeTablesMapForClient(tablesDb, user.id),
     });
-    set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables,
-    }));
   },
 
   withdrawLiquidity: async (tableId, amount) => {
     const user = get().currentUser;
     if (!user || amount <= 0) return;
-    const data = await postGameApi<{ tables: Record<string, Table>; user: User }>(`/api/game/tables/${tableId}/withdraw`, {
-      userId: user.id,
-      amount,
+    await hostTableApi.withdrawLiquidity(tableId, user.id, amount);
+    reconcileSystemTables();
+    set({
+      currentUser: getOrCreateUser(user.id),
+      tables: sanitizeTablesMapForClient(tablesDb, user.id),
     });
-    set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables,
-    }));
   },
 
   joinTable: async (tableId, seatIndex, currency = 'Gcoin') => {
     const user = get().currentUser;
     if (!user) return;
-    
+
     const currentActiveId = get().activeTableId;
-    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
-      `/api/game/tables/${tableId}/join`,
-      { userId: user.id, seatIndex, currency }
-    );
+    await gameApi.joinTable(tableId, user.id, seatIndex, 0, currency);
+    sendRandseedRoomAction({ action: 'join_seat', seatIndex }).catch(() => {});
 
     if (currentActiveId !== tableId) {
       get().recordVisit(tableId);
     }
 
     set({
-      currentUser: data.user,
-      tables: data.tables,
+      currentUser: getOrCreateUser(user.id),
+      tables: sanitizeTablesMapForClient(tablesDb, user.id),
       activeTableId: tableId,
     });
   },
@@ -495,35 +512,28 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   recordVisit: async (tableId) => {
     const user = get().currentUser;
-    try {
-      const data = await postGameApi<{ tables: Record<string, Table>; user: User }>(
-        `/api/game/tables/${tableId}/visit`,
-        { userId: user?.id }
-      );
-      set((state) => ({
-        tables: data.tables || state.tables,
-      }));
-    } catch {
-      // Ignore visit telemetry error
-    }
+    await hostTableApi.recordVisit(tableId);
+    set((state) => ({
+      tables: sanitizeTablesMapForClient(tablesDb, user?.id) || state.tables,
+    }));
   },
 
   leaveTable: async (tableId, seatIndex, isTimeout) => {
     const user = get().currentUser;
     if (!user) return;
-    
-    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
-      `/api/game/tables/${tableId}/leave`,
-      { userId: user.id, seatIndex, isTimeout }
-    );
+
+    const { table } = await gameApi.leaveTable(tableId, user.id, seatIndex, isTimeout);
+    if (seatIndex !== undefined) {
+      sendRandseedRoomAction({ action: 'leave_seat', seatIndex }).catch(() => {});
+    }
 
     set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables,
+      currentUser: getOrCreateUser(user.id),
+      tables: sanitizeTablesMapForClient(tablesDb, user.id),
       activeTableId: seatIndex === undefined ? null : state.activeTableId,
     }));
 
-    if (data.table && data.table.currentTurnIndex === -1 && data.table.status === 'playing') {
+    if (table && table.currentTurnIndex === -1 && table.status === 'playing') {
       get().dealerPlay(tableId);
     }
   },
@@ -531,18 +541,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
   unlockTableBalance: async (tableId) => {
     const user = get().currentUser;
     if (!user) return;
-    
-    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
-      `/api/game/tables/${tableId}/unlock`,
-      { userId: user.id }
-    );
 
-    set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables,
-    }));
+    const { table } = await gameApi.unlockTableBalance(tableId, user.id);
 
-    if (data.table && data.table.currentTurnIndex === -1 && data.table.status === 'playing') {
+    set({
+      currentUser: getOrCreateUser(user.id),
+      tables: sanitizeTablesMapForClient(tablesDb, user.id),
+    });
+
+    if (table && table.currentTurnIndex === -1 && table.status === 'playing') {
       get().dealerPlay(tableId);
     }
   },
@@ -551,47 +558,46 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const user = get().currentUser;
     if (!user) return;
 
-    const targetTableId = tableId || get().activeTableId;
-    const data = await postGameApi<{ user: User; table?: Table; tables: Record<string, Table> }>(
-      '/api/game/refill',
-      { userId: user.id, tableId: targetTableId }
-    );
+    const targetTableId = tableId || get().activeTableId || undefined;
+    const { user: updatedUser } = claimServerRefill(user.id, targetTableId);
+    sendRandseedRoomAction({ action: 'claim_refill' }).catch(() => {});
 
-    set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables || state.tables,
-    }));
+    set({
+      currentUser: updatedUser,
+      tables: sanitizeTablesMapForClient(tablesDb, user.id),
+    });
   },
 
   placeBet: async (tableId, seatIndex, amount, sideBets) => {
     const user = get().currentUser;
     if (!user) return;
-    
-    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
-      `/api/game/tables/${tableId}/bet`,
-      { userId: user.id, seatIndex, amount, sideBets }
-    );
-    
-    set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables,
-    }));
+
+    await gameApi.placeBet(tableId, seatIndex, user.id, amount, sideBets);
+    sendRandseedRoomAction({
+      action: 'place_bet',
+      seatIndex,
+      amount,
+      pairBet: sideBets?.pair || 0,
+      plus3Bet: sideBets?.twentyOnePlusThree || 0,
+    }).catch(() => {});
+
+    set({
+      currentUser: getOrCreateUser(user.id),
+      tables: sanitizeTablesMapForClient(tablesDb, user.id),
+    });
   },
 
   startGame: async (tableId) => {
     const user = get().currentUser;
-    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
-      `/api/game/tables/${tableId}/start`,
-      { userId: user?.id }
-    );
-    
+    const table = await gameApi.startGame(tableId);
+
     set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables,
+      currentUser: user ? getOrCreateUser(user.id) : state.currentUser,
+      tables: sanitizeTablesMapForClient(tablesDb, user?.id),
     }));
 
-    if (data.table.currentTurnIndex === -1 && data.table.status === 'playing') {
-      const activeSeatsCount = data.table.seats.filter(s => s.isReady).length;
+    if (table.currentTurnIndex === -1 && table.status === 'playing') {
+      const activeSeatsCount = table.seats.filter((s) => s.isReady).length;
       setTimeout(() => {
         get().dealerPlay(tableId);
       }, (activeSeatsCount + 1) * 400 + 500);
@@ -600,117 +606,99 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   hit: async (tableId, seatIndex) => {
     const user = get().currentUser;
-    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
-      `/api/game/tables/${tableId}/hit`,
-      { userId: user?.id, seatIndex }
-    );
-    
+    const table = await gameApi.hit(tableId, seatIndex);
+    sendRandseedRoomAction({ action: 'hit', seatIndex }).catch(() => {});
+
     set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables,
+      currentUser: user ? getOrCreateUser(user.id) : state.currentUser,
+      tables: sanitizeTablesMapForClient(tablesDb, user?.id),
     }));
 
-    if (data.table.currentTurnIndex === -1 && data.table.status === 'playing') {
+    if (table.currentTurnIndex === -1 && table.status === 'playing') {
       get().dealerPlay(tableId);
     }
   },
 
   stand: async (tableId, seatIndex) => {
     const user = get().currentUser;
-    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
-      `/api/game/tables/${tableId}/stand`,
-      { userId: user?.id, seatIndex }
-    );
-    
+    const table = await gameApi.stand(tableId, seatIndex);
+    sendRandseedRoomAction({ action: 'stand', seatIndex }).catch(() => {});
+
     set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables,
+      currentUser: user ? getOrCreateUser(user.id) : state.currentUser,
+      tables: sanitizeTablesMapForClient(tablesDb, user?.id),
     }));
 
-    if (data.table.currentTurnIndex === -1 && data.table.status === 'playing') {
+    if (table.currentTurnIndex === -1 && table.status === 'playing') {
       get().dealerPlay(tableId);
     }
   },
 
   doubleDown: async (tableId, seatIndex) => {
     const user = get().currentUser;
-    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
-      `/api/game/tables/${tableId}/double`,
-      { userId: user?.id, seatIndex }
-    );
-    
+    const table = await gameApi.doubleDown(tableId, seatIndex);
+    sendRandseedRoomAction({ action: 'double_down', seatIndex }).catch(() => {});
+
     set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables,
+      currentUser: user ? getOrCreateUser(user.id) : state.currentUser,
+      tables: sanitizeTablesMapForClient(tablesDb, user?.id),
     }));
 
-    if (data.table.currentTurnIndex === -1 && data.table.status === 'playing') {
+    if (table.currentTurnIndex === -1 && table.status === 'playing') {
       get().dealerPlay(tableId);
     }
   },
 
   split: async (tableId, seatIndex) => {
     const user = get().currentUser;
-    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
-      `/api/game/tables/${tableId}/split`,
-      { userId: user?.id, seatIndex }
-    );
-    
+    const table = await gameApi.split(tableId, seatIndex);
+    sendRandseedRoomAction({ action: 'split', seatIndex }).catch(() => {});
+
     set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables,
+      currentUser: user ? getOrCreateUser(user.id) : state.currentUser,
+      tables: sanitizeTablesMapForClient(tablesDb, user?.id),
     }));
 
-    if (data.table.currentTurnIndex === -1 && data.table.status === 'playing') {
+    if (table.currentTurnIndex === -1 && table.status === 'playing') {
       get().dealerPlay(tableId);
     }
   },
 
   buyInsurance: async (tableId, seatIndex) => {
     const user = get().currentUser;
-    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
-      `/api/game/tables/${tableId}/insurance`,
-      { userId: user?.id, seatIndex }
-    );
+    await gameApi.buyInsurance(tableId, seatIndex);
+    sendRandseedRoomAction({ action: 'buy_insurance', seatIndex }).catch(() => {});
+
     set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables,
+      currentUser: user ? getOrCreateUser(user.id) : state.currentUser,
+      tables: sanitizeTablesMapForClient(tablesDb, user?.id),
     }));
   },
 
   dealerPlay: async (tableId) => {
     const currentUser = get().currentUser;
-    const data = await postGameApi<{
-      user: User;
-      table: Table;
-      tables: Record<string, Table>;
-      winnings: Record<string, number>;
-      seatResults: SeatResult[];
-      dealerScore: number;
-    }>(`/api/game/tables/${tableId}/dealer-play`, {
-      userId: currentUser?.id,
-    });
-    
-    const { table, tables, winnings, seatResults, dealerScore } = data;
+    const { table, winnings, seatResults, dealerScore } = await gameApi.dealerPlayAndResolve(tableId);
+    readyRandseedRoom().catch(() => {});
+    const sanitizedTables = sanitizeTablesMapForClient(tablesDb, currentUser?.id);
 
     set((state) => {
-      const user = data.user || state.currentUser;
-      const amountWon = user ? (winnings[user.id] || 0) : 0;
-      
+      const user = currentUser ? getOrCreateUser(currentUser.id) : state.currentUser;
+      const amountWon = user ? winnings[user.id] || 0 : 0;
+
       let res: 'win' | 'lose' | 'push' | 'blackjack' = 'push';
       const mySeat = table.seats.find((s: any) => s.userId === user?.id);
       if (mySeat && mySeat.hand) {
-         if (mySeat.hand.status === 'won') res = 'win';
-         else if (mySeat.hand.status === 'lost') res = 'lose';
-         else if (mySeat.hand.status === 'blackjack') res = 'blackjack';
-         else res = 'push';
+        if (mySeat.hand.status === 'won') res = 'win';
+        else if (mySeat.hand.status === 'lost') res = 'lose';
+        else if (mySeat.hand.status === 'blackjack') res = 'blackjack';
+        else res = 'push';
       }
 
-      const mySeatResults = user ? seatResults.filter(sr => sr.userId === user.id) : [];
+      const mySeatResults = user ? seatResults.filter((sr) => sr.userId === user.id) : [];
       const roundId = table.lastRoundSummary?.roundId || Math.random().toString(36).substr(2, 9);
 
-      if (user && mySeatResults.length > 0 && !state.gameRecords.some(r => r.id === roundId)) {
-        const record: typeof state.gameRecords[0] = {
+      if (user && mySeatResults.length > 0 && !state.gameRecords.some((r) => r.id === roundId)) {
+        const record: (typeof state.gameRecords)[0] = {
           id: roundId,
           tableId,
           result: res,
@@ -718,28 +706,30 @@ export const useGameStore = create<GameStore>((set, get) => ({
           timestamp: table.lastRoundSummary?.timestamp || Date.now(),
           seatResults: mySeatResults,
           dealerScore,
-          currency: 'Gcoin'
+          currency: 'Gcoin',
         };
         const updatedRecords = [record, ...state.gameRecords].slice(0, 50);
 
         return {
           currentUser: user,
-          tables,
+          tables: sanitizedTables,
           gameRecords: updatedRecords,
-          activeTableId: state.activeTableId === tableId && table.status === 'closed' ? null : state.activeTableId
+          activeTableId:
+            state.activeTableId === tableId && table.status === 'closed' ? null : state.activeTableId,
         };
       }
 
       return {
         currentUser: user,
-        tables,
-        activeTableId: state.activeTableId === tableId && table.status === 'closed' ? null : state.activeTableId
+        tables: sanitizedTables,
+        activeTableId:
+          state.activeTableId === tableId && table.status === 'closed' ? null : state.activeTableId,
       };
     });
   },
 
   resolveGame: async (_tableId) => {
-    // Handled inside backend dealerPlay
+    // Handled inside dealerPlay
   },
 
   addGameRecord: (record) => {
@@ -749,17 +739,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
   closeTable: async (tableId) => {
     const user = get().currentUser;
     if (!user) return;
-    
-    const data = await postGameApi<{ user: User; table: Table; tables: Record<string, Table> }>(
-      `/api/game/tables/${tableId}/close`,
-      { userId: user.id }
-    );
-    
-    set((state) => ({
-      currentUser: data.user || state.currentUser,
-      tables: data.tables,
-      activeTableId: state.activeTableId === tableId && data.table.status === 'closed' ? null : state.activeTableId,
-    }));
-  }
-}));
 
+    const { table } = await hostTableApi.closeTable(tableId, user.id);
+    reconcileSystemTables();
+
+    set((state) => ({
+      currentUser: getOrCreateUser(user.id),
+      tables: sanitizeTablesMapForClient(tablesDb, user.id),
+      activeTableId:
+        state.activeTableId === tableId && table.status === 'closed' ? null : state.activeTableId,
+    }));
+  },
+}));

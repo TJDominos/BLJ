@@ -352,11 +352,7 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                   
                   <button
                     onClick={() => {
-                        const link = `/t/${selectedTableId}`;
-                        if (typeof navigator !== 'undefined' && navigator.clipboard) {
-                          navigator.clipboard.writeText(link).catch(() => {});
-                        }
-                        setToastMessage('Table link copied to clipboard!');
+                        setToastMessage(`Table route: /t/${selectedTableId}`);
                         setTimeout(() => setToastMessage(null), 3000);
                     }}
                     disabled={selectedTables[0].status === 'closed' || selectedTables[0].status === 'closing'}

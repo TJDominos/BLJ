@@ -14,7 +14,7 @@ export function GoldenWreath({ delay = 0.5 }: { delay?: number }) {
       }}
       className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-0 w-[110px] h-[110px] sm:w-[150px] sm:h-[150px]"
     >
-      <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" className="w-full h-full drop-shadow-[0_0_8px_rgba(255,197,61,0.8)] overflow-visible">
+      <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-[0_0_8px_rgba(255,197,61,0.8)] overflow-visible">
         <defs>
           <linearGradient id="goldGradFeather" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stopColor="#fff5d1" />

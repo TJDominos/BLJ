@@ -16,7 +16,7 @@ import {
   KeyRound,
   LogOut
 } from 'lucide-react';
-import { useGameStore, TableSettings, TournamentSettings } from '@/store/gameStore';
+import { useGameStore, getRuntimeGameStats, TableSettings, TournamentSettings } from '@/store/gameStore';
 import { useUIStore, selectIsMuted } from '@/store/uiStore';
 import { systemConfig } from '@/config/systemConfig';
 import { calculateBaseRTP } from '@/backend/gameRules';
@@ -114,14 +114,8 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     setIsLoadingStats(true);
     setStatsError(null);
     try {
-      const apiRes = await fetch('/api/stats').then(async r => {
-        if (!r.ok) {
-          const errBody = await r.json().catch(() => ({}));
-          throw new Error(errBody.error || `HTTP ${r.status}`);
-        }
-        return r.json();
-      });
-      setServerStats(apiRes);
+      const statsData = getRuntimeGameStats();
+      setServerStats(statsData);
     } catch (err: any) {
       setStatsError(err?.message || 'Failed to load game statistics');
     } finally {
@@ -1268,7 +1262,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                     <div className="rounded-xl bg-black/35 border border-white/10 p-4 space-y-3">
                       <div className="flex items-center justify-between">
                         <span className="text-sm font-bold uppercase tracking-wider text-emerald-400">
-                          1. Live Server Statistics (GET /api/stats)
+                          1. Live Room Runtime Statistics
                         </span>
                         <span className="text-xs font-mono text-slate-400">
                           Uptime: {serverStats?.uptimeSeconds ?? 0}s
