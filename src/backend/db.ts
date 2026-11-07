@@ -105,7 +105,6 @@ export function getOrCreateUser(
   userId: string,
   name: string = 'Player',
   isCreatorOrPublisher: boolean = false,
-  publisherKey?: string,
   avatar?: string
 ): User {
   if (!usersDb[userId]) {
@@ -116,8 +115,7 @@ export function getOrCreateUser(
       balance: DEFAULT_GAME_COINS,
       bonusBalance: 0,
       role: isCreatorOrPublisher ? 'creator' : 'player',
-      isCreator: isCreatorOrPublisher,
-      publisherKey: isCreatorOrPublisher ? publisherKey : undefined
+      isCreator: isCreatorOrPublisher
     };
     houseStats.totalTokensIssuedByHouse += DEFAULT_GAME_COINS;
   } else {
@@ -130,7 +128,6 @@ export function getOrCreateUser(
     if (isCreatorOrPublisher) {
       usersDb[userId].role = 'creator';
       usersDb[userId].isCreator = true;
-      usersDb[userId].publisherKey = publisherKey;
     }
     // Sync updated name & avatar to any seats currently occupied by this user
     for (const table of Object.values(tablesDb)) {

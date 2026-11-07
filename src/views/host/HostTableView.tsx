@@ -111,9 +111,14 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
     }
   };
 
+  const [copiedToast, setCopiedToast] = useState(false);
+
   const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    alert('Copied to clipboard!');
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(text).catch(() => {});
+      setCopiedToast(true);
+      setTimeout(() => setCopiedToast(false), 2000);
+    }
   };
 
   if (!currentUser) return null;

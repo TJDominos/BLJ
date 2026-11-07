@@ -646,7 +646,9 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                           <td className="px-4 py-3 text-white/60 whitespace-nowrap">{new Date(sr.time).toLocaleTimeString()}</td>
                           <td className="px-4 py-3 text-white/60 font-mono">Seat {sr.seatIndex + 1}</td>
                           <td className="px-4 py-3">
-                             <img src={getAvatarUrl(sr.userId || 'Player')} alt="Avatar" className="w-6 h-6 rounded-full bg-white/10" />
+                             <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-white font-bold text-[10px] select-none">
+                               {(sr.userId || 'P').charAt(0).toUpperCase()}
+                             </div>
                           </td>
                           <td className="px-4 py-3 font-bold text-white">{sr.userId?.startsWith('bot_') ? `Bot ${sr.userId.split('_')[1]}` : sr.userId || 'Empty'}</td>
                           <td className="px-4 py-3 text-right font-mono text-white/80">${sr.bet.toLocaleString()}</td>

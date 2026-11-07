@@ -1066,9 +1066,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                     className="absolute top-[100%] mt-3 sm:mt-5 z-[200] flex items-center justify-center pointer-events-none"
                   >
                     <div className="p-[2px] rounded-[10px] bg-gradient-to-br from-[#f8fafc] via-[#cbd5e1] to-[#64748b] shadow-[0_8px_16px_rgba(0,0,0,0.8)] overflow-hidden">
-                      <div className="px-6 py-2 rounded-[8px] flex items-center justify-center border border-[#f8fafc]/30 relative shadow-[inset_0_0_20px_rgba(0,0,0,0.8)] bg-[#1a1c20]" style={{
-                        backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='49' viewBox='0 0 28 49'%3E%3Cg fill-rule='evenodd'%3E%3Cg id='hexagons' fill='%23cbd5e1' fill-opacity='0.15' fill-rule='nonzero'%3E%3Cpath d='M13.99 9.25l13 7.5v15l-13 7.5L1 31.75v-15l12.99-7.5zM3 17.9v12.7l10.99 6.34 11-6.35V17.9l-11-6.34L3 17.9zM0 15l12.98-7.5V0h-2v6.35L0 12.69v2.3zm0 18.5L12.98 41v8h-2v-6.85L0 35.81v-2.3zM15 0v7.5L27.99 15H28v-2.31h-.01L17 6.35V0h-2zm0 49v-8l12.99-7.5H28v2.31h-.01L17 42.15V49h-2z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E\")"
-                      }}>
+                      <div className="px-6 py-2 rounded-[8px] flex items-center justify-center border border-[#f8fafc]/30 relative shadow-[inset_0_0_20px_rgba(0,0,0,0.8)] bg-gradient-to-r from-[#1a1c20] via-[#2d3139] to-[#1a1c20]">
                         <div className="absolute inset-0 bg-gradient-to-b from-transparent to-black/60 rounded-[8px]"></div>
                         <span className="text-[#f8fafc] text-2xl font-mono font-black tracking-[0.2em] drop-shadow-[0_2px_2px_rgba(0,0,0,1)] z-10" style={{ textShadow: "0 2px 4px #000, 0 0 10px rgba(248,250,252,0.4)" }}>
                           {dealCountdown > 0 ? `DEAL IN ${dealCountdown}s` : 'DEALING...'}

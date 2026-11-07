@@ -222,12 +222,18 @@ export const RankWidget: React.FC = () => {
               {/* Player Identity Card */}
               <div className="p-4 bg-gradient-to-r from-[#14231a] to-[#0d1611] border-b border-white/10 shrink-0 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-10 h-10 rounded-full bg-zinc-900 border border-[#d4af37]/60 overflow-hidden shrink-0 shadow-md">
-                    <img
-                      src={currentUser?.avatar || getAvatarUrl(currentUser?.id || currentUser?.name || 'Player')}
-                      alt="Player Avatar"
-                      className="w-full h-full object-cover"
-                    />
+                  <div className="w-10 h-10 rounded-full bg-zinc-900 border border-[#d4af37]/60 overflow-hidden shrink-0 shadow-md flex items-center justify-center">
+                    {currentUser?.avatar ? (
+                      <img
+                        src={currentUser.avatar}
+                        alt="Player Avatar"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-[#d4af37] font-bold text-sm bg-black/60 select-none">
+                        {(currentUser?.name || 'P').charAt(0).toUpperCase()}
+                      </div>
+                    )}
                   </div>
                   <div className="min-w-0">
                     <div className="text-sm font-bold text-white truncate">

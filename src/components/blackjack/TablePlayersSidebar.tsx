@@ -233,11 +233,9 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
                                 {/* Player Info */}
                                 <div className="col-span-5 flex items-center gap-2 min-w-0 pr-1">
                                   <div className="relative shrink-0">
-                                    <img
-                                      src={getAvatarUrl(user.userId)}
-                                      alt="avatar"
-                                      className="w-7 h-7 rounded-full bg-black/40 border border-white/10"
-                                    />
+                                    <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#126b6f] to-[#0a3e40] border border-white/10 flex items-center justify-center text-white font-bold text-[11px] select-none">
+                                      {(user.name || 'P').charAt(0).toUpperCase()}
+                                    </div>
                                     {user.isPlaying && (
                                       <div
                                         className="absolute -bottom-0.5 -right-0.5 w-2 h-2 bg-[#10b981] rounded-full border border-zinc-950 shadow-[0_0_4px_rgba(16,185,129,0.8)]"
@@ -315,11 +313,9 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
                                 {/* Player */}
                                 <div className="col-span-5 flex items-center gap-2 min-w-0 pr-1">
                                   <div className="relative shrink-0">
-                                    <img
-                                      src={getAvatarUrl(user.userId)}
-                                      alt="avatar"
-                                      className="w-7 h-7 rounded-full bg-black/40 border border-white/10"
-                                    />
+                                    <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#126b6f] to-[#0a3e40] border border-white/10 flex items-center justify-center text-white font-bold text-[11px] select-none">
+                                      {(user.name || 'P').charAt(0).toUpperCase()}
+                                    </div>
                                     {idx === 0 && (
                                       <div className="absolute -top-1 -right-1 bg-yellow-500 rounded-full p-[2px] shadow-lg">
                                         <Crown className="w-2 h-2 text-zinc-950" />

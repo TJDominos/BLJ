@@ -59,20 +59,37 @@ export function TableSeatButton({
             <div className="absolute inset-[3px] rounded-full ring-2 ring-amber-400 ring-offset-0 animate-pulse shadow-[0_0_20px_rgba(251,191,36,0.8)] z-0" />
           )}
 
-          <img
-            src={seatAvatar}
-            alt={seatName}
-            className={cn(
-              "w-[80%] h-[80%] rounded-full object-cover relative z-10",
-              seat.isReady
-                ? isSelected
-                  ? "ring-2 ring-offset-1 ring-offset-black ring-[#32d5a4] shadow-[0_0_15px_rgba(50,213,164,0.8)]"
-                  : "shadow-[0_0_10px_rgba(50,213,164,0.5)]"
-                : isSelected
-                ? "opacity-100"
-                : "opacity-85"
-            )}
-          />
+          {seatAvatar ? (
+            <img
+              src={seatAvatar}
+              alt={seatName}
+              className={cn(
+                "w-[80%] h-[80%] rounded-full object-cover relative z-10",
+                seat.isReady
+                  ? isSelected
+                    ? "ring-2 ring-offset-1 ring-offset-black ring-[#32d5a4] shadow-[0_0_15px_rgba(50,213,164,0.8)]"
+                    : "shadow-[0_0_10px_rgba(50,213,164,0.5)]"
+                  : isSelected
+                  ? "opacity-100"
+                  : "opacity-85"
+              )}
+            />
+          ) : (
+            <div
+              className={cn(
+                "w-[80%] h-[80%] rounded-full relative z-10 flex items-center justify-center font-bold text-white text-xs select-none bg-gradient-to-br from-[#126b6f] to-[#0a3e40]",
+                seat.isReady
+                  ? isSelected
+                    ? "ring-2 ring-offset-1 ring-offset-black ring-[#32d5a4] shadow-[0_0_15px_rgba(50,213,164,0.8)]"
+                    : "shadow-[0_0_10px_rgba(50,213,164,0.5)]"
+                  : isSelected
+                  ? "opacity-100"
+                  : "opacity-85"
+              )}
+            >
+              {seatName.charAt(0).toUpperCase()}
+            </div>
+          )}
 
           {seat.isReady && dealCountdown !== null && (
             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[70%] h-[70%] flex flex-col items-center justify-center bg-black/65 rounded-full z-20 shadow-[inset_0_0_10px_rgba(50,213,164,0.2)]">

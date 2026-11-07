@@ -258,7 +258,7 @@ async function startServer() {
       const resolved = resolveAuthenticatedPlatformPlayer(req);
       const playerId = resolved.playerId;
       const roomId = typeof req.body?.roomId === "string" && req.body.roomId ? req.body.roomId : "table_1";
-      getOrCreateUser(playerId, resolved.name || "Player", Boolean(resolved.isCreator), undefined, resolved.avatar);
+      getOrCreateUser(playerId, resolved.name || "Player", Boolean(resolved.isCreator), resolved.avatar);
       await getOrCreateHostedRoom(roomId, playerId);
       res.json({
         success: true,
@@ -374,7 +374,6 @@ async function startServer() {
         resolvedId,
         resolvedName,
         isCreatorAuth,
-        isCreatorAuth ? publisherKey || CREATOR_SECRET : undefined,
         resolvedAvatar
       );
       reconcileSystemTables();

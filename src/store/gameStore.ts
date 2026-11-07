@@ -8,7 +8,6 @@ export type User = {
   bonusBalance?: number;
   role: 'player' | 'creator' | 'publisher';
   isCreator?: boolean;
-  publisherKey?: string;
 };
 
 export type CardSuit = 'hearts' | 'diamonds' | 'clubs' | 'spades';
@@ -178,7 +177,7 @@ interface GameStore {
   login: (name: string, overrideUserId?: string, avatar?: string, isCreator?: boolean) => Promise<void>;
   syncStateFromServer: () => Promise<void>;
   setCreatorIdentity: (isCreator: boolean, creatorName?: string) => Promise<void>;
-  verifyPublisher: (publisherKey: string) => Promise<boolean>;
+  verifyPublisher: () => Promise<boolean>;
   exitPublisherMode: () => void;
   createTable: (settings: TableSettings, liquidity: number) => Promise<string>;
   verifyTableCode: (tableId: string, tableCode: string) => Promise<boolean>;
@@ -226,15 +225,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   tables: {},
   activeTableId: null,
   gameRecords: [],
-  unlockedTableIds: (() => {
-    if (typeof window === 'undefined') return {};
-    try {
-      const raw = localStorage.getItem('royal_blackjack_unlocked_tables');
-      return raw ? JSON.parse(raw) : {};
-    } catch {
-      return {};
-    }
-  })(),
+  unlockedTableIds: {},
 
   login: async (name: string, overrideUserId?: string, avatar?: string, isCreator?: boolean) => {
     const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
@@ -245,33 +236,20 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const effectiveName = urlName || name || 'Player';
     const effectiveAvatar = urlAvatar || avatar || undefined;
 
-    const savedKey = typeof window !== 'undefined' ? localStorage.getItem('royal_blackjack_publisher_key') : null;
     const urlCreatorFlag =
       Boolean(isCreator) ||
       params?.get('role') === 'creator' ||
       params?.get('role') === 'publisher' ||
       params?.get('isCreator') === 'true';
-    const urlKey =
-      params?.get('creatorKey') ||
-      params?.get('publisherKey') ||
-      (urlCreatorFlag ? 'royal-blackjack-creator' : null);
-    const activeKey = urlKey || savedKey || undefined;
 
-    let savedUserId = overrideUserId || urlUserId || (typeof window !== 'undefined' ? localStorage.getItem('royal_blackjack_user_id') : null);
-    if (!savedUserId) {
-      savedUserId = `user_${Math.random().toString(36).slice(2, 11)}`;
-    }
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('royal_blackjack_user_id', savedUserId);
-    }
+    const savedUserId = overrideUserId || urlUserId || `user_${Math.random().toString(36).slice(2, 11)}`;
 
     try {
       const data = await postGameApi<{ user: User; tables: Record<string, Table> }>('/api/game/session', {
         userId: savedUserId,
         name: effectiveName,
         avatar: effectiveAvatar,
-        publisherKey: activeKey,
-        isCreator: Boolean(activeKey || urlCreatorFlag),
+        isCreator: urlCreatorFlag,
       });
       set({
         currentUser: data.user,
@@ -342,26 +320,22 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   setCreatorIdentity: async (isCreator: boolean, creatorName?: string) => {
     const current = get().currentUser;
-    const userId = current?.id || (typeof window !== 'undefined' ? localStorage.getItem('royal_blackjack_user_id') : null) || 'creator_user';
+    const userId = current?.id || 'creator_user';
     if (isCreator) {
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('royal_blackjack_publisher_key', 'royal-blackjack-creator');
-      }
       try {
         const data = await postGameApi<{ user: User; tables: Record<string, Table> }>('/api/game/session', {
           userId,
           name: creatorName || current?.name || 'Creator',
-          publisherKey: 'royal-blackjack-creator',
           isCreator: true,
         });
         set({
-          currentUser: { ...data.user, role: 'creator', isCreator: true, publisherKey: 'royal-blackjack-creator' },
+          currentUser: { ...data.user, role: 'creator', isCreator: true },
           tables: data.tables,
         });
       } catch {
         set((state) => ({
           currentUser: state.currentUser
-            ? { ...state.currentUser, role: 'creator', isCreator: true, publisherKey: 'royal-blackjack-creator' }
+            ? { ...state.currentUser, role: 'creator', isCreator: true }
             : null,
         }));
       }
@@ -370,23 +344,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
   },
 
-  verifyPublisher: async (publisherKey: string) => {
-    const trimmed = publisherKey.trim() || 'royal-blackjack-creator';
+  verifyPublisher: async () => {
     try {
-      const res = await fetch('/api/stats', {
-        headers: {
-          'x-creator-key': trimmed,
-          'x-publisher-key': trimmed,
-          'x-user-role': 'creator',
-        },
-      });
+      const res = await fetch('/api/stats');
       if (!res.ok) return false;
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('royal_blackjack_publisher_key', trimmed);
-      }
       set((state) => ({
         currentUser: state.currentUser
-          ? { ...state.currentUser, role: 'creator', isCreator: true, publisherKey: trimmed }
+          ? { ...state.currentUser, role: 'creator', isCreator: true }
           : null,
       }));
       return true;
@@ -396,12 +360,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   exitPublisherMode: () => {
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('royal_blackjack_publisher_key');
-    }
     set((state) => ({
       currentUser: state.currentUser
-        ? { ...state.currentUser, role: 'player', isCreator: false, publisherKey: undefined }
+        ? { ...state.currentUser, role: 'player', isCreator: false }
         : null,
     }));
   },
@@ -418,13 +379,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
     
     const nextUnlocked = { ...get().unlockedTableIds, [data.table.id]: true };
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem('royal_blackjack_unlocked_tables', JSON.stringify(nextUnlocked));
-      } catch {
-        // Ignore storage errors
-      }
-    }
 
     set({
       currentUser: data.user || user,
@@ -444,13 +398,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
       });
       if (data.valid) {
         const nextUnlocked = { ...get().unlockedTableIds, [tableId]: true };
-        if (typeof window !== 'undefined') {
-          try {
-            localStorage.setItem('royal_blackjack_unlocked_tables', JSON.stringify(nextUnlocked));
-          } catch {
-            // Ignore storage errors
-          }
-        }
         set({ unlockedTableIds: nextUnlocked });
         return true;
       }

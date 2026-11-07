@@ -59,7 +59,6 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
 
   const [showStatsModal, setShowStatsModal] = useState(false);
   const [showCreatorAuthModal, setShowCreatorAuthModal] = useState(false);
-  const [creatorKeyInput, setCreatorKeyInput] = useState('');
   const [creatorAuthError, setCreatorAuthError] = useState<string | null>(null);
   const [serverStats, setServerStats] = useState<any>(null);
   const [statsError, setStatsError] = useState<string | null>(null);
@@ -114,13 +113,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     setIsLoadingStats(true);
     setStatsError(null);
     try {
-      const apiRes = await fetch('/api/stats', {
-        headers: {
-          'x-creator-key': currentUser?.publisherKey || 'royal-blackjack-creator',
-          'x-publisher-key': currentUser?.publisherKey || 'royal-blackjack-creator',
-          'x-user-role': isCreator ? 'creator' : 'player',
-        },
-      }).then(async r => {
+      const apiRes = await fetch('/api/stats').then(async r => {
         if (!r.ok) {
           const errBody = await r.json().catch(() => ({}));
           throw new Error(errBody.error || `HTTP ${r.status}`);
@@ -143,13 +136,11 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
   const handleCreatorLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreatorAuthError(null);
-    const keyToVerify = creatorKeyInput.trim() || 'royal-blackjack-creator';
-    const ok = await verifyPublisher(keyToVerify);
+    const ok = await verifyPublisher();
     if (ok) {
       setShowCreatorAuthModal(false);
-      setCreatorKeyInput('');
     } else {
-      setCreatorAuthError('Invalid Creator Key.');
+      setCreatorAuthError('Unable to activate creator mode.');
     }
   };
 
@@ -1155,15 +1146,8 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
 
               <form onSubmit={handleCreatorLogin} className="p-5 space-y-4 text-sm">
                 <p className="text-slate-300 leading-relaxed">
-                  Runtime statistics are visible to the Creator. (Platform SDK updates will automatically inject Creator identity.)
+                  Switch to Creator perspective to view runtime statistics and table management.
                 </p>
-                <input
-                  type="password"
-                  placeholder="Enter creator key"
-                  value={creatorKeyInput}
-                  onChange={(e) => setCreatorKeyInput(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/15 text-white font-mono text-sm focus:outline-none focus:border-[#d4af37]"
-                />
                 {creatorAuthError && (
                   <div className="text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-lg px-3 py-2">
                     {creatorAuthError}

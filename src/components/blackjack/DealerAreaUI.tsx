@@ -48,11 +48,9 @@ export function DealerArea({
           {houseId === 'system' ? (
             <CloverAvatar className="w-full h-full object-cover z-10" />
           ) : (
-            <img 
-              src={getAvatarUrl(name)} 
-              alt={name}
-              className="w-full h-full object-cover"
-            />
+            <div className="w-full h-full rounded-full bg-gradient-to-br from-[#3b4252] to-[#1e222b] flex items-center justify-center text-white font-bold text-sm select-none">
+              {(name || 'D').charAt(0).toUpperCase()}
+            </div>
           )}
         </div>
         <div className="flex flex-col">
