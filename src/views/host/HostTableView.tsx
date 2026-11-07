@@ -5,11 +5,9 @@ import { systemConfig } from '@/config/systemConfig';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { ChevronDown, ChevronRight, Copy, Wallet, Settings as SettingsIcon, CheckCircle2, RefreshCw, QrCode, X, Play, Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, Coins, Settings as SettingsIcon, CheckCircle2, RefreshCw, X, Play, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { QRCodeSVG } from 'qrcode.react';
 import { HeaderUI } from '@/components/blackjack/HeaderUI';
-import { WalletSelector } from '@/components/WalletSelector';
 
 export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { onNavigate: (view: 'lobby' | 'table' | 'dashboard' | 'manage_tables', editId?: string) => void, onToggleSidebar?: () => void, editTableId?: string | null }) {
   const { currentUser, createTable, tables, updateTableSettings } = useGameStore();
@@ -17,15 +15,10 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
   const editingTable = editTableId ? tables[editTableId] : null;
 
   const [expandedSection, setExpandedSection] = useState<'liquidity' | 'settings' | null>('settings');
-  const [depositAmount, setDepositAmount] = useState('15');
-  const [currency, setCurrency] = useState<'USDC' | 'USDT'>('USDC');
-  const [network, setNetwork] = useState<'Solana' | 'Ethereum' | 'BSC'>('Solana');
-  const [showQRCode, setShowQRCode] = useState(false);
-  const [showWalletSelector, setShowWalletSelector] = useState(false);
+  const [depositAmount, setDepositAmount] = useState('150');
   const [mockTableId] = useState(() => Math.random().toString(36).substring(2, 8));
   const [isMuted, setIsMuted] = useState(false);
 
-  const [depositMode, setDepositMode] = useState<'wallet' | 'manual'>('wallet');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isHosting, setIsHosting] = useState(false);
   const defaultTournament: TournamentSettings = {
@@ -74,22 +67,12 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
   const prevMinLiquidity = React.useRef(minLiquidity);
   React.useEffect(() => {
     if (prevMinLiquidity.current !== minLiquidity) {
-      setDepositAmount((minLiquidity / 10).toString());
+      setDepositAmount(minLiquidity.toString());
       prevMinLiquidity.current = minLiquidity;
     }
   }, [minLiquidity]);
 
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
-
-  const getDepositAddress = () => {
-    if (currency === 'USDC' && network === 'Solana') return 'So11111111111111111111111111111111111111112';
-    if (currency === 'USDC' && network === 'Ethereum') return '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
-    if (currency === 'USDC' && network === 'BSC') return '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d';
-    if (currency === 'USDT' && network === 'Solana') return 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
-    if (currency === 'USDT' && network === 'Ethereum') return '0xdAC17F958D2ee523a2206206994597C13D831ec7';
-    if (currency === 'USDT' && network === 'BSC') return '0x55d398326f99059fF775485246999027B3197955';
-    return '0x...';
-  };
 
   const handleSubmit = async () => {
     setHasAttemptedSubmit(true);
@@ -524,12 +507,12 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                     <div className="flex items-center justify-between p-3 rounded-xl border border-white/10 bg-white/5 shadow-sm overflow-hidden">
                       <div className="flex flex-col flex-1 min-w-0 pr-2">
                         <span className="text-xs font-semibold text-white/50 mb-1">Invite Link</span>
-                        <span className="text-sm font-mono text-white truncate">{typeof window !== 'undefined' ? `${window.location.origin}/t/${mockTableId}` : `/t/${mockTableId}`}</span>
+                        <span className="text-sm font-mono text-white truncate">{`/t/${mockTableId}`}</span>
                       </div>
                       <button 
                         onClick={(e) => { 
                           e.preventDefault(); 
-                          const link = typeof window !== 'undefined' ? `${window.location.origin}/t/${mockTableId}` : `/t/${mockTableId}`;
+                          const link = `/t/${mockTableId}`;
                           copyToClipboard(link); 
                         }} 
                         className="p-2 bg-white/5 hover:bg-white/10 rounded-lg text-white/50 hover:text-white transition-colors shrink-0"
@@ -956,7 +939,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
           >
           <div className="flex items-center gap-2 sm:gap-4 flex-1 overflow-hidden">
              <div className={`p-2 sm:p-3 rounded-full shrink-0 ${expandedSection === 'liquidity' ? 'bg-[#126b6f] text-white' : 'bg-white/10 shadow-sm text-white/80'}`}>
-               <Wallet className="w-4 h-4 sm:w-6 sm:h-6" />
+               <Coins className="w-4 h-4 sm:w-6 sm:h-6" />
              </div>
              <div className="text-left flex flex-col gap-1 sm:gap-2 min-w-0 flex-1">
                 <div className="flex flex-row flex-wrap gap-x-3 sm:gap-x-4 gap-y-1 items-center">
@@ -977,7 +960,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                    </div>
                 </div>
                  <p className="text-[11px] sm:text-[14px] text-white/50 text-left leading-snug mt-0.5 sm:mt-1 whitespace-normal">
-                   Deposit USDC/USDT to fund tables. Instant withdrawals upon closing
+                   Allocate Game Coins (Gcoin) to fund table liquidity. Returned automatically upon closing.
                  </p>
              </div>
           </div>
@@ -1008,14 +991,11 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                       </div>
                     </div>
                     <p>Minimum table liquidity is calculated as: <span className="font-mono bg-white/10 px-1.5 py-0.5 rounded text-[#2ebaba] border border-[#2ebaba]/20">Max Bet × Seats</span> (to cover 1 round).</p>
-                    <p className="mt-2 text-red-500 text-[11px] sm:text-xs font-semibold uppercase tracking-wider">Note: If liquidity falls below this minimum before a new round starts, the table will be paused and become private. Game balance can not be used as table liquidty due to it creates unique on-chain address.</p>
+                    <p className="mt-2 text-red-500 text-[11px] sm:text-xs font-semibold uppercase tracking-wider">Note: If liquidity falls below this minimum before a new round starts, the table will be paused until refilled.</p>
                   </div>
                 </div>
                 <div className="space-y-1 px-3 pt-2 pb-3">
                   <div className="flex flex-col sm:flex-row gap-4 w-full">
-                    <div className="hidden sm:flex shrink-0 w-[106px] h-[106px] bg-white p-2 rounded-xl border border-white/10 flex-col items-center justify-center self-start">
-                      <QRCodeSVG value={getDepositAddress()} size={90} />
-                    </div>
                     <div className="flex flex-col gap-3 w-full flex-1 min-w-0">
                       <div className="flex flex-col sm:flex-row gap-2 w-full items-start">
                         <div className="relative flex-[1.5] w-full flex flex-col gap-1.5">
@@ -1030,44 +1010,23 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                             />
                           </div>
                           <div className="flex gap-4 min-w-0 flex-shrink-0 text-[10px] sm:text-xs text-white/50 pl-1">
-                            <span>You will receive <span className="font-bold text-white/90">{Math.floor(Number(depositAmount || 0) * 10).toLocaleString()}</span> Gcoin. 1 USDC/USDT = 10 Gcoin</span>
+                            <span>Allocate <span className="font-bold text-white/90">{Math.floor(Number(depositAmount || 0)).toLocaleString()}</span> Gcoin from your Game Coins balance.</span>
                           </div>
-                        </div>
-                        
-                        <div className="flex flex-[1] gap-2 w-full sm:w-auto h-[40px]">
-                            <select 
-                               value={currency} 
-                               onChange={e => setCurrency(e.target.value as any)}
-                               className="flex-1 bg-[#1a1b23] text-white border border-white/10 rounded-xl px-2 h-full text-sm focus:outline-none focus:border-[#126b6f] cursor-pointer min-w-0"
-                            >
-                               <option value="USDC">USDC</option>
-                               <option value="USDT">USDT</option>
-                            </select>
-                            <select 
-                               value={network} 
-                               onChange={e => setNetwork(e.target.value as any)}
-                               className="flex-1 bg-[#1a1b23] text-white border border-white/10 rounded-xl px-2 h-full text-sm focus:outline-none focus:border-[#126b6f] cursor-pointer min-w-0"
-                            >
-                               <option value="Solana">SOL</option>
-                               <option value="Ethereum">ETH</option>
-                               <option value="BSC">BSC</option>
-                            </select>
                         </div>
 
                         <Button 
                           className="w-full sm:w-auto bg-[#126b6f] hover:bg-[#0d4f52] text-white font-bold uppercase tracking-widest text-xs h-[40px] px-6 shrink-0 shadow-sm"
-                          onClick={() => setShowWalletSelector(true)}
+                          onClick={() => {
+                            if (editTableId) {
+                              useGameStore.getState().depositLiquidity(editTableId, Number(depositAmount));
+                            }
+                            setExpandedSection('settings');
+                          }}
                         >
-                          Deposit
+                          Add Gcoin
                         </Button>
                       </div>
 
-                      <div className="flex items-center gap-2 bg-white/5 px-3 sm:px-4 py-2.5 rounded min-w-0 max-w-full overflow-hidden border border-white/10">
-                        <span className="shrink-0 text-xs text-white/50 hidden sm:inline">Address:</span>
-                        <span className="font-mono text-sm text-white/90 truncate select-all">{getDepositAddress()}</span>
-                        <button onClick={() => copyToClipboard(getDepositAddress())} className="hover:text-white text-white/50 shrink-0 ml-auto p-1.5"><Copy className="w-4 h-4" /></button>
-                        <button onClick={() => setShowQRCode(true)} className="sm:hidden hover:text-white text-white/50 shrink-0 p-1.5"><QrCode className="w-4 h-4" /></button>
-                      </div>
                       <div className="flex justify-between items-center mt-1 px-1">
                         <div className="text-xs text-white/50">Liquidity Balance: <span className="font-bold text-white/90">{editTableId ? editingTable?.liquidity : 0}</span> Gcoin</div>
                         <button 
@@ -1075,12 +1034,12 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
                           disabled={isRefreshing}
                           onClick={async () => {
                             setIsRefreshing(true);
-                            await new Promise(r => setTimeout(r, 1000));
+                            await new Promise(r => setTimeout(r, 500));
                             setIsRefreshing(false);
                           }}
                         >
                           <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-                          {isRefreshing ? 'Refreshing...' : 'Refresh On-Chain'}
+                          {isRefreshing ? 'Refreshing...' : 'Refresh Balance'}
                         </button>
                       </div>
                     </div>
@@ -1124,61 +1083,6 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
         )}
       </div>
     </div>
-
-    <WalletSelector
-      isOpen={showWalletSelector}
-      onClose={() => setShowWalletSelector(false)}
-      depositAmount={depositAmount}
-      currency={currency}
-      onSelect={() => {
-         if (editTableId) {
-             useGameStore.getState().depositLiquidity(editTableId, Number(depositAmount) * 10); // Since 1 USDC = 10 Gcoin as per UI label
-         }
-         setExpandedSection('settings')
-      }}
-    />
-
-    <AnimatePresence>
-      {showQRCode && (
-        <motion.div
-           initial={{ opacity: 0 }}
-           animate={{ opacity: 1 }}
-           exit={{ opacity: 0 }}
-           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-           onClick={() => setShowQRCode(false)}
-        >
-          <motion.div
-            initial={{ scale: 0.95, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.95, opacity: 0 }}
-            onClick={(e) => e.stopPropagation()}
-            className="flex flex-col items-center p-6 bg-[#1a1b23] border border-white/10 rounded-3xl shadow-2xl w-full max-w-sm gap-6"
-          >
-            <div className="flex justify-between items-center w-full">
-              <span className="font-bold text-white text-lg tracking-wide uppercase">Deposit Address</span>
-              <button onClick={() => setShowQRCode(false)} className="p-2 bg-white/5 hover:bg-white/10 rounded-full text-white/50 hover:text-white transition-colors">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            
-            <div className="bg-white p-4 rounded-2xl flex items-center justify-center border-4 border-white/5">
-              <QRCodeSVG value={getDepositAddress()} size={200} />
-            </div>
-
-            <div className="flex flex-col gap-2 w-full">
-              <div className="flex items-center justify-between w-full p-3 bg-black/40 border border-white/10 rounded-xl relative">
-                 <span className="font-mono text-xs text-white/90 truncate mr-2 select-all">{getDepositAddress()}</span>
-                 <button onClick={() => copyToClipboard(getDepositAddress())} className="p-1.5 bg-white/10 hover:bg-white/20 rounded-md text-white/70 hover:text-white transition-colors shrink-0">
-                   <Copy className="w-4 h-4" />
-                 </button>
-              </div>
-              <p className="text-center text-[11px] text-white/40 uppercase tracking-wider font-semibold px-2">Send {currency} ({network}) to this address.</p>
-            </div>
-            
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
     </div>
 
     </div>

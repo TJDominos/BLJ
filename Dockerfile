@@ -25,6 +25,7 @@ COPY package.json ./
 RUN npm install --omit=dev
 
 # Copy compiled bundles from builder
+COPY --from=builder /app/build ./build
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/public ./public
 
@@ -32,4 +33,4 @@ COPY --from=builder /app/public ./public
 EXPOSE 8080
 
 # Default command launches the Wire Protocol room server
-CMD ["node", "dist/room-server.cjs"]
+CMD ["node", "build/room-server.cjs"]

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams, useLocation } from './lib/router';
 import { BlackjackTable } from './views/BlackjackTable';
 import { HomeView } from './views/HomeView';
 import { HostTableView } from './views/host/HostTableView';

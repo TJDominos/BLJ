@@ -801,6 +801,8 @@ export function buildBlackjackAgentObservation(
   );
 }
 
+export const projectAgentPlayerView = buildBlackjackAgentObservation;
+
 /**
  * Royal BlackJack 标准 RandSeed 房间服务端实现（Node.js / TypeScript，严格遵循 @randseed/server-sdk 契约）
  */

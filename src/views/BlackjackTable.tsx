@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams } from '@/lib/router';
 import { useGameStore } from '@/store/gameStore';
 import { RegularTableView } from './RegularTableView';
 import { TournamentTableView } from './TournamentTableView';

@@ -20,9 +20,6 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
   
   const [showWithdrawPopup, setShowWithdrawPopup] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState('');
-  const [withdrawAddress, setWithdrawAddress] = useState('');
-  const [withdrawCurrency, setWithdrawCurrency] = useState<'USDC' | 'USDT'>('USDC');
-  const [withdrawNetwork, setWithdrawNetwork] = useState<'Solana' | 'Ethereum' | 'BSC'>('Solana');
   const [isWithdrawing, setIsWithdrawing] = useState(false);
   
   const rowsPerPage = 50;
@@ -140,66 +137,25 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                exit={{ scale: 0.95, opacity: 0 }}
                className="bg-[#1a1c23] border border-white/10 rounded-3xl p-6 w-full max-w-md shadow-2xl flex flex-col gap-4"
              >
-               <h2 className="text-xl font-bold text-white uppercase tracking-wider">Withdraw Liquidity</h2>
+               <h2 className="text-xl font-bold text-white uppercase tracking-wider">Return Liquidity to Balance</h2>
                <div className="bg-white/5 rounded-xl p-4 text-center">
-                   <div className="text-white/50 text-xs uppercase font-bold tracking-wider mb-1">Available to Withdraw</div>
-                   <div className="text-2xl font-mono text-[#2ebaba]">${Number(withdrawAmount).toLocaleString()}</div>
-               </div>
-               
-               <div className="flex flex-col gap-3">
-                   <label className="text-sm font-bold text-white/70 uppercase">Select Network</label>
-                   <div className="flex bg-white/5 rounded-xl p-1">
-                      {['Solana', 'Ethereum', 'BSC'].map((net) => (
-                         <button key={net} onClick={() => setWithdrawNetwork(net as 'Solana' | 'Ethereum' | 'BSC')} className={cn("flex-1 py-2 text-sm font-bold rounded-lg transition-colors", withdrawNetwork === net ? "bg-white/10 text-white" : "text-white/50 hover:text-white/80")}>
-                            {net}
-                         </button>
-                      ))}
-                   </div>
-               </div>
-               
-               <div className="flex flex-col gap-3">
-                   <label className="text-sm font-bold text-white/70 uppercase">Select Currency</label>
-                   <div className="flex bg-white/5 rounded-xl p-1">
-                      {['USDC', 'USDT'].map((cur) => (
-                         <button key={cur} onClick={() => setWithdrawCurrency(cur as 'USDC' | 'USDT')} className={cn("flex-1 py-2 text-sm font-bold rounded-lg transition-colors", withdrawCurrency === cur ? "bg-[#126b6f] text-white" : "text-white/50 hover:text-white/80")}>
-                            {cur}
-                         </button>
-                      ))}
-                   </div>
-               </div>
-               
-               <div className="flex flex-col gap-3">
-                   <label className="text-sm font-bold text-white/70 uppercase">Withdraw Address</label>
-                   <input type="text" value={withdrawAddress} onChange={(e) => setWithdrawAddress(e.target.value)} placeholder={`Enter ${withdrawNetwork} address...`} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-white/30 outline-none focus:border-[#2ebaba] font-mono text-sm transition-colors" />
+                   <div className="text-white/50 text-xs uppercase font-bold tracking-wider mb-1">Available Liquidity</div>
+                   <div className="text-2xl font-mono text-[#2ebaba]">{Number(withdrawAmount).toLocaleString()} Gcoin</div>
                </div>
 
                <div className="flex gap-3 mt-2">
                   <button className="flex-1 bg-white/5 py-3 rounded-xl text-white font-bold hover:bg-white/10 transition-colors" onClick={() => setShowWithdrawPopup(false)}>CANCEL</button>
                   <button className="flex-1 bg-[#20a37c] py-3 rounded-xl text-white font-bold hover:bg-[#1b8c6a] transition-colors flex items-center justify-center gap-2" onClick={() => {
-                        let isValid = false;
-                        if (withdrawNetwork === 'Solana') {
-                            isValid = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(withdrawAddress);
-                        } else {
-                            isValid = /^0x[a-fA-F0-9]{40}$/.test(withdrawAddress);
-                        }
-                        
-                        if (!isValid) {
-                             setToastMessage(`Invalid ${withdrawNetwork} address format.`);
-                             setTimeout(() => setToastMessage(null), 3000);
-                             return;
-                        }
-                        
                         setIsWithdrawing(true);
-                        // Mock withdrawal delay
                         setTimeout(() => {
                            useGameStore.getState().withdrawLiquidity(selectedTableId, Number(withdrawAmount));
                            setIsWithdrawing(false);
                            setShowWithdrawPopup(false);
-                           setToastMessage('Withdrawal successful.');
+                           setToastMessage('Liquidity returned to your Game Coins balance.');
                            setTimeout(() => setToastMessage(null), 3000);
-                        }, 1500);
+                        }, 500);
                   }}>
-                     {isWithdrawing ? <Loader2 className="w-5 h-5 animate-spin" /> : 'CONFIRM WITHDRAW'}
+                     {isWithdrawing ? <Loader2 className="w-5 h-5 animate-spin" /> : 'CONFIRM RETURN'}
                   </button>
                </div>
              </motion.div>
@@ -396,8 +352,10 @@ export function ManageTablesView({ onNavigate, onToggleSidebar, initialTableId }
                   
                   <button
                     onClick={() => {
-                        const link = `${window.location.origin}/t/${selectedTableId}`;
-                        navigator.clipboard.writeText(link);
+                        const link = `/t/${selectedTableId}`;
+                        if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                          navigator.clipboard.writeText(link).catch(() => {});
+                        }
                         setToastMessage('Table link copied to clipboard!');
                         setTimeout(() => setToastMessage(null), 3000);
                     }}

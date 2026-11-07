@@ -228,21 +228,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
   unlockedTableIds: {},
 
   login: async (name: string, overrideUserId?: string, avatar?: string, isCreator?: boolean) => {
-    const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
-    const urlUserId = params?.get('userId') || params?.get('uid') || params?.get('id') || params?.get('accountId');
-    const urlName = params?.get('name') || params?.get('userName') || params?.get('username') || params?.get('nickname');
-    const urlAvatar = params?.get('avatar') || params?.get('avatarUrl');
-
-    const effectiveName = urlName || name || 'Player';
-    const effectiveAvatar = urlAvatar || avatar || undefined;
-
-    const urlCreatorFlag =
-      Boolean(isCreator) ||
-      params?.get('role') === 'creator' ||
-      params?.get('role') === 'publisher' ||
-      params?.get('isCreator') === 'true';
-
-    const savedUserId = overrideUserId || urlUserId || `user_${Math.random().toString(36).slice(2, 11)}`;
+    const effectiveName = name || 'Player';
+    const effectiveAvatar = avatar || undefined;
+    const urlCreatorFlag = Boolean(isCreator);
+    const savedUserId = overrideUserId || `user_${Math.random().toString(36).slice(2, 11)}`;
 
     try {
       const data = await postGameApi<{ user: User; tables: Record<string, Table> }>('/api/game/session', {

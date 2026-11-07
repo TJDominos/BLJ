@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { User, X, Trophy, Coins, Zap, Shield, Flame, ChevronRight, History, Award } from 'lucide-react';
 import { useGameStore, GameRecord } from '@/store/gameStore';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from '@/lib/router';
 import { cn } from '@/lib/utils';
 import { CurrencyIcon } from '@/components/CurrencyIcon';
 import { getAvatarUrl } from '@/utils/avatar';

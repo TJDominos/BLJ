@@ -22,6 +22,7 @@ import { systemConfig } from '@/config/systemConfig';
 import { calculateBaseRTP } from '@/backend/gameRules';
 import { CurrencyIcon } from '@/components/CurrencyIcon';
 import { soundManager } from '@/lib/sounds';
+import { setRandseedMuted } from '@/lib/randseedRuntime';
 import { cn } from '@/lib/utils';
 
 interface HomeViewProps {
@@ -148,7 +149,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     const next = !isMuted;
     setIsMuted(next);
     soundManager.setMuted(next);
-    import('@/lib/randseedRuntime').then(({ setRandseedMuted }) => setRandseedMuted(next)).catch(() => {});
+    setRandseedMuted(next).catch(() => {});
   };
 
   const handleCreateRoom = async (e: React.FormEvent) => {

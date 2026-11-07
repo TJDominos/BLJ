@@ -53,13 +53,10 @@ export async function initRandseedRuntime(): Promise<RuntimeClient | null> {
 
 /**
  * Connect to the full-stack RandSeed Room backend via RoomClient (`POST /api/match`).
- * In the RandSeed full-stack room architecture:
- * - The Player Shell establishes an HttpOnly platform session cookie before loading the iframe.
- * - `RoomClient` sends `{}` to `POST /api/match` with `credentials: "same-origin"`.
- * - The platform Worker / Node.js server derives the authenticated `playerId`, `roomId`, and `scope`,
- *   and invokes the Node.js `@randseed/server-sdk` lifecycle (`init` / `onPlayerJoin`).
  */
-export async function matchRandseedRoom(): Promise<{
+export async function matchRandseedRoom(
+  onSnapshotUpdate?: (state: Record<string, unknown>) => void
+): Promise<{
   allocation?: RoomMatch;
   snapshot?: RoomSnapshot;
 } | null> {
@@ -67,10 +64,13 @@ export async function matchRandseedRoom(): Promise<{
 
   try {
     if (!roomClientInstance) {
-      const baseUrl = new URL("./", window.location.href).href;
       roomClientInstance = new RoomClient({
         gameId: "royal-blackjack",
-        baseUrl,
+        onSnapshot: (snapshot) => {
+          if (onSnapshotUpdate && snapshot.state && typeof snapshot.state === "object") {
+            onSnapshotUpdate(snapshot.state as Record<string, unknown>);
+          }
+        },
       });
     }
     const snapshot = await roomClientInstance.connect();
@@ -82,6 +82,13 @@ export async function matchRandseedRoom(): Promise<{
     // Fallback when running outside of WebSocket Room gateway
     return null;
   }
+}
+
+export async function sendRandseedRoomAction(
+  action: Record<string, string | number | boolean | null>
+): Promise<void> {
+  if (!roomClientInstance) return;
+  await roomClientInstance.sendInput(action);
 }
 
 export async function setRandseedMuted(muted: boolean): Promise<void> {

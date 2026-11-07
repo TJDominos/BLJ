@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Users, Crown, Zap, Coins, ChevronRight } from 'lucide-react';
 import { Table, GameRecord, useGameStore } from '@/store/gameStore';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from '@/lib/router';
 import { cn } from '@/lib/utils';
 import { getAvatarUrl } from '@/utils/avatar';
 
