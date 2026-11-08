@@ -15,7 +15,7 @@ export const gameRules = {
     perfectPair: {
       perfect: 25,
       colored: 12,
-      mixed: 5
+      mixed: 6
     },
     twentyOnePlusThree: {
       suitedThreeOfAKind: 100,

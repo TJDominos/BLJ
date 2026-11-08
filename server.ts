@@ -1,4 +1,7 @@
 import express from "express";
+import http from "node:http";
+import crypto from "node:crypto";
+import type { Duplex } from "node:stream";
 import path from "path";
 import cors from "cors";
 import { tablesDb, reconcileSystemTables, getOrCreateUser, claimServerRefill, usersDb, houseStats } from "./src/backend/db";
@@ -6,12 +9,25 @@ import { hostTableApi } from "./src/backend/hostTableApi";
 import { gameApi } from "./src/backend/gameApi";
 import { royalBlackjackGameServer } from "./src/backend/royalBlackjackRoomServer";
 import {
+  STREAM_PROTOCOL_V1,
+  createAgentPlayerView,
+  validateAgentGameCapabilities,
+  validateAgentPlayerContract,
+  validateAgentPlayerViewRequest,
+} from "./src/backend/serverSdk/index";
+import {
   ROYAL_BLACKJACK_RULES_VERSION,
   projectBlackjackRoomState,
   sanitizeTableForClient,
   sanitizeTablesMapForClient,
 } from "./src/backend/platformContract";
 
+const RANDSEED_GAME_ID = process.env.RANDSEED_GAME_ID || process.env.GAME_ID || "";
+if (!RANDSEED_GAME_ID) {
+  console.warn(
+    "[RandSeed Server] Missing RANDSEED_GAME_ID or GAME_ID environment variable. Room match endpoints will require gameId to be supplied."
+  );
+}
 const CREATOR_SECRET = process.env.CREATOR_SECRET || process.env.PUBLISHER_SECRET || "royal-blackjack-publisher";
 const CREATOR_EMAIL = (process.env.CREATOR_EMAIL || process.env.PUBLISHER_EMAIL || "SnS.Bruce@gmail.com").toLowerCase();
 
@@ -65,16 +81,73 @@ async function startServer() {
   app.get("/manifest", async (_req, res) => {
     try {
       const manifest = await royalBlackjackGameServer.manifest();
+      res.setHeader("X-RandSeed-Stream-Protocol", STREAM_PROTOCOL_V1);
+      res.setHeader("X-RandSeed-Stream-Durability", "checkpoint");
       res.json(manifest);
     } catch (err: any) {
       res.status(500).json({ error: err?.message || "Failed to load manifest" });
     }
   });
 
+  app.get("/agent/capabilities", async (_req, res) => {
+    try {
+      if (!royalBlackjackGameServer.agentCapabilities) {
+        res.status(404).json({ error: "Agent support is not enabled for this game." });
+        return;
+      }
+      const declaration = await royalBlackjackGameServer.agentCapabilities();
+      if (!declaration) {
+        res.status(404).json({ error: "Agent support is not enabled for this game." });
+        return;
+      }
+      res.json(validateAgentGameCapabilities(declaration));
+    } catch {
+      res.status(500).json({ error: "Agent capabilities are unavailable." });
+    }
+  });
+
+  app.get("/agent/player-contract", async (_req, res) => {
+    try {
+      if (!royalBlackjackGameServer.agentPlayerContract || !royalBlackjackGameServer.projectAgentPlayerView) {
+        res.status(404).json({ error: "Authoritative Agent player views are not enabled for this game." });
+        return;
+      }
+      const declaration = await royalBlackjackGameServer.agentPlayerContract();
+      if (!declaration) {
+        res.status(404).json({ error: "Authoritative Agent player views are not enabled for this game." });
+        return;
+      }
+      res.json(validateAgentPlayerContract(declaration));
+    } catch {
+      res.status(500).json({ error: "Agent player contract is unavailable." });
+    }
+  });
+
+  app.post("/agent/player-view", async (req, res) => {
+    try {
+      const playerRequest = validateAgentPlayerViewRequest(req.body);
+      if (!royalBlackjackGameServer.agentPlayerContract || !royalBlackjackGameServer.projectAgentPlayerView) {
+        res.status(404).json({ error: "Authoritative Agent player views are not enabled for this game." });
+        return;
+      }
+      const declaration = await royalBlackjackGameServer.agentPlayerContract();
+      if (!declaration) {
+        res.status(404).json({ error: "Authoritative Agent player views are not enabled for this game." });
+        return;
+      }
+      const contract = validateAgentPlayerContract(declaration);
+      const projection = await royalBlackjackGameServer.projectAgentPlayerView(structuredClone(playerRequest));
+      res.json(createAgentPlayerView(contract, playerRequest, projection));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Invalid Agent player view request." });
+    }
+  });
+
   app.get(["/health", "/api/health"], (_req, res) => {
     res.json({
       status: "ok",
-      gameId: "royal-blackjack",
+      gameId: RANDSEED_GAME_ID,
+      slug: "royal-blackjack",
       rulesVersion: ROYAL_BLACKJACK_RULES_VERSION,
       uptime: process.uptime(),
     });
@@ -155,8 +228,14 @@ async function startServer() {
 
   // ============================================================================
   // 1a. Standard @randseed/game-sdk RoomClient Host Gateway
-  //     (/api/match, /api/room/:roomId/state, /api/room/:roomId/input)
+  //     (/api/warm, /api/match, /api/room/:roomId/state, /api/room/:roomId/input, /ws/room/:roomId)
   // ============================================================================
+  const roomScope = {
+    gameId: RANDSEED_GAME_ID,
+    environment: process.env.NODE_ENV || "development",
+    versionId: ROYAL_BLACKJACK_RULES_VERSION,
+  };
+
   const hostedRoomInstances = new Map<
     string,
     {
@@ -167,8 +246,73 @@ async function startServer() {
       state: any;
       broadcasts: any[];
       gameResult: any;
+      sockets: Set<{ socket: Duplex; playerId: string }>;
     }
   >();
+
+  const encodeWsTextFrame = (text: string): Buffer => {
+    const payload = Buffer.from(text, "utf8");
+    const len = payload.length;
+    let header: Buffer;
+    if (len < 126) {
+      header = Buffer.allocUnsafe(2);
+      header[0] = 0x81;
+      header[1] = len;
+    } else if (len < 65536) {
+      header = Buffer.allocUnsafe(4);
+      header[0] = 0x81;
+      header[1] = 126;
+      header.writeUInt16BE(len, 2);
+    } else {
+      header = Buffer.allocUnsafe(10);
+      header[0] = 0x81;
+      header[1] = 127;
+      header.writeBigUInt64BE(BigInt(len), 2);
+    }
+    return Buffer.concat([header, payload]);
+  };
+
+  const buildRoomSnapshotFrame = (
+    inst: NonNullable<ReturnType<typeof hostedRoomInstances.get>>,
+    actionReceipts?: Array<{
+      actionId: string;
+      playerId: string;
+      expectedTick: number;
+      committedTick: number;
+      status: "applied" | "rejected" | "unresolved";
+    }>
+  ) => ({
+    type: "snapshot" as const,
+    scope: roomScope,
+    matchId: inst.matchId,
+    matchSeq: inst.matchSeq,
+    tick: inst.tick,
+    state: projectBlackjackRoomState(inst.state).publicState,
+    broadcasts: inst.broadcasts || [],
+    gameResult: { over: false },
+    ...(actionReceipts && actionReceipts.length > 0 ? { actionReceipts } : {}),
+  });
+
+  const broadcastRoomSnapshot = (
+    inst: NonNullable<ReturnType<typeof hostedRoomInstances.get>>,
+    actionReceipts?: Array<{
+      actionId: string;
+      playerId: string;
+      expectedTick: number;
+      committedTick: number;
+      status: "applied" | "rejected" | "unresolved";
+    }>
+  ) => {
+    for (const client of [...inst.sockets]) {
+      if (client.socket.destroyed || !client.socket.writable) {
+        inst.sockets.delete(client);
+        continue;
+      }
+      const playerReceipts = actionReceipts?.filter((r) => r.playerId === client.playerId);
+      const frame = buildRoomSnapshotFrame(inst, playerReceipts);
+      client.socket.write(encodeWsTextFrame(JSON.stringify(frame)));
+    }
+  };
 
   const getOrCreateHostedRoom = async (roomId: string, playerId: string) => {
     let inst = hostedRoomInstances.get(roomId);
@@ -176,7 +320,7 @@ async function startServer() {
       const matchId = `${roomId}_m1`;
       const initRes = await royalBlackjackGameServer.init({
         matchId,
-        gameId: "royal-blackjack",
+        gameId: RANDSEED_GAME_ID,
         players: [playerId],
         matchSeq: 1,
         options: { seed: 20261031, mode: "regular", minBet: 10, maxBet: 500, maxSeats: 7 },
@@ -189,43 +333,19 @@ async function startServer() {
         state: initRes.state,
         broadcasts: initRes.broadcasts || [],
         gameResult: { over: false },
+        sockets: new Set(),
       };
       hostedRoomInstances.set(roomId, inst);
     } else if (!inst.state.players.includes(playerId)) {
       const joinRes = await royalBlackjackGameServer.onPlayerJoin(playerId, inst.state);
       inst.state = joinRes.state;
       inst.broadcasts = joinRes.broadcasts || [];
+      broadcastRoomSnapshot(inst);
     }
     return inst;
   };
 
-  /**
-   * Resolve authenticated player identity from the RandSeed Platform Gateway / HttpOnly session cookie.
-   * Per @randseed/game-sdk & @randseed/server-sdk specification:
-   * - The Player Shell establishes an HttpOnly platform session cookie before loading the iframe.
-   * - The Platform Worker / Gateway derives pairwise `playerId` and injects trusted headers or session cookies.
-   */
-  const resolveAuthenticatedPlatformPlayer = (req: express.Request): {
-    playerId: string;
-    name?: string;
-    avatar?: string;
-    isCreator?: boolean;
-  } => {
-    // 1. Check trusted RandSeed Platform Gateway headers
-    const headerPlayerId =
-      (req.headers["x-randseed-player-id"] as string) ||
-      (req.headers["x-player-id"] as string) ||
-      (req.headers["x-user-id"] as string);
-    const headerName =
-      (req.headers["x-randseed-player-name"] as string) ||
-      (req.headers["x-player-name"] as string) ||
-      (req.headers["x-user-name"] as string);
-    const headerAvatar =
-      (req.headers["x-randseed-player-avatar"] as string) ||
-      (req.headers["x-player-avatar"] as string);
-
-    // 2. Check HttpOnly cookie (e.g., randseed_session / rs_player_id)
-    const cookieHeader = req.headers.cookie || "";
+  const parseCookies = (cookieHeader = ""): Record<string, string> => {
     const cookies: Record<string, string> = {};
     cookieHeader.split(";").forEach((pair) => {
       const idx = pair.indexOf("=");
@@ -235,23 +355,57 @@ async function startServer() {
         cookies[k] = v;
       }
     });
+    return cookies;
+  };
+
+  const resolveAuthenticatedPlatformPlayer = (req: express.Request | http.IncomingMessage): {
+    playerId: string;
+    name?: string;
+    avatar?: string;
+    isCreator?: boolean;
+  } => {
+    const headers = req.headers || {};
+    const headerPlayerId =
+      (headers["x-randseed-player-id"] as string) ||
+      (headers["x-player-id"] as string) ||
+      (headers["x-user-id"] as string);
+    const headerName =
+      (headers["x-randseed-player-name"] as string) ||
+      (headers["x-player-name"] as string) ||
+      (headers["x-user-name"] as string);
+    const headerAvatar =
+      (headers["x-randseed-player-avatar"] as string) ||
+      (headers["x-player-avatar"] as string);
+
+    const cookies = parseCookies(headers.cookie || "");
     const cookiePlayerId = cookies["rs_player_id"] || cookies["randseed_player_id"] || cookies["player_id"];
     const cookieName = cookies["rs_player_name"] || cookies["player_name"];
 
-    // 3. Fallback to body / query for local development
+    const body = (req as express.Request).body;
+    const query = (req as express.Request).query;
     const fallbackId =
-      (typeof req.body?.playerId === "string" && req.body.playerId) ||
-      (typeof req.body?.userId === "string" && req.body.userId) ||
-      (typeof req.query?.playerId === "string" && req.query.playerId) ||
+      (typeof body?.playerId === "string" && body.playerId) ||
+      (typeof body?.userId === "string" && body.userId) ||
+      (typeof query?.playerId === "string" && query.playerId) ||
       "player_1";
 
     return {
       playerId: (headerPlayerId || cookiePlayerId || fallbackId).trim(),
-      name: headerName || cookieName || req.body?.name,
-      avatar: headerAvatar || req.body?.avatar,
-      isCreator: isAuthorizedCreator(req) || Boolean(req.body?.isCreator),
+      name: headerName || cookieName || body?.name,
+      avatar: headerAvatar || body?.avatar,
+      isCreator: "query" in req ? isAuthorizedCreator(req as express.Request) || Boolean(body?.isCreator) : false,
     };
   };
+
+  app.post("/api/warm", (_req, res) => {
+    res.json({
+      success: true,
+      data: {
+        scope: roomScope,
+        status: "ready",
+      },
+    });
+  });
 
   app.post("/api/match", async (req, res) => {
     try {
@@ -266,11 +420,7 @@ async function startServer() {
           roomId,
           playerId,
           ready: true,
-          scope: {
-            gameId: "royal-blackjack",
-            environment: process.env.NODE_ENV || "development",
-            versionId: ROYAL_BLACKJACK_RULES_VERSION,
-          },
+          scope: roomScope,
         },
       });
     } catch (err: any) {
@@ -280,24 +430,11 @@ async function startServer() {
 
   app.get("/api/room/:roomId/state", async (req, res) => {
     try {
-      const playerId = typeof req.query.playerId === "string" ? req.query.playerId : "player_1";
-      const inst = await getOrCreateHostedRoom(req.params.roomId, playerId);
+      const resolved = resolveAuthenticatedPlatformPlayer(req);
+      const inst = await getOrCreateHostedRoom(req.params.roomId, resolved.playerId);
       res.json({
         success: true,
-        data: {
-          type: "snapshot",
-          scope: {
-            gameId: "royal-blackjack",
-            environment: process.env.NODE_ENV || "development",
-            versionId: ROYAL_BLACKJACK_RULES_VERSION,
-          },
-          matchId: inst.matchId,
-          matchSeq: inst.matchSeq,
-          tick: inst.tick,
-          state: projectBlackjackRoomState(inst.state).publicState,
-          broadcasts: inst.broadcasts,
-          gameResult: inst.gameResult,
-        },
+        data: buildRoomSnapshotFrame(inst),
       });
     } catch (err: any) {
       res.status(400).json({ success: false, code: "STATE_FAILED", error: err?.message });
@@ -306,26 +443,74 @@ async function startServer() {
 
   app.post("/api/room/:roomId/input", async (req, res) => {
     try {
-      const playerId = typeof req.body?.playerId === "string" ? req.body.playerId : "player_1";
+      const resolved = resolveAuthenticatedPlatformPlayer(req);
+      const playerId = resolved.playerId;
       const inst = await getOrCreateHostedRoom(req.params.roomId, playerId);
+      const expectedTick = typeof req.body?.expectedTick === "number" ? req.body.expectedTick : inst.tick;
+      const actionId = typeof req.body?.actionId === "string" ? req.body.actionId : undefined;
       inst.tick += 1;
       const tickRes = await royalBlackjackGameServer.tick(
         {
           tick: inst.tick,
           elapsedSeconds: inst.tick / 5,
-          inputs: [{ playerId, data: req.body?.data }],
+          inputs: [{ playerId, data: req.body?.data, ...(actionId ? { actionId } : {}) }],
         },
         inst.state
       );
       inst.state = tickRes.state;
       inst.broadcasts = tickRes.broadcasts || [];
       inst.gameResult = await royalBlackjackGameServer.isGameOver(inst.state);
+
+      const receipts =
+        actionId && tickRes.actionResults
+          ? tickRes.actionResults.map((r) => ({
+              actionId: r.actionId,
+              playerId,
+              expectedTick,
+              committedTick: inst.tick,
+              status: r.status,
+            }))
+          : undefined;
+      broadcastRoomSnapshot(inst, receipts);
+
       res.json({
         success: true,
         data: { applied: true },
       });
     } catch (err: any) {
       res.status(400).json({ success: false, code: "INPUT_FAILED", error: err?.message });
+    }
+  });
+
+  app.post("/api/room/:roomId/ready", async (req, res) => {
+    try {
+      const resolved = resolveAuthenticatedPlatformPlayer(req);
+      const inst = await getOrCreateHostedRoom(req.params.roomId, resolved.playerId);
+      inst.tick += 1;
+      const tickRes = await royalBlackjackGameServer.tick(
+        {
+          tick: inst.tick,
+          elapsedSeconds: inst.tick / 5,
+          inputs: [{ playerId: resolved.playerId, data: { action: "ready_next" } }],
+        },
+        inst.state
+      );
+      inst.state = tickRes.state;
+      inst.broadcasts = tickRes.broadcasts || [];
+      inst.gameResult = { over: false };
+      broadcastRoomSnapshot(inst);
+
+      res.json({
+        success: true,
+        data: {
+          ready: true,
+          readyCount: 1,
+          totalCount: 1,
+          allReady: true,
+        },
+      });
+    } catch (err: any) {
+      res.status(400).json({ success: false, code: "READY_FAILED", error: err?.message });
     }
   });
 
@@ -375,6 +560,10 @@ async function startServer() {
         resolvedName,
         isCreatorAuth,
         resolvedAvatar
+      );
+      res.setHeader(
+        "Set-Cookie",
+        `rs_player_id=${encodeURIComponent(resolvedId)}; Path=/; SameSite=Lax`
       );
       reconcileSystemTables();
       res.json({
@@ -701,8 +890,133 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Royal BlackJack Server running on http://localhost:${PORT}`);
+  const httpServer = http.createServer(app);
+
+  // Attach WebSocket upgrade handler for RoomClient (/ws/room/:roomId)
+  const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+  httpServer.on("upgrade", async (req, socket, head) => {
+    try {
+      const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+      const match = url.pathname.match(/^\/ws\/room\/([^/]+)$/);
+      if (!match) return;
+
+      const key = req.headers["sec-websocket-key"];
+      if (typeof key !== "string" || !key.trim()) {
+        socket.destroy();
+        return;
+      }
+
+      const roomId = decodeURIComponent(match[1]);
+      const resolved = resolveAuthenticatedPlatformPlayer(req);
+      const playerId = resolved.playerId;
+      const inst = await getOrCreateHostedRoom(roomId, playerId);
+
+      const accept = crypto.createHash("sha1").update(key.trim() + WS_GUID).digest("base64");
+      socket.write(
+        [
+          "HTTP/1.1 101 Switching Protocols",
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          `Sec-WebSocket-Accept: ${accept}`,
+          "\r\n",
+        ].join("\r\n")
+      );
+
+      const clientEntry = { socket, playerId };
+      inst.sockets.add(clientEntry);
+
+      // Send initial authoritative RoomSnapshot immediately on connect
+      socket.write(encodeWsTextFrame(JSON.stringify(buildRoomSnapshotFrame(inst))));
+
+      let buffer = head && head.length > 0 ? Buffer.from(head) : Buffer.alloc(0);
+
+      const processBuffer = async () => {
+        while (buffer.length >= 2) {
+          const firstByte = buffer[0];
+          const secondByte = buffer[1];
+          const opcode = firstByte & 0x0f;
+          const isMasked = (secondByte & 0x80) !== 0;
+          let payloadLen = secondByte & 0x7f;
+          let offset = 2;
+
+          if (payloadLen === 126) {
+            if (buffer.length < 4) return;
+            payloadLen = buffer.readUInt16BE(2);
+            offset = 4;
+          } else if (payloadLen === 127) {
+            if (buffer.length < 10) return;
+            payloadLen = Number(buffer.readBigUInt64BE(2));
+            offset = 10;
+          }
+
+          const maskLen = isMasked ? 4 : 0;
+          if (buffer.length < offset + maskLen + payloadLen) return;
+
+          const mask = isMasked ? buffer.subarray(offset, offset + 4) : null;
+          offset += maskLen;
+          const payload = Buffer.from(buffer.subarray(offset, offset + payloadLen));
+          buffer = buffer.subarray(offset + payloadLen);
+
+          if (mask) {
+            for (let i = 0; i < payload.length; i++) {
+              payload[i] ^= mask[i & 3];
+            }
+          }
+
+          if (opcode === 0x08) {
+            inst.sockets.delete(clientEntry);
+            socket.end();
+            return;
+          }
+
+          if (opcode === 0x01) {
+            try {
+              const msg = JSON.parse(payload.toString("utf8"));
+              if (msg?.type === "input" && msg.data !== undefined) {
+                inst.tick += 1;
+                const tickRes = await royalBlackjackGameServer.tick(
+                  {
+                    tick: inst.tick,
+                    elapsedSeconds: inst.tick / 5,
+                    inputs: [{ playerId, data: msg.data }],
+                  },
+                  inst.state
+                );
+                inst.state = tickRes.state;
+                inst.broadcasts = tickRes.broadcasts || [];
+                inst.gameResult = await royalBlackjackGameServer.isGameOver(inst.state);
+                if (msg.ack !== false && !socket.destroyed && socket.writable) {
+                  socket.write(encodeWsTextFrame(JSON.stringify({ type: "inputAccepted", applied: true })));
+                }
+                broadcastRoomSnapshot(inst);
+              } else if (msg?.type === "ping") {
+                socket.write(encodeWsTextFrame(JSON.stringify({ type: "pong" })));
+              }
+            } catch {
+              // Ignore malformed client WS frame
+            }
+          }
+        }
+      };
+
+      socket.on("data", (chunk: Buffer) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        void processBuffer();
+      });
+
+      socket.on("close", () => {
+        inst.sockets.delete(clientEntry);
+      });
+      socket.on("error", () => {
+        inst.sockets.delete(clientEntry);
+      });
+    } catch {
+      socket.destroy();
+    }
+  });
+
+  httpServer.listen(PORT, "0.0.0.0", () => {
+    console.log(`Royal BlackJack Server (gameId: ${RANDSEED_GAME_ID}) running on http://localhost:${PORT}`);
   });
 }
 

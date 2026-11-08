@@ -130,12 +130,19 @@ export function projectBlackjackRoomState(state: RoyalBlackjackRoomState): State
   const publicSeats = state.seats.map((s: RoomSeatState) => ({
     seatIndex: s.seatIndex,
     playerId: s.playerId,
+    name: s.playerId ? state.playerNames?.[s.playerId] || s.playerId : undefined,
+    avatar: s.playerId ? state.playerAvatars?.[s.playerId] : undefined,
     isReady: s.isReady,
+    isSplitHand: s.isSplitHand,
+    originalSeatIndex: s.originalSeatIndex,
     hand: s.hand
       ? {
           cards: s.hand.cards,
           bet: hideSecretBets ? 0 : s.hand.bet,
           insuranceBet: s.hand.insuranceBet,
+          sideBets: hideSecretBets ? { pair: 0, twentyOnePlusThree: 0 } : s.hand.sideBets,
+          sideBetPairWon: s.hand.sideBetPairWon,
+          sideBetPlus3Won: s.hand.sideBetPlus3Won,
           status: s.hand.status,
           score: s.hand.score,
         }
@@ -147,8 +154,10 @@ export function projectBlackjackRoomState(state: RoyalBlackjackRoomState): State
     matchSeq: state.matchSeq,
     mode: state.mode,
     winningRule: state.winningRule,
+    order: state.order,
     minBet: state.minBet,
     maxBet: state.maxBet,
+    actionTimeLimitSec: state.actionTimeLimitSec,
     phase: state.phase,
     currentTurnSeatIndex: state.currentTurnSeatIndex,
     turnOrder: state.turnOrder,
@@ -158,6 +167,13 @@ export function projectBlackjackRoomState(state: RoyalBlackjackRoomState): State
     dealerHand: sanitizedDealer,
     seats: publicSeats,
     balances: state.balances,
+    walletCoins: state.walletCoins,
+    prizePoolCoins: state.prizePoolCoins,
+    tournament: state.tournament || null,
+    tournamentHistory: state.tournamentHistory || [],
+    lastRoundSummary: state.lastRoundSummary || null,
+    playerNames: state.playerNames || {},
+    playerAvatars: state.playerAvatars || {},
   };
 
   const privateStates: Record<string, unknown> = {};

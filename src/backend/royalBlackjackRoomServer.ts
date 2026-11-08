@@ -3,6 +3,13 @@ import {
   PlatformClient,
   createAgentObservation,
   type AgentObservation,
+  type AgentGameCapabilities,
+  type AgentPlayerContract,
+  type AgentPlayerViewProjection,
+  type AgentPlayerViewRequest,
+  type GameActionResult,
+  type GameResultDefinition,
+  type GameResultEvent,
   type GameServer,
   type GameManifest,
   type MatchConfig,
@@ -13,13 +20,14 @@ import {
   type GameResult,
   type CommandResult,
   type GameCommand,
-} from "@randseed/server-sdk";
+} from "./serverSdk/index";
 import {
   CardSuit,
   CardValue,
   PlayingCard,
   HandStatus,
   SideBets,
+  SeatResult,
   TournamentSettings,
   TournamentRecord,
 } from "../store/gameStore";
@@ -103,19 +111,28 @@ export function evaluateSideBets(
 }
 
 /**
- * 玩家操作输入类型（由前端 RoomClient.sendInput 发送）
+ * 玩家操作输入类型（由前端 RoomClient.sendInput / sendSocketInput / sendAction 发送）
  */
 export type BlackjackPlayerInput =
-  | { action: "join_seat"; seatIndex: number }
+  | { action: "join_seat"; seatIndex: number; playerName?: string; playerAvatar?: string }
   | { action: "leave_seat"; seatIndex: number }
-  | { action: "place_bet"; seatIndex: number; amount: number; sideBets?: SideBets }
+  | {
+      action: "place_bet";
+      seatIndex: number;
+      amount: number;
+      sideBets?: SideBets;
+      pairBet?: number;
+      plus3Bet?: number;
+    }
+  | { action: "start_game" }
   | { action: "hit"; seatIndex: number }
   | { action: "stand"; seatIndex: number }
   | { action: "double_down"; seatIndex: number }
   | { action: "split"; seatIndex: number }
   | { action: "buy_insurance"; seatIndex: number }
   | { action: "claim_refill" }
-  | { action: "ready_next" };
+  | { action: "ready_next" }
+  | { action: "sync_profile"; name?: string; avatar?: string };
 
 /**
  * 平台或房主可信管理指令（POST /onCommand）
@@ -145,9 +162,17 @@ export interface RoomSeatState {
   originalSeatIndex?: number;
 }
 
+export interface RoomRoundSummary {
+  roundId: string;
+  timestamp: number;
+  winnings: Record<string, number>;
+  seatResults: SeatResult[];
+  dealerScore: number;
+}
+
 /**
  * 跨局结转状态 (Carryover)：
- * 常驻牌桌在局与局之间保留玩家筹码、Gcoin钱包、锦标赛进度以及当前 6 副牌靴进度（直至达到 75% 切牌卡才重新洗牌）
+ * 常驻牌桌在局与局之间保留玩家筹码、Gcoin钱包、在座座位、锦标赛进度以及当前 6 副牌靴进度（直至达到 75% 切牌卡才重新洗牌）
  */
 export interface BlackjackCarryover {
   balances: Record<string, number>;
@@ -158,6 +183,10 @@ export interface BlackjackCarryover {
   deck: PlayingCard[];
   discardCount: number;
   prngCalls: number;
+  seatedPlayers?: Array<string | null>;
+  playerNames?: Record<string, string>;
+  playerAvatars?: Record<string, string>;
+  lastRoundSummary?: RoomRoundSummary | null;
 }
 
 /**
@@ -176,6 +205,8 @@ export interface RoyalBlackjackRoomState {
   actionTimeLimitSec: number;
   phase: "betting" | "playing" | "dealer_turn" | "settled";
   players: string[];
+  playerNames?: Record<string, string>;
+  playerAvatars?: Record<string, string>;
   balances: Record<string, number>;
   walletCoins: Record<string, number>;
   prizePoolCoins: number;
@@ -196,6 +227,7 @@ export interface RoyalBlackjackRoomState {
   elapsedSeconds: number;
   roundsPlayed: number;
   lastSettlementUnit: SettlementUnitEnvelope | null;
+  lastRoundSummary?: RoomRoundSummary | null;
   forceClose: boolean;
 }
 
@@ -548,6 +580,9 @@ function runDealerAndSettle(state: RoyalBlackjackRoomState, broadcasts: unknown[
     }
   >();
 
+  const winnings: Record<string, number> = {};
+  const seatResults: SeatResult[] = [];
+
   for (const seat of state.seats) {
     if (!seat.playerId || !seat.hand) continue;
     const h = seat.hand;
@@ -566,13 +601,16 @@ function runDealerAndSettle(state: RoyalBlackjackRoomState, broadcasts: unknown[
 
     const sideWager = (h.sideBets?.pair || 0) + (h.sideBets?.twentyOnePlusThree || 0);
     const totalWager = h.bet + sideWager + (h.insuranceBet || 0);
-    let totalPayout = (h.sideBetPairWon || 0) + (h.sideBetPlus3Won || 0);
+    const sideBetWin = (h.sideBetPairWon || 0) + (h.sideBetPlus3Won || 0);
+    let totalPayout = sideBetWin;
+    let insuranceWin = 0;
+    let mainHandWin = 0;
 
     // 保险结算：庄家 2 张牌 21 点时，保险按 2:1 赔付（返还本金 + 2倍赔付 = 3倍 insuranceBet）
     if (h.insuranceBet > 0 && dealerBlackjack) {
-      const insWin = h.insuranceBet * (gameRules.insurancePayout + 1);
-      state.balances[pid] = (state.balances[pid] || 0) + insWin;
-      totalPayout += insWin;
+      insuranceWin = h.insuranceBet * (gameRules.insurancePayout + 1);
+      state.balances[pid] = (state.balances[pid] || 0) + insuranceWin;
+      totalPayout += insuranceWin;
     }
 
     if (h.status === "busted") {
@@ -585,9 +623,9 @@ function runDealerAndSettle(state: RoyalBlackjackRoomState, broadcasts: unknown[
 
       if (playerBlackjack && !dealerBlackjack) {
         h.status = "blackjack";
-        const bjWin = h.bet * (gameRules.blackjackPayout + 1); // 2.5x
-        state.balances[pid] = (state.balances[pid] || 0) + bjWin;
-        totalPayout += bjWin;
+        mainHandWin = h.bet * (gameRules.blackjackPayout + 1); // 2.5x
+        state.balances[pid] = (state.balances[pid] || 0) + mainHandWin;
+        totalPayout += mainHandWin;
         pStat.handsWon += 1;
         pStat.blackjackCount += 1;
       } else if (dealerBlackjack && !playerBlackjack) {
@@ -595,9 +633,9 @@ function runDealerAndSettle(state: RoyalBlackjackRoomState, broadcasts: unknown[
         pStat.handsLost += 1;
       } else if (dealerBusted || h.score > dScore) {
         h.status = "won";
-        const stdWin = h.bet * 2; // 2x (1:1 payout)
-        state.balances[pid] = (state.balances[pid] || 0) + stdWin;
-        totalPayout += stdWin;
+        mainHandWin = h.bet * 2; // 2x (1:1 payout)
+        state.balances[pid] = (state.balances[pid] || 0) + mainHandWin;
+        totalPayout += mainHandWin;
         pStat.handsWon += 1;
       } else if (h.score === dScore) {
         if (state.winningRule === "dealer_wins_ties" && !playerBlackjack) {
@@ -605,8 +643,9 @@ function runDealerAndSettle(state: RoyalBlackjackRoomState, broadcasts: unknown[
           pStat.handsLost += 1;
         } else {
           h.status = "push";
-          state.balances[pid] = (state.balances[pid] || 0) + h.bet;
-          totalPayout += h.bet;
+          mainHandWin = h.bet;
+          state.balances[pid] = (state.balances[pid] || 0) + mainHandWin;
+          totalPayout += mainHandWin;
           pStat.handsPushed += 1;
         }
       } else {
@@ -619,22 +658,43 @@ function runDealerAndSettle(state: RoyalBlackjackRoomState, broadcasts: unknown[
       state.walletCoins[pid] = state.balances[pid];
     }
 
+    const netDelta = totalPayout - totalWager;
+    winnings[pid] = (winnings[pid] || 0) + totalPayout;
+    seatResults.push({
+      seatIndex: seat.originalSeatIndex ?? seat.seatIndex,
+      userId: pid,
+      bet: h.bet,
+      sideBet: sideWager,
+      sideBetWin,
+      insuranceBet: h.insuranceBet || 0,
+      insuranceWin,
+      isSplit: Boolean(seat.isSplitHand || seat.originalSeatIndex !== undefined),
+      win: totalPayout,
+      net: netDelta,
+      action: h.status,
+      score: h.score,
+    });
+
     pStat.handsPlayed += 1;
     pStat.grossWager += totalWager;
     pStat.grossPayout += totalPayout;
-    pStat.netCoinsDelta += totalPayout - totalWager;
+    pStat.netCoinsDelta += netDelta;
     perPlayerStats.set(pid, pStat);
   }
 
   // 清理分牌临时座位并恢复主座位状态
   state.seats = state.seats
     .filter((s) => !s.isSplitHand)
-    .map((s, idx) => ({
-      ...s,
-      seatIndex: idx,
-      originalSeatIndex: undefined,
-      isReady: false,
-    }));
+    .map((s, idx) => {
+      const nextSeat: RoomSeatState = {
+        ...s,
+        seatIndex: idx,
+        isReady: false,
+      };
+      delete nextSeat.originalSeatIndex;
+      delete nextSeat.isSplitHand;
+      return nextSeat;
+    });
   state.turnOrder = state.seats.map((_, i) => state.seats.length - 1 - i);
 
   state.roundsPlayed += 1;
@@ -741,6 +801,13 @@ function runDealerAndSettle(state: RoyalBlackjackRoomState, broadcasts: unknown[
   state.currentTurnSeatIndex = -1;
   state.phaseStartElapsedSec = state.elapsedSeconds;
   state.lastSettlementUnit = buildSettlementUnit(state, perPlayerStats);
+  state.lastRoundSummary = {
+    roundId: state.lastSettlementUnit.settlementUnitId,
+    timestamp: Math.max(1000, Math.round(state.elapsedSeconds * 1000)),
+    winnings,
+    seatResults,
+    dealerScore: dScore,
+  };
 
   broadcasts.push({
     type: "round:settled",
@@ -748,7 +815,72 @@ function runDealerAndSettle(state: RoyalBlackjackRoomState, broadcasts: unknown[
     balances: state.balances,
     walletCoins: state.walletCoins,
     settlementUnit: state.lastSettlementUnit,
+    lastRoundSummary: state.lastRoundSummary,
   });
+}
+
+function sanitizeJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function prepareNextBettingPhaseIfSettled(state: RoyalBlackjackRoomState): void {
+  if (state.phase !== "settled") return;
+  state.phase = "betting";
+  state.dealerHand = null;
+  state.currentTurnSeatIndex = -1;
+  state.phaseStartElapsedSec = state.elapsedSeconds;
+  for (const seat of state.seats) {
+    seat.isReady = false;
+    seat.hand = null;
+    delete seat.isSplitHand;
+    delete seat.originalSeatIndex;
+  }
+}
+
+export const ROYAL_BLACKJACK_RESULT_DEFINITION: GameResultDefinition = {
+  version: "1.0.0",
+  unitTypes: ["hand"],
+  metrics: [
+    { id: "hands_played", scope: "participant", unit: "count", unitTypes: ["hand"], aggregation: "sum" },
+    { id: "hands_won", scope: "participant", unit: "count", unitTypes: ["hand"], aggregation: "sum" },
+    { id: "hands_lost", scope: "participant", unit: "count", unitTypes: ["hand"], aggregation: "sum" },
+    { id: "hands_pushed", scope: "participant", unit: "count", unitTypes: ["hand"], aggregation: "sum" },
+    { id: "blackjack_count", scope: "participant", unit: "count", unitTypes: ["hand"], aggregation: "sum" },
+    { id: "net_coins_delta", scope: "participant", unit: "coins", unitTypes: ["hand"], aggregation: "sum" },
+    { id: "ending_balance", scope: "participant", unit: "coins", unitTypes: ["hand"], aggregation: "max" },
+  ],
+};
+
+function buildResultUnitEventsFromSettlement(state: RoyalBlackjackRoomState): GameResultEvent[] {
+  const unit = state.lastSettlementUnit;
+  if (!unit || !Array.isArray(unit.participants) || unit.participants.length === 0) {
+    return [];
+  }
+  return [
+    {
+      schemaVersion: 1,
+      eventId: `evt_${unit.settlementUnitId}`,
+      matchId: state.matchId,
+      unitId: unit.settlementUnitId,
+      unitType: "hand",
+      rulesVersion: ROYAL_BLACKJACK_RULES_VERSION,
+      definitionVersion: ROYAL_BLACKJACK_RESULT_DEFINITION.version,
+      occurredAt: Math.max(0, Math.round(state.elapsedSeconds * 1000)),
+      participants: unit.participants.map((p) => ({
+        playerId: p.playerId,
+        outcome: p.outcome === "win" || p.outcome === "loss" || p.outcome === "push" ? p.outcome : "push",
+        metrics: {
+          hands_played: Number(p.metrics.hands_played) || 0,
+          hands_won: Number(p.metrics.hands_won) || 0,
+          hands_lost: Number(p.metrics.hands_lost) || 0,
+          hands_pushed: Number(p.metrics.hands_pushed) || 0,
+          blackjack_count: Number(p.metrics.blackjack_count) || 0,
+          net_coins_delta: Number(p.metrics.net_coins_delta) || 0,
+          ending_balance: Number(p.metrics.ending_balance) || 0,
+        },
+      })),
+    },
+  ];
 }
 
 function advanceTurnOrSettle(state: RoyalBlackjackRoomState, broadcasts: unknown[]): void {
@@ -762,13 +894,13 @@ function advanceTurnOrSettle(state: RoyalBlackjackRoomState, broadcasts: unknown
 }
 
 /**
- * 服务端反向平台客户端 (@randseed/server-sdk PlatformClient)
+ * 服务端反向平台客户端 (RandSeed Server SDK PlatformClient)
  * 用于在 Room Durable Object 容器环境中向 http://platform.players、http://platform.db、http://platform.kv 发起反向调用
  */
 export const randseedPlatformClient = new PlatformClient();
 
 /**
- * 构建符合 @randseed/server-sdk 规范的单玩家受控观测视图 (createAgentObservation)
+ * 构建符合 RandSeed Server SDK 规范的单玩家受控观测视图 (createAgentObservation)
  * 自动剥离未翻开暗牌、完整牌靴与他人的私有余额/暗注
  */
 export function buildBlackjackAgentObservation(
@@ -804,13 +936,67 @@ export function buildBlackjackAgentObservation(
 export const projectAgentPlayerView = buildBlackjackAgentObservation;
 
 /**
- * Royal BlackJack 标准 RandSeed 房间服务端实现（Node.js / TypeScript，严格遵循 @randseed/server-sdk 契约）
+ * Royal BlackJack 标准 RandSeed 房间服务端实现（Node.js / TypeScript，严格遵循 RandSeed Server SDK 契约）
  */
 export const royalBlackjackGameServer: GameServer<
   RoyalBlackjackRoomState,
   BlackjackPlayerInput,
   BlackjackHostCommand
 > = {
+  durability: "checkpoint",
+
+  agentCapabilities(): AgentGameCapabilities {
+    return {
+      observationProtocolVersion: 1,
+      actionProtocolVersion: 1,
+      modes: ["copilot", "autoplay", "follow"],
+      maxDecisionHz: 2,
+      backgroundAutoplay: true,
+    };
+  },
+
+  agentPlayerContract(): AgentPlayerContract {
+    return {
+      playerViewProtocolVersion: 1,
+      actionProtocolVersion: 1,
+      playerViewSchemaId: "royal-blackjack.player-view.v1",
+      actionSchemaId: "royal-blackjack.action.v1",
+      modes: ["follow", "autoplay"],
+      maxDecisionHz: 2,
+      independentSeats: true,
+      backgroundAutoplay: true,
+    };
+  },
+
+  projectAgentPlayerView(request: AgentPlayerViewRequest): AgentPlayerViewProjection {
+    const rawState = request.state as unknown as RoyalBlackjackRoomState;
+    const projection = projectBlackjackRoomState(rawState);
+    const playerId = request.context.playerId;
+    const priv = (projection.privateStates[playerId] as any) || {
+      playerId,
+      balance: rawState.balances?.[playerId] || 0,
+      walletCoins: rawState.walletCoins?.[playerId] || 0,
+      mySeats: [],
+    };
+    const isMyTurn =
+      rawState.phase === "playing" &&
+      rawState.currentTurnSeatIndex >= 0 &&
+      rawState.seats?.[rawState.currentTurnSeatIndex]?.playerId === playerId;
+    const canBet =
+      (rawState.phase === "betting" || rawState.phase === "settled") &&
+      Boolean(rawState.seats?.some((s) => s.playerId === playerId && !s.isReady));
+
+    return sanitizeJson({
+      publicState: projection.publicState as any,
+      privateState: priv,
+      visibleEvents: request.committedEvents.slice(-10),
+      decision: {
+        canAct: Boolean(isMyTurn || canBet),
+        deadlineAt: null,
+      },
+    });
+  },
+
   manifest(): GameManifest {
     const envMax = Number(process.env.RANDSEED_MAX_PLAYERS || process.env.MAX_PLAYERS);
     const maxPlayers = envMax && envMax >= 1 ? Math.min(7, envMax) : 7;
@@ -821,6 +1007,7 @@ export const royalBlackjackGameServer: GameServer<
       maxPlayers,
       tickRateHz: 5,
       persistentTable: true,
+      resultDefinition: ROYAL_BLACKJACK_RESULT_DEFINITION,
       optionsSchema: {
         type: "object",
         properties: {
@@ -839,21 +1026,24 @@ export const royalBlackjackGameServer: GameServer<
   },
 
   init(config: MatchConfig): InitResult<RoyalBlackjackRoomState> {
-    const seed = Number(config.options.seed) || 1;
-    const maxSeats = Math.min(7, Math.max(1, Number(config.options.maxSeats) || 5));
-    const mode = config.options.mode === "tournament" ? "tournament" : "regular";
-    const minBet = Math.max(1, Number(config.options.minBet) || 10);
-    const maxBet = Math.max(minBet, Number(config.options.maxBet) || 500);
-    const actionTimeLimitSec = Math.max(5, Number(config.options.actionTimeLimitSec) || 20);
+    const opts = config.options || {};
+    const seed = Number(opts.seed) || 1;
+    const maxSeats = Math.min(7, Math.max(1, Number(opts.maxSeats) || 7));
+    const mode = opts.mode === "tournament" ? "tournament" : "regular";
+    const minBet = Math.max(1, Number(opts.minBet) || 10);
+    const maxBet = Math.max(minBet, Number(opts.maxBet) || 500);
+    const actionTimeLimitSec = Math.max(5, Number(opts.actionTimeLimitSec) || 20);
     const winningRule =
-      config.options.winningRule === "dealer_wins_ties" ? "dealer_wins_ties" : "standard";
-    const order = config.options.order === "random" ? "random" : "sequential";
+      opts.winningRule === "dealer_wins_ties" ? "dealer_wins_ties" : "standard";
+    const order = opts.order === "random" ? "random" : "sequential";
 
-    const carryover = (config.carryover as BlackjackCarryover | null) || null;
-    const tournamentOpts = (config.options.tournament as TournamentSettings | undefined) || undefined;
+    const carryover = (config.carryover as unknown as BlackjackCarryover | null) || null;
+    const tournamentOpts = (opts.tournament as TournamentSettings | undefined) || undefined;
 
     const balances: Record<string, number> = { ...(carryover?.balances || {}) };
     const walletCoins: Record<string, number> = { ...(carryover?.walletCoins || {}) };
+    const playerNames: Record<string, string> = { ...(carryover?.playerNames || {}) };
+    const playerAvatars: Record<string, string> = { ...(carryover?.playerAvatars || {}) };
 
     for (const pid of config.players) {
       if (typeof walletCoins[pid] !== "number" || walletCoins[pid] <= 0) {
@@ -861,6 +1051,9 @@ export const royalBlackjackGameServer: GameServer<
       }
       if (mode === "regular" && (typeof balances[pid] !== "number" || balances[pid] <= 0)) {
         balances[pid] = walletCoins[pid];
+      }
+      if (!playerNames[pid]) {
+        playerNames[pid] = pid;
       }
     }
 
@@ -882,12 +1075,20 @@ export const royalBlackjackGameServer: GameServer<
       prngCalls = fresh.prngCalls;
     }
 
-    const seats: RoomSeatState[] = Array.from({ length: maxSeats }, (_, idx) => ({
-      seatIndex: idx,
-      playerId: mode === "regular" ? config.players[idx] || null : null,
-      isReady: false,
-      hand: null,
-    }));
+    const seats: RoomSeatState[] = Array.from({ length: maxSeats }, (_, idx) => {
+      const carriedPlayer =
+        carryover?.seatedPlayers && idx < carryover.seatedPlayers.length
+          ? carryover.seatedPlayers[idx]
+          : mode === "regular"
+          ? config.players[idx] || null
+          : null;
+      return {
+        seatIndex: idx,
+        playerId: carriedPlayer,
+        isReady: false,
+        hand: null,
+      };
+    });
 
     const state: RoyalBlackjackRoomState = {
       matchId: config.matchId,
@@ -902,10 +1103,12 @@ export const royalBlackjackGameServer: GameServer<
       actionTimeLimitSec,
       phase: "betting",
       players: [...config.players],
+      playerNames,
+      playerAvatars,
       balances,
       walletCoins,
       prizePoolCoins: carryover?.prizePoolCoins || 0,
-      tournament: tournamentOpts,
+      ...(tournamentOpts ? { tournament: tournamentOpts } : {}),
       tournamentHistory: carryover?.tournamentHistory || [],
       seats,
       dealerHand: null,
@@ -917,10 +1120,11 @@ export const royalBlackjackGameServer: GameServer<
       elapsedSeconds: 0,
       roundsPlayed: carryover?.roundsPlayed || 0,
       lastSettlementUnit: null,
+      lastRoundSummary: carryover?.lastRoundSummary || null,
       forceClose: false,
     };
 
-    return {
+    return sanitizeJson({
       state,
       broadcasts: [
         {
@@ -930,7 +1134,7 @@ export const royalBlackjackGameServer: GameServer<
           projection: projectBlackjackRoomState(state).publicState,
         },
       ],
-    };
+    });
   },
 
   tick(
@@ -939,23 +1143,50 @@ export const royalBlackjackGameServer: GameServer<
   ): TickResult<RoyalBlackjackRoomState> {
     const state: RoyalBlackjackRoomState = JSON.parse(JSON.stringify(prevState));
     state.elapsedSeconds = ctx.elapsedSeconds;
+    if (!state.playerNames) state.playerNames = {};
+    if (!state.playerAvatars) state.playerAvatars = {};
     const broadcasts: unknown[] = [];
+    const actionResults: GameActionResult[] = [];
+    const prevRoundsPlayed = state.roundsPlayed;
 
     if (ctx.commands && ctx.commands.length > 0) {
       for (const cmd of ctx.commands) {
         if (cmd.data?.action === "close_table") {
           state.forceClose = true;
-        } else if (cmd.data?.action === "force_deal" && state.phase === "betting") {
-          dealInitialCards(state, broadcasts);
+        } else if (cmd.data?.action === "force_deal") {
+          prepareNextBettingPhaseIfSettled(state);
+          if (state.phase === "betting") {
+            dealInitialCards(state, broadcasts);
+          }
         }
       }
     }
 
     for (const input of ctx.inputs) {
       const { playerId, data } = input;
+      if (typeof input.actionId === "string" && input.actionId.trim().length > 0) {
+        actionResults.push({
+          actionId: input.actionId,
+          status: "applied",
+        });
+      }
       if (!data || typeof data !== "object") continue;
 
-      if (data.action === "claim_refill") {
+      if (!state.players.includes(playerId)) {
+        state.players.push(playerId);
+      }
+
+      if (data.action === "sync_profile") {
+        if (typeof data.name === "string" && data.name.trim()) {
+          state.playerNames[playerId] = data.name.trim();
+        }
+        if (typeof data.avatar === "string" && data.avatar.trim()) {
+          state.playerAvatars[playerId] = data.avatar.trim();
+        }
+      } else if (data.action === "ready_next") {
+        prepareNextBettingPhaseIfSettled(state);
+      } else if (data.action === "claim_refill") {
+        prepareNextBettingPhaseIfSettled(state);
         const currentCoins = state.walletCoins[playerId] ?? state.balances[playerId] ?? 0;
         if (currentCoins < state.minBet && state.phase === "betting") {
           state.walletCoins[playerId] = DEFAULT_GAME_COINS;
@@ -967,10 +1198,16 @@ export const royalBlackjackGameServer: GameServer<
           });
         }
       } else if (data.action === "join_seat") {
+        prepareNextBettingPhaseIfSettled(state);
+        if (typeof data.playerName === "string" && data.playerName.trim()) {
+          state.playerNames[playerId] = data.playerName.trim();
+        }
+        if (typeof data.playerAvatar === "string" && data.playerAvatar.trim()) {
+          state.playerAvatars[playerId] = data.playerAvatar.trim();
+        }
         const seat = state.seats[data.seatIndex];
         if (seat && !seat.playerId && state.phase === "betting") {
           if (state.mode === "tournament" && state.tournament) {
-            // In tournament mode, each player purchases a ticket with Game Coins and receives an equal locked Tournament Allowance
             if (state.seats.some((s) => s.playerId === playerId)) continue;
             const ticketPriceCoins = Math.max(0, state.tournament.ticketPrice || 100);
             const lockedAllowance = Math.max(100, state.tournament.startingChips || DEFAULT_GAME_COINS);
@@ -990,22 +1227,45 @@ export const royalBlackjackGameServer: GameServer<
           }
         }
       } else if (data.action === "leave_seat") {
-        // For tournament mode, players cannot leave their seat once seated
+        prepareNextBettingPhaseIfSettled(state);
         if (state.mode === "tournament") continue;
         const seat = state.seats[data.seatIndex];
         if (seat && seat.playerId === playerId && state.phase === "betting") {
+          if (seat.hand && seat.hand.bet > 0) {
+            const refund =
+              seat.hand.bet +
+              (seat.hand.sideBets?.pair || 0) +
+              (seat.hand.sideBets?.twentyOnePlusThree || 0);
+            state.balances[playerId] = (state.balances[playerId] || 0) + refund;
+            if (state.mode === "regular") {
+              state.walletCoins[playerId] = state.balances[playerId];
+            }
+          }
           seat.playerId = null;
           seat.isReady = false;
           seat.hand = null;
         }
-      } else if (data.action === "place_bet" && state.phase === "betting") {
+      } else if (data.action === "place_bet") {
+        prepareNextBettingPhaseIfSettled(state);
+        if (state.phase !== "betting") continue;
         const seat = state.seats[data.seatIndex];
         if (!seat || seat.playerId !== playerId) continue;
 
+        // If seat already placed a bet in this betting phase, refund previous bet before replacing
+        if (seat.hand && seat.hand.bet > 0) {
+          const prevCost =
+            seat.hand.bet +
+            (seat.hand.sideBets?.pair || 0) +
+            (seat.hand.sideBets?.twentyOnePlusThree || 0);
+          state.balances[playerId] = (state.balances[playerId] || 0) + prevCost;
+        }
+
         const betAmt = Math.max(state.minBet, Math.min(state.maxBet, Number(data.amount) || state.minBet));
+        const pairAmt = Math.max(0, Number(data.sideBets?.pair ?? data.pairBet) || 0);
+        const plus3Amt = Math.max(0, Number(data.sideBets?.twentyOnePlusThree ?? data.plus3Bet) || 0);
         const sideBets: SideBets = {
-          pair: Math.max(0, Number(data.sideBets?.pair) || 0),
-          twentyOnePlusThree: Math.max(0, Number(data.sideBets?.twentyOnePlusThree) || 0),
+          pair: pairAmt,
+          twentyOnePlusThree: plus3Amt,
         };
         const totalCost = betAmt + sideBets.pair + sideBets.twentyOnePlusThree;
         const playerBal = state.balances[playerId] || 0;
@@ -1033,6 +1293,22 @@ export const royalBlackjackGameServer: GameServer<
             state.mode === "tournament" ? Math.max(2, state.tournament?.minSeats || 2) : 1;
 
           if (seatedCount >= minSeatsToStart && seatedCount === readyCount) {
+            dealInitialCards(state, broadcasts);
+          }
+        }
+      } else if (data.action === "start_game") {
+        prepareNextBettingPhaseIfSettled(state);
+        if (state.phase === "betting") {
+          const readyCount = state.seats.filter((s) => s.playerId !== null && s.isReady).length;
+          if (readyCount > 0) {
+            if (state.mode === "regular") {
+              for (const seat of state.seats) {
+                if (seat.playerId && !seat.isReady) {
+                  seat.playerId = null;
+                  seat.hand = null;
+                }
+              }
+            }
             dealInitialCards(state, broadcasts);
           }
         }
@@ -1171,11 +1447,18 @@ export const royalBlackjackGameServer: GameServer<
       }
     }
 
-    return {
+    const resultUnits =
+      state.phase === "settled" && state.roundsPlayed > prevRoundsPlayed
+        ? buildResultUnitEventsFromSettlement(state)
+        : undefined;
+
+    return sanitizeJson({
       state,
       broadcasts,
       persist: state.phase === "settled" || ctx.tick % 10 === 0,
-    };
+      ...(resultUnits && resultUnits.length > 0 ? { resultUnits } : {}),
+      ...(actionResults.length > 0 ? { actionResults } : {}),
+    });
   },
 
   onPlayerJoin(playerId: string, prevState: RoyalBlackjackRoomState): PlayerEventResult<RoyalBlackjackRoomState> {
@@ -1183,16 +1466,20 @@ export const royalBlackjackGameServer: GameServer<
     if (!state.players.includes(playerId)) {
       state.players.push(playerId);
     }
+    if (!state.playerNames) state.playerNames = {};
+    if (!state.playerNames[playerId]) {
+      state.playerNames[playerId] = playerId;
+    }
     if (typeof state.walletCoins[playerId] !== "number" || state.walletCoins[playerId] <= 0) {
       state.walletCoins[playerId] = DEFAULT_GAME_COINS;
     }
     if (state.mode === "regular" && (typeof state.balances[playerId] !== "number" || state.balances[playerId] <= 0)) {
       state.balances[playerId] = state.walletCoins[playerId];
     }
-    return {
+    return sanitizeJson({
       state,
       broadcasts: [{ type: "player:joined", playerId }],
-    };
+    });
   },
 
   onPlayerLeave(playerId: string, prevState: RoyalBlackjackRoomState): PlayerEventResult<RoyalBlackjackRoomState> {
@@ -1209,15 +1496,15 @@ export const royalBlackjackGameServer: GameServer<
         }
       }
     }
-    return {
+    return sanitizeJson({
       state,
       broadcasts: [{ type: "player:left", playerId }],
-    };
+    });
   },
 
   isGameOver(state: RoyalBlackjackRoomState): GameResult {
     if (state.forceClose) {
-      return {
+      return sanitizeJson({
         over: true,
         summary: {
           scores: state.balances,
@@ -1227,7 +1514,7 @@ export const royalBlackjackGameServer: GameServer<
           mode: "close_room",
           timeoutMs: 0,
         },
-      };
+      });
     }
 
     if (state.phase === "settled") {
@@ -1240,9 +1527,13 @@ export const royalBlackjackGameServer: GameServer<
         deck: state.deck,
         discardCount: state.discardCount,
         prngCalls: state.prngCalls,
+        seatedPlayers: state.seats.map((s) => s.playerId),
+        playerNames: state.playerNames || {},
+        playerAvatars: state.playerAvatars || {},
+        lastRoundSummary: state.lastRoundSummary || null,
       };
 
-      return {
+      return sanitizeJson({
         over: true,
         summary: {
           scores: state.balances,
@@ -1255,9 +1546,9 @@ export const royalBlackjackGameServer: GameServer<
         nextMatchPolicy: {
           mode: "auto_next_match",
           timeoutMs: 3000,
-          carryover,
+          carryover: carryover as any,
         },
-      };
+      });
     }
 
     return { over: false };
@@ -1273,6 +1564,7 @@ export const royalBlackjackGameServer: GameServer<
     if (cmd.type === "close_table" || cmd.data?.action === "close_table") {
       state.forceClose = true;
     } else if (cmd.type === "force_deal" || cmd.data?.action === "force_deal") {
+      prepareNextBettingPhaseIfSettled(state);
       if (state.phase === "betting") {
         dealInitialCards(state, broadcasts);
       }
@@ -1281,6 +1573,6 @@ export const royalBlackjackGameServer: GameServer<
       state.maxBet = Math.max(state.minBet, Number(cmd.data.maxBet) || state.maxBet);
     }
 
-    return { state, broadcasts };
+    return sanitizeJson({ state, broadcasts });
   },
 };
