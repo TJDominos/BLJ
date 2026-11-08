@@ -274,6 +274,42 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Step 7b: Validate backend container startup and health check (full-stack only)
+      - name: Verify room container health check
+        if: steps.detect_mode.outputs.is_fullstack == 'true'
+        shell: bash
+        env:
+          PORT: ${{ steps.detect_mode.outputs.backend_port || 8080 }}
+        run: |
+          set -Eeuo pipefail
+          echo "Loading built container image into local Docker..."
+          docker load -i /tmp/randseed-backend-image.tar
+          CONTAINER_ID=$(docker run -d -p "$PORT:$PORT" -e PORT="$PORT" "randseed-backend:${{ inputs.deployment_environment }}-${{ inputs.deployment_id }}")
+          echo "Started test container $CONTAINER_ID on port $PORT"
+
+          HEALTHY=0
+          for i in $(seq 1 15); do
+            sleep 1
+            if curl -sSf "http://127.0.0.1:$PORT/health" > /tmp/health.json; then
+              echo "Container health check passed on attempt $i:"
+              cat /tmp/health.json
+              echo ""
+              HEALTHY=1
+              break
+            fi
+            echo "Waiting for container /health (attempt $i/15)..."
+          done
+
+          if [ "$HEALTHY" -ne 1 ]; then
+            echo "::error::Room container failed /health check. Container logs:"
+            docker logs "$CONTAINER_ID"
+            docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true
+            exit 1
+          fi
+
+          docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true
+          echo "Room container successfully passed startup and health check verification."
+
       # Step 8: Calculate the container image archive SHA-256 and R2 addressing metadata (full-stack only)
       - name: Prepare OCI image metadata
         id: prep_image

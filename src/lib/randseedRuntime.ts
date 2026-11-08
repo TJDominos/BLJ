@@ -2,8 +2,10 @@ import {
   MAX_RUNTIME_FRAME_WIDTH,
   RuntimeClient,
   RoomClient,
+  getRandseedGameId,
   readRoomSnapshotState,
   type JsonValue,
+  type RoomConnectionStatus,
   type RoomMatch,
   type RoomSnapshot,
 } from "@randseed/game-sdk";
@@ -13,15 +15,19 @@ import { soundManager } from "@/lib/sounds";
 export const DESIGN_VIEWPORT_WIDTH = MAX_RUNTIME_FRAME_WIDTH; // 1280
 export const DESIGN_VIEWPORT_HEIGHT = 720;
 
+const detectedGameId = getRandseedGameId();
+export const RANDSEED_GAME_ID = detectedGameId || "";
+export const GAME_SLUG = "royal-blackjack";
+
 let runtimeClientInstance: RuntimeClient | null = null;
 let roomClientInstance: RoomClient | null = null;
+let roomConnectionStatus: RoomConnectionStatus = "idle";
+let snapshotListener:
+  | ((state: Record<string, unknown>, allocation?: RoomMatch, snapshot?: RoomSnapshot) => void)
+  | null = null;
 
 /**
- * Initialize RandSeed RuntimeClient ONLY for shell viewport & audio mute bridging.
- * NOTE: RuntimeClient.storage (getProgress / saveProgress) is strictly for frontend-only
- * serverless games and MUST NOT be used in full-stack room games.
- * In a full-stack game, player identity & authoritative state are managed by the
- * Node.js backend (@randseed/server-sdk + RoomClient).
+ * Initialize RandSeed RuntimeClient for shell viewport & audio mute bridging.
  */
 export async function initRandseedRuntime(): Promise<RuntimeClient | null> {
   if (typeof window === "undefined") return null;
@@ -29,7 +35,7 @@ export async function initRandseedRuntime(): Promise<RuntimeClient | null> {
 
   try {
     const client = new RuntimeClient({
-      gameId: "royal-blackjack",
+      gameId: RANDSEED_GAME_ID,
       viewport: {
         designWidth: DESIGN_VIEWPORT_WIDTH,
         designHeight: DESIGN_VIEWPORT_HEIGHT,
@@ -54,26 +60,57 @@ export async function initRandseedRuntime(): Promise<RuntimeClient | null> {
     client.markReady();
     return client;
   } catch {
-    // Running standalone outside of the Randseed Player Shell
+    // Running outside of the Randseed Player Shell
     return null;
   }
+}
+
+export function isRandseedRoomConnected(): boolean {
+  return Boolean(roomClientInstance && roomClientInstance.status === "connected");
+}
+
+export function getRandseedRoomStatus(): RoomConnectionStatus {
+  return roomClientInstance?.status ?? roomConnectionStatus;
+}
+
+export function getRandseedRoomAllocation(): RoomMatch | undefined {
+  return roomClientInstance?.allocation;
+}
+
+export function getRandseedRoomSnapshot(): RoomSnapshot | undefined {
+  return roomClientInstance?.snapshot;
 }
 
 /**
  * Connect to the full-stack RandSeed Room backend via RoomClient.
  */
 export async function matchRandseedRoom(
-  onSnapshotUpdate?: (state: Record<string, unknown>, allocation?: RoomMatch) => void
+  onSnapshotUpdate?: (
+    state: Record<string, unknown>,
+    allocation?: RoomMatch,
+    snapshot?: RoomSnapshot
+  ) => void
 ): Promise<{
   allocation?: RoomMatch;
   snapshot?: RoomSnapshot;
 } | null> {
   if (typeof window === "undefined") return null;
 
+  if (onSnapshotUpdate) {
+    snapshotListener = onSnapshotUpdate;
+  }
+
   try {
     if (!roomClientInstance) {
+      const baseUrl = new URL("./", window.location.href).href;
       roomClientInstance = new RoomClient({
-        gameId: "royal-blackjack",
+        baseUrl,
+        onStatusChange: (nextStatus) => {
+          roomConnectionStatus = nextStatus;
+        },
+        onError: () => {
+          roomConnectionStatus = "error";
+        },
         onSnapshot: (snapshot) => {
           try {
             const validated = readRoomSnapshotState<Record<string, JsonValue>>(
@@ -81,8 +118,8 @@ export async function matchRandseedRoom(
               (val: JsonValue): val is Record<string, JsonValue> =>
                 Boolean(val && typeof val === "object" && !Array.isArray(val))
             );
-            if (onSnapshotUpdate) {
-              onSnapshotUpdate(validated, roomClientInstance?.allocation);
+            if (snapshotListener) {
+              snapshotListener(validated, roomClientInstance?.allocation, snapshot);
             }
           } catch {
             // Ignore malformed snapshot frame
@@ -90,9 +127,17 @@ export async function matchRandseedRoom(
         },
       });
     }
+
+    // Pre-warm room container if supported by gateway
+    roomClientInstance.warm().catch(() => {});
+
     const snapshot = await roomClientInstance.connect();
-    if (onSnapshotUpdate && snapshot?.state && typeof snapshot.state === "object") {
-      onSnapshotUpdate(snapshot.state as Record<string, unknown>, roomClientInstance.allocation);
+    if (snapshotListener && snapshot?.state && typeof snapshot.state === "object") {
+      snapshotListener(
+        snapshot.state as Record<string, unknown>,
+        roomClientInstance.allocation,
+        snapshot
+      );
     }
     return {
       allocation: roomClientInstance.allocation,
@@ -105,24 +150,29 @@ export async function matchRandseedRoom(
 }
 
 export async function sendRandseedRoomAction(
-  action: Record<string, string | number | boolean | null>
-): Promise<void> {
-  if (!roomClientInstance) return;
+  action: Record<string, JsonValue>
+): Promise<boolean> {
+  if (!roomClientInstance || roomClientInstance.status !== "connected") {
+    return false;
+  }
   try {
-    if (!roomClientInstance.sendSocketInput(action)) {
-      await roomClientInstance.sendInput(action);
+    if (roomClientInstance.sendSocketInput(action, { allowSameTick: true })) {
+      return true;
     }
+    const res = await roomClientInstance.sendInput(action);
+    return Boolean(res?.applied);
   } catch {
-    // Ignore transient room gateway errors in standalone preview
+    return false;
   }
 }
 
 export async function readyRandseedRoom(): Promise<void> {
-  if (!roomClientInstance) return;
+  if (!roomClientInstance || roomClientInstance.status !== "connected") return;
   try {
     await roomClientInstance.readyForNextMatch();
   } catch {
-    // Ignore when outside active room match transition
+    // Also send in-band ready_next action for persistent tables
+    await sendRandseedRoomAction({ action: "ready_next" });
   }
 }
 
@@ -147,7 +197,9 @@ export async function readRandseedProgress<T = Record<string, unknown>>(): Promi
   }
 }
 
-export async function saveRandseedProgress(data: Record<string, string | number | boolean | null>): Promise<void> {
+export async function saveRandseedProgress(
+  data: Record<string, string | number | boolean | null>
+): Promise<void> {
   if (!runtimeClientInstance) return;
   try {
     runtimeClientInstance.storage.onSyncStatusChanged(() => {});
@@ -167,4 +219,3 @@ export async function saveRandseedProgress(data: Record<string, string | number 
     // Ignore when outside RandSeed Player Shell
   }
 }
-
