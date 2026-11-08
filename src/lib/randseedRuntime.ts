@@ -2,6 +2,8 @@ import {
   MAX_RUNTIME_FRAME_WIDTH,
   RuntimeClient,
   RoomClient,
+  readRoomSnapshotState,
+  type JsonValue,
   type RoomMatch,
   type RoomSnapshot,
 } from "@randseed/game-sdk";
@@ -13,16 +15,6 @@ export const DESIGN_VIEWPORT_HEIGHT = 720;
 
 let runtimeClientInstance: RuntimeClient | null = null;
 let roomClientInstance: RoomClient | null = null;
-
-export function readRoomSnapshotState<TState>(
-  snapshot: RoomSnapshot,
-  isState: (value: unknown) => value is TState
-): TState {
-  if (!snapshot || typeof snapshot !== "object" || !isState(snapshot.state)) {
-    throw new Error("Room snapshot state failed validation.");
-  }
-  return snapshot.state;
-}
 
 /**
  * Initialize RandSeed RuntimeClient ONLY for shell viewport & audio mute bridging.
@@ -84,9 +76,10 @@ export async function matchRandseedRoom(
         gameId: "royal-blackjack",
         onSnapshot: (snapshot) => {
           try {
-            const validated = readRoomSnapshotState<Record<string, unknown>>(
+            const validated = readRoomSnapshotState<Record<string, JsonValue>>(
               snapshot,
-              (val): val is Record<string, unknown> => Boolean(val && typeof val === "object")
+              (val: JsonValue): val is Record<string, JsonValue> =>
+                Boolean(val && typeof val === "object" && !Array.isArray(val))
             );
             if (onSnapshotUpdate) {
               onSnapshotUpdate(validated, roomClientInstance?.allocation);
@@ -111,18 +104,12 @@ export async function matchRandseedRoom(
   }
 }
 
-type ExtendedRoomClient = RoomClient & {
-  sendSocketInput?: (action: Record<string, string | number | boolean | null>) => boolean;
-  readyForNextMatch?: () => Promise<unknown>;
-};
-
 export async function sendRandseedRoomAction(
   action: Record<string, string | number | boolean | null>
 ): Promise<void> {
   if (!roomClientInstance) return;
   try {
-    const extClient = roomClientInstance as ExtendedRoomClient;
-    if (!extClient.sendSocketInput || !extClient.sendSocketInput(action)) {
+    if (!roomClientInstance.sendSocketInput(action)) {
       await roomClientInstance.sendInput(action);
     }
   } catch {
@@ -133,10 +120,7 @@ export async function sendRandseedRoomAction(
 export async function readyRandseedRoom(): Promise<void> {
   if (!roomClientInstance) return;
   try {
-    const extClient = roomClientInstance as ExtendedRoomClient;
-    if (extClient.readyForNextMatch) {
-      await extClient.readyForNextMatch();
-    }
+    await roomClientInstance.readyForNextMatch();
   } catch {
     // Ignore when outside active room match transition
   }
