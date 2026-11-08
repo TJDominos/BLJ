@@ -1,4 +1,4 @@
-# randseed-workflow-version: 13
+# randseed-workflow-version: 15
 name: Deploy to RandSeed Sandbox
 
 on:
@@ -145,6 +145,7 @@ jobs:
         shell: bash
         env:
           BUILD_DIR: ${{ steps.detect_mode.outputs.frontend_build_dir }}
+          VITE_RANDSEED_GAME_ID: ${{ inputs.game_id }}
         run: |
           set -Eeuo pipefail
           if [ -f package.json ]; then
@@ -218,6 +219,40 @@ jobs:
             exit 1
           fi
 
+      - name: Inject canonical Game ID into browser build
+        id: inject_game_id
+        shell: bash
+        env:
+          BUILD_DIR: ${{ steps.detect_mode.outputs.frontend_build_dir }}
+          GAME_ID: ${{ inputs.game_id }}
+        run: |
+          set -Eeuo pipefail
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { resolve, relative, sep, isAbsolute, join } from 'node:path';
+
+          const gameId = process.env.GAME_ID ?? '';
+          if (!/^[A-Za-z0-9_-]{1,64}$/.test(gameId)) {
+            throw new Error('Invalid RandSeed game identifier');
+          }
+          const buildDirectory = resolve(process.env.BUILD_DIR || 'dist');
+          const relativeBuildDirectory = relative(process.cwd(), buildDirectory);
+          if (!relativeBuildDirectory || relativeBuildDirectory === '..'
+            || relativeBuildDirectory.startsWith(`..${sep}`) || isAbsolute(relativeBuildDirectory)) {
+            throw new Error('Frontend build directory must be a repository subdirectory');
+          }
+          const indexPath = join(buildDirectory, 'index.html');
+          const html = readFileSync(indexPath, 'utf8');
+          if (/<meta\s+name=["']randseed-game-id["']/i.test(html)) {
+            throw new Error('The reserved randseed-game-id metadata must not be supplied by game source');
+          }
+          const head = html.match(/<head\b[^>]*>/i)?.[0];
+          if (!head) throw new Error('Frontend index.html must contain a head element');
+          const metadata = `\n    <meta name="randseed-game-id" content="${gameId}">`;
+          writeFileSync(indexPath, html.replace(head, `${head}${metadata}`));
+          console.log('Injected the canonical RandSeed Game ID into the browser build');
+          NODE
+
       # Step 6: Set up Docker Buildx (full-stack only; finish building before opening an upload session to avoid session expiry)
       - name: Set up Docker Buildx
         if: steps.detect_mode.outputs.is_fullstack == 'true'
@@ -232,7 +267,9 @@ jobs:
           context: ${{ steps.detect_mode.outputs.backend_context }}
           file: ${{ steps.detect_mode.outputs.backend_dockerfile }}
           platforms: linux/amd64
-          tags: randseed-backend:${{ inputs.deployment_id }}
+          tags: randseed-backend:${{ inputs.deployment_environment }}-${{ inputs.deployment_id }}
+          build-args: |
+            RANDSEED_GAME_ID=${{ inputs.game_id }}
           outputs: type=docker,dest=/tmp/randseed-backend-image.tar
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -244,6 +281,7 @@ jobs:
         shell: bash
         env:
           GAME_ID: ${{ inputs.game_id }}
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment_environment }}
           ARCHIVE_PATH: /tmp/randseed-backend-image.tar
         run: |
           set -Eeuo pipefail
@@ -253,8 +291,13 @@ jobs:
 
           const archivePath = process.env.ARCHIVE_PATH;
           const gameId = process.env.GAME_ID;
+          const deploymentEnvironment = process.env.DEPLOYMENT_ENVIRONMENT;
           if (!/^[A-Za-z0-9_-]{1,64}$/.test(gameId || '')) {
             console.error('Invalid RandSeed game identifier');
+            process.exit(1);
+          }
+          if (!['dev', 'test', 'production'].includes(deploymentEnvironment || '')) {
+            console.error('Invalid RandSeed deployment environment');
             process.exit(1);
           }
           const stat = statSync(archivePath);
@@ -607,6 +650,7 @@ jobs:
           ARCHIVE_PATH: ${{ steps.prep_image.outputs.archive_path }}
           ARCHIVE_SHA256: ${{ steps.prep_image.outputs.archive_sha256 }}
           ARCHIVE_SIZE: ${{ steps.prep_image.outputs.archive_size }}
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment_environment }}
         run: |
           set -Eeuo pipefail
           UPLOAD_TOKEN=$(node -e "console.log(require('/tmp/randseed-session.json').upload_token)")
@@ -620,6 +664,10 @@ jobs:
           const archivePath = process.env.ARCHIVE_PATH;
           const sha256 = process.env.ARCHIVE_SHA256;
           const size = Number(process.env.ARCHIVE_SIZE);
+          const deploymentEnvironment = process.env.DEPLOYMENT_ENVIRONMENT;
+          if (!['dev', 'test', 'production'].includes(deploymentEnvironment || '')) {
+            throw new Error('Invalid RandSeed deployment environment');
+          }
           const baseUrl = `${apiUrl}/api/deployments/${encodeURIComponent(depId)}/backend-image`;
 
           async function requestJson(url, options, attempts = 3) {
@@ -648,9 +696,12 @@ jobs:
           const session = await requestJson(`${baseUrl}/session`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sha256, size }),
+            body: JSON.stringify({ sha256, size, deployment_environment: deploymentEnvironment }),
           });
 
+          if (session.environment !== deploymentEnvironment) {
+            throw new Error('Backend image upload Worker environment does not match the selected deployment environment');
+          }
           if (session.already_uploaded) {
             console.log(`Backend image archive already exists in R2 (${session.object_key})`);
             process.exit(0);
@@ -811,6 +862,10 @@ jobs:
           if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
             node -e "const fs=require('fs');const body=fs.readFileSync('/tmp/randseed-complete-response','utf8');let message=body;try { const parsed=JSON.parse(body); message=parsed.code+': '+(parsed.error||parsed.message||body); } catch {} console.error('RandSeed deployment completion failed ('+process.argv[1]+'): '+message.replace(/\\s+/g,' ').slice(0,1000));process.exit(1)" "$HTTP_STATUS"
           fi
+
+      - name: Explain asynchronous container readiness
+        if: steps.detect_mode.outputs.is_fullstack == 'true'
+        run: echo "::notice::Build and upload succeeded. Backend container provisioning continues separately; check Creator Portal for Container Ready before treating this full-stack version as usable."
 
       # Step 17: Report deployment failures as a fallback
       - name: Report deployment failure
