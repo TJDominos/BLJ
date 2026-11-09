@@ -986,10 +986,25 @@ export const royalBlackjackGameServer: GameServer<
       (rawState.phase === "betting" || rawState.phase === "settled") &&
       Boolean(rawState.seats?.some((s) => s.playerId === playerId && !s.isReady));
 
+    const compactAvatars: Record<string, string> = {};
+    for (const [k, v] of Object.entries(rawState.playerAvatars || {})) {
+      if (typeof v === "string" && v.length <= 256) {
+        compactAvatars[k] = v;
+      }
+    }
+
+    const compactPublicState = {
+      ...(projection.publicState as Record<string, unknown>),
+      tournamentHistory: Array.isArray(rawState.tournamentHistory)
+        ? rawState.tournamentHistory.slice(0, 3)
+        : [],
+      playerAvatars: compactAvatars,
+    };
+
     return sanitizeJson({
-      publicState: projection.publicState as any,
+      publicState: compactPublicState as any,
       privateState: priv,
-      visibleEvents: request.committedEvents.slice(-10),
+      visibleEvents: request.committedEvents.slice(-5),
       decision: {
         canAct: Boolean(isMyTurn || canBet),
         deadlineAt: null,
@@ -1079,8 +1094,6 @@ export const royalBlackjackGameServer: GameServer<
       const carriedPlayer =
         carryover?.seatedPlayers && idx < carryover.seatedPlayers.length
           ? carryover.seatedPlayers[idx]
-          : mode === "regular"
-          ? config.players[idx] || null
           : null;
       return {
         seatIndex: idx,
@@ -1249,7 +1262,14 @@ export const royalBlackjackGameServer: GameServer<
         prepareNextBettingPhaseIfSettled(state);
         if (state.phase !== "betting") continue;
         const seat = state.seats[data.seatIndex];
-        if (!seat || seat.playerId !== playerId) continue;
+        if (!seat) continue;
+        if (!seat.playerId && state.mode === "regular") {
+          seat.playerId = playerId;
+          if (typeof state.balances[playerId] !== "number" || state.balances[playerId] <= 0) {
+            state.balances[playerId] = state.walletCoins[playerId] || DEFAULT_GAME_COINS;
+          }
+        }
+        if (seat.playerId !== playerId) continue;
 
         // If seat already placed a bet in this betting phase, refund previous bet before replacing
         if (seat.hand && seat.hand.bet > 0) {

@@ -197,15 +197,110 @@ const MASKED_CARD: PlayingCard = { suit: 'spades', value: 'A', isHidden: true };
 let latestOnlineRoomState: Record<string, any> | null = null;
 let latestOnlineRoomId: string = 'table_1';
 
+/**
+ * Unwraps a RandSeed RoomSnapshot.state payload regardless of whether the platform
+ * sends an AgentPlayerView ({ publicState, self: { playerId, privateState } }),
+ * a StateProjectionEnvelope ({ publicState, privateStates }), a nested { state },
+ * or a direct RoyalBlackjackRoomState.
+ */
+function unwrapOnlineRoomState(raw: Record<string, any> | null | undefined): Record<string, any> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {};
+  }
+
+  let base: Record<string, any> = raw;
+  if (raw.publicState && typeof raw.publicState === 'object' && !Array.isArray(raw.publicState)) {
+    base = { ...raw, ...(raw.publicState as Record<string, any>) };
+  } else if (raw.state && typeof raw.state === 'object' && !Array.isArray(raw.state)) {
+    return unwrapOnlineRoomState(raw.state as Record<string, any>);
+  } else if (raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data) && Array.isArray((raw.data as any).seats)) {
+    base = { ...raw, ...(raw.data as Record<string, any>) };
+  }
+
+  const selfObj = raw.self && typeof raw.self === 'object' ? (raw.self as Record<string, any>) : null;
+  const selfPlayerId =
+    (typeof selfObj?.playerId === 'string' && selfObj.playerId) ||
+    (typeof raw.playerId === 'string' && raw.playerId) ||
+    undefined;
+  const privateState =
+    (selfObj?.privateState && typeof selfObj.privateState === 'object'
+      ? (selfObj.privateState as Record<string, any>)
+      : null) ||
+    (raw.privateState && typeof raw.privateState === 'object'
+      ? (raw.privateState as Record<string, any>)
+      : null) ||
+    (selfPlayerId &&
+    raw.privateStates &&
+    typeof raw.privateStates === 'object' &&
+    typeof (raw.privateStates as Record<string, any>)[selfPlayerId] === 'object'
+      ? ((raw.privateStates as Record<string, any>)[selfPlayerId] as Record<string, any>)
+      : null);
+
+  if (privateState) {
+    const pid =
+      (typeof privateState.playerId === 'string' && privateState.playerId) || selfPlayerId;
+    if (pid) {
+      const nextBalances = {
+        ...(base.balances && typeof base.balances === 'object' ? base.balances : {}),
+      };
+      const nextWalletCoins = {
+        ...(base.walletCoins && typeof base.walletCoins === 'object' ? base.walletCoins : {}),
+      };
+      if (typeof privateState.balance === 'number') {
+        nextBalances[pid] = privateState.balance;
+      }
+      if (typeof privateState.walletCoins === 'number') {
+        nextWalletCoins[pid] = privateState.walletCoins;
+      }
+      base = {
+        ...base,
+        balances: nextBalances,
+        walletCoins: nextWalletCoins,
+      };
+    }
+
+    if (Array.isArray(privateState.mySeats) && Array.isArray(base.seats)) {
+      const mySeatMap = new Map<number, any>();
+      for (const ms of privateState.mySeats) {
+        if (ms && typeof ms.seatIndex === 'number') {
+          mySeatMap.set(ms.seatIndex, ms);
+        }
+      }
+      if (mySeatMap.size > 0) {
+        base = {
+          ...base,
+          seats: base.seats.map((s: any, idx: number) => {
+            const seatIdx = typeof s?.seatIndex === 'number' ? s.seatIndex : idx;
+            const mySeat = mySeatMap.get(seatIdx);
+            if (!mySeat || !s?.hand) return s;
+            return {
+              ...s,
+              hand: {
+                ...s.hand,
+                bet: typeof mySeat.actualBet === 'number' ? mySeat.actualBet : s.hand.bet,
+                sideBets: mySeat.sideBets || s.hand.sideBets,
+              },
+            };
+          }),
+        };
+      }
+    }
+  }
+
+  return base;
+}
+
 function mapRoomStateToTable(
-  roomState: Record<string, any>,
+  rawRoomState: Record<string, any>,
   tableId: string,
   existing?: Table
 ): Table {
+  const roomState = unwrapOnlineRoomState(rawRoomState);
   const mode: TableMode = roomState.mode === 'tournament' ? 'tournament' : 'regular';
-  const minBet = Number(roomState.minBet) || 10;
-  const maxBet = Number(roomState.maxBet) || 500;
-  const actionTimeLimit = Number(roomState.actionTimeLimitSec) || 20;
+  const minBet = Number(roomState.minBet) || existing?.settings?.minBet || 10;
+  const maxBet = Number(roomState.maxBet) || existing?.settings?.maxBet || 500;
+  const actionTimeLimit =
+    Number(roomState.actionTimeLimitSec) || existing?.settings?.actionTimeLimit || 20;
   const winningRule: WinningRule =
     roomState.winningRule === 'dealer_wins_ties' ? 'dealer_wins_ties' : 'standard';
   const order: 'seat' | 'random' = roomState.order === 'random' ? 'random' : 'seat';
@@ -224,40 +319,68 @@ function mapRoomStateToTable(
       : {};
 
   const rawSeats: any[] = Array.isArray(roomState.seats) ? roomState.seats : [];
-  const baseSeatCount =
-    rawSeats.filter((s) => !s?.isSplitHand).length || existing?.settings?.maxSeats || 7;
+  const baseSeatCount = Math.max(
+    1,
+    rawSeats.filter((s) => !s?.isSplitHand).length ||
+      Number(roomState.maxSeats) ||
+      existing?.settings?.maxSeats ||
+      7
+  );
 
-  const seats: PlayerSeat[] = rawSeats.map((s) => {
-    const pid = typeof s?.playerId === 'string' && s.playerId ? s.playerId : null;
-    const resolvedName =
-      s?.name ||
-      (pid ? playerNames[pid] || usersDb[pid]?.name || pid : undefined);
-    const resolvedAvatar =
-      s?.avatar ||
-      (pid ? playerAvatars[pid] || usersDb[pid]?.avatar : undefined);
+  let seats: PlayerSeat[];
+  if (rawSeats.length > 0) {
+    seats = rawSeats.map((s) => {
+      const pid =
+        typeof s?.playerId === 'string' && s.playerId
+          ? s.playerId
+          : typeof s?.userId === 'string' && s.userId
+          ? s.userId
+          : null;
+      const resolvedName =
+        s?.name ||
+        (pid ? playerNames[pid] || usersDb[pid]?.name || pid : undefined);
+      const resolvedAvatar =
+        s?.avatar ||
+        (pid ? playerAvatars[pid] || usersDb[pid]?.avatar : undefined);
 
-    return {
-      userId: pid,
-      name: resolvedName,
-      avatar: resolvedAvatar,
-      isReady: Boolean(s?.isReady),
-      isSplitHand: Boolean(s?.isSplitHand),
-      originalSeatIndex:
-        typeof s?.originalSeatIndex === 'number' ? s.originalSeatIndex : undefined,
-      hand: s?.hand
-        ? {
-            cards: Array.isArray(s.hand.cards) ? s.hand.cards : [],
-            bet: Number(s.hand.bet) || 0,
-            insuranceBet: Number(s.hand.insuranceBet) || 0,
-            sideBets: s.hand.sideBets || { pair: 0, twentyOnePlusThree: 0 },
-            sideBetPairWon: Number(s.hand.sideBetPairWon) || 0,
-            sideBetPlus3Won: Number(s.hand.sideBetPlus3Won) || 0,
-            status: (s.hand.status as HandStatus) || 'playing',
-            score: Number(s.hand.score) || 0,
-          }
-        : null,
-    };
-  });
+      return {
+        userId: pid,
+        name: resolvedName,
+        avatar: resolvedAvatar,
+        isReady: Boolean(s?.isReady),
+        isSplitHand: Boolean(s?.isSplitHand),
+        originalSeatIndex:
+          typeof s?.originalSeatIndex === 'number' ? s.originalSeatIndex : undefined,
+        hand: s?.hand
+          ? {
+              cards: Array.isArray(s.hand.cards) ? s.hand.cards : [],
+              bet: Number(s.hand.bet) || 0,
+              insuranceBet: Number(s.hand.insuranceBet) || 0,
+              sideBets: s.hand.sideBets || { pair: 0, twentyOnePlusThree: 0 },
+              sideBetPairWon: Number(s.hand.sideBetPairWon) || 0,
+              sideBetPlus3Won: Number(s.hand.sideBetPlus3Won) || 0,
+              status: (s.hand.status as HandStatus) || 'playing',
+              score: Number(s.hand.score) || 0,
+            }
+          : null,
+      };
+    });
+    while (seats.length < baseSeatCount) {
+      seats.push({
+        userId: null,
+        isReady: false,
+        hand: null,
+      });
+    }
+  } else if (existing?.seats && existing.seats.length >= baseSeatCount) {
+    seats = existing.seats.map((s) => ({ ...s }));
+  } else {
+    seats = Array.from({ length: baseSeatCount }, () => ({
+      userId: null,
+      isReady: false,
+      hand: null,
+    }));
+  }
 
   const userBalances: Record<
     string,
@@ -500,9 +623,10 @@ function getOrPersistSessionUserId(overrideUserId?: string): string {
 
 export const useGameStore = create<GameStore>((set, get) => {
   const applyOnlineRoomSnapshot = (
-    roomState: Record<string, any>,
+    rawRoomState: Record<string, any>,
     allocation?: { roomId: string; playerId: string }
   ) => {
+    const roomState = unwrapOnlineRoomState(rawRoomState);
     latestOnlineRoomState = roomState;
     if (allocation?.roomId) {
       latestOnlineRoomId = allocation.roomId;
@@ -531,6 +655,12 @@ export const useGameStore = create<GameStore>((set, get) => {
     syncedUser.balance = effectiveBalance;
 
     const currentTables = { ...get().tables };
+    // Ensure we never duplicate Table #1 under a second allocation.roomId key
+    if (latestOnlineRoomId && latestOnlineRoomId !== 'table_1') {
+      delete currentTables[latestOnlineRoomId];
+      delete tablesDb[latestOnlineRoomId];
+    }
+
     const mappedPrimary = mapRoomStateToTable(
       roomState,
       'table_1',
@@ -538,16 +668,6 @@ export const useGameStore = create<GameStore>((set, get) => {
     );
     currentTables['table_1'] = mappedPrimary;
     tablesDb['table_1'] = mappedPrimary;
-
-    if (latestOnlineRoomId && latestOnlineRoomId !== 'table_1') {
-      const mappedRoom = mapRoomStateToTable(
-        roomState,
-        latestOnlineRoomId,
-        currentTables[latestOnlineRoomId]
-      );
-      currentTables[latestOnlineRoomId] = mappedRoom;
-      tablesDb[latestOnlineRoomId] = mappedRoom;
-    }
 
     const updatedRecords = appendRoundRecordIfNew(
       get().gameRecords,
@@ -569,7 +689,7 @@ export const useGameStore = create<GameStore>((set, get) => {
 
   return {
     currentUser: null,
-    tables: {},
+    tables: sanitizeTablesMapForClient(reconcileSystemTables()),
     activeTableId: null,
     gameRecords: [],
     unlockedTableIds: {},

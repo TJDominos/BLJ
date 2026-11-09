@@ -156,6 +156,27 @@ export async function sendRandseedRoomAction(
     return false;
   }
   try {
+    const curResult = roomClientInstance.snapshot?.gameResult;
+    if (
+      curResult &&
+      typeof curResult === "object" &&
+      !Array.isArray(curResult) &&
+      (curResult as Record<string, JsonValue>).over === true
+    ) {
+      await roomClientInstance.readyForNextMatch().catch(() => {});
+      const waitStart = Date.now();
+      while (Date.now() - waitStart < 1500) {
+        const nextRes = roomClientInstance.snapshot?.gameResult;
+        const stillOver =
+          nextRes &&
+          typeof nextRes === "object" &&
+          !Array.isArray(nextRes) &&
+          (nextRes as Record<string, JsonValue>).over === true;
+        if (!stillOver) break;
+        await new Promise((r) => setTimeout(r, 80));
+      }
+    }
+
     if (roomClientInstance.sendSocketInput(action, { allowSameTick: true })) {
       return true;
     }

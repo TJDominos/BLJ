@@ -623,7 +623,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                         {/* Seat Dots */}
                         <div className="flex items-center gap-1.5">
                           {Array.from({ length: totalSeats }).map((_, idx) => {
-                            const taken = room.seats[idx]?.userId !== null;
+                            const taken = Boolean(room.seats[idx]?.userId);
                             return (
                               <span
                                 key={idx}

@@ -286,10 +286,22 @@ export function reconcileSystemTables(): Record<string, Table> {
     sysTables = getSystemTables();
   }
 
+  // Ensure every system table has a valid seats array matching maxSeats (7)
+  for (const t of sysTables) {
+    const maxSeats = t.settings?.maxSeats || 7;
+    if (!Array.isArray(t.seats) || t.seats.length === 0) {
+      t.seats = Array.from({ length: maxSeats }, () => ({
+        userId: null,
+        isReady: false,
+        hand: null,
+      }));
+    }
+  }
+
   // 2. Close extra empty system tables (keep at least 1 system table)
   if (sysTables.length > 1) {
     const emptyWaitingTables = sysTables.filter(
-      (t) => t.status === 'waiting' && t.seats.every((s) => s.userId === null)
+      (t) => t.status === 'waiting' && t.seats.every((s) => !s?.userId)
     );
 
     const tablesToKeepCount = sysTables.length - emptyWaitingTables.length;
@@ -303,8 +315,8 @@ export function reconcileSystemTables(): Record<string, Table> {
   }
 
   // 3. If every active system table is full (0 empty seats), automatically open a new system table
-  const hasAvailableSeat = sysTables.some((t) =>
-    t.seats.some((s) => s.userId === null)
+  const hasAvailableSeat = sysTables.some(
+    (t) => t.seats.length > 0 && t.seats.some((s) => !s?.userId)
   );
 
   if (!hasAvailableSeat) {
