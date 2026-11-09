@@ -1,12 +1,13 @@
 {
+  "type": "fullstack",
   "name": "royal-blackjack",
   "version": "1.0.0",
   "frontend": {
     "buildDir": "dist"
   },
   "backend": {
-    "dockerfile": "Dockerfile",
-    "context": ".",
+    "runtime": "nodejs-22",
+    "entrypoint": "room-server.mjs",
     "port": 8080
   },
   "runtime": {
