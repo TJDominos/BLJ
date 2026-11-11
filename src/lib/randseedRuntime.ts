@@ -7,10 +7,14 @@ import {
   type JsonValue,
   type RoomConnectionStatus,
   type RoomMatch,
+  type RoomPlayer,
   type RoomSnapshot,
+  type RuntimePlayerProfile,
 } from "@randseed/game-sdk";
 import { useUIStore } from "@/store/uiStore";
 import { soundManager } from "@/lib/sounds";
+
+export type { RoomPlayer, RuntimePlayerProfile };
 
 export const DESIGN_VIEWPORT_WIDTH = MAX_RUNTIME_FRAME_WIDTH; // 1280
 export const DESIGN_VIEWPORT_HEIGHT = 720;
@@ -22,12 +26,63 @@ export const GAME_SLUG = "royal-blackjack";
 let runtimeClientInstance: RuntimeClient | null = null;
 let roomClientInstance: RoomClient | null = null;
 let roomConnectionStatus: RoomConnectionStatus = "idle";
+let cachedPlayerProfile: RuntimePlayerProfile | null = null;
+let cachedRoomPlayers: RoomPlayer[] = [];
+
 let snapshotListener:
-  | ((state: Record<string, unknown>, allocation?: RoomMatch, snapshot?: RoomSnapshot) => void)
+  | ((
+      state: Record<string, unknown>,
+      allocation?: RoomMatch,
+      snapshot?: RoomSnapshot,
+      players?: RoomPlayer[]
+    ) => void)
   | null = null;
 
+let playersChangedListener: ((players: RoomPlayer[]) => void) | null = null;
+let profileListeners: Array<(profile: RuntimePlayerProfile) => void> = [];
+
+function readSafeRoomPlayers(room: RoomClient | null, snapshot?: RoomSnapshot): RoomPlayer[] {
+  if (room) {
+    try {
+      const list = room.getPlayers();
+      if (Array.isArray(list)) {
+        cachedRoomPlayers = list;
+        return list;
+      }
+    } catch {
+      // Older room hosts that do not include a roster cause getPlayers() to throw CAPABILITY_UNAVAILABLE
+    }
+  }
+  const snapPlayers = (snapshot ?? room?.snapshot)?.players;
+  if (Array.isArray(snapPlayers)) {
+    cachedRoomPlayers = snapPlayers;
+    return snapPlayers;
+  }
+  return cachedRoomPlayers;
+}
+
+export function getRandseedPlayerProfile(): RuntimePlayerProfile | null {
+  return cachedPlayerProfile;
+}
+
+export function onRandseedProfileUpdate(
+  listener: (profile: RuntimePlayerProfile) => void
+): () => void {
+  profileListeners.push(listener);
+  if (cachedPlayerProfile) {
+    listener(cachedPlayerProfile);
+  }
+  return () => {
+    profileListeners = profileListeners.filter((l) => l !== listener);
+  };
+}
+
+export function getRandseedOnlinePlayers(): RoomPlayer[] {
+  return readSafeRoomPlayers(roomClientInstance);
+}
+
 /**
- * Initialize RandSeed RuntimeClient for shell viewport & audio mute bridging.
+ * Initialize RandSeed RuntimeClient for shell viewport, player profile & audio mute bridging.
  */
 export async function initRandseedRuntime(): Promise<RuntimeClient | null> {
   if (typeof window === "undefined") return null;
@@ -57,6 +112,20 @@ export async function initRandseedRuntime(): Promise<RuntimeClient | null> {
       useUIStore.getState().setIsMuted(muted);
       soundManager.setMuted(muted);
     }
+
+    // Fetch authenticated player profile from @randseed/game-sdk@0.3.0
+    client.player
+      .getProfile()
+      .then((profile) => {
+        if (profile && (profile.displayName || profile.avatarUrl)) {
+          cachedPlayerProfile = profile;
+          for (const listener of profileListeners) {
+            listener(profile);
+          }
+        }
+      })
+      .catch(() => {});
+
     client.markReady();
     return client;
   } catch {
@@ -88,16 +157,22 @@ export async function matchRandseedRoom(
   onSnapshotUpdate?: (
     state: Record<string, unknown>,
     allocation?: RoomMatch,
-    snapshot?: RoomSnapshot
-  ) => void
+    snapshot?: RoomSnapshot,
+    players?: RoomPlayer[]
+  ) => void,
+  onPlayersUpdate?: (players: RoomPlayer[]) => void
 ): Promise<{
   allocation?: RoomMatch;
   snapshot?: RoomSnapshot;
+  players?: RoomPlayer[];
 } | null> {
   if (typeof window === "undefined") return null;
 
   if (onSnapshotUpdate) {
     snapshotListener = onSnapshotUpdate;
+  }
+  if (onPlayersUpdate) {
+    playersChangedListener = onPlayersUpdate;
   }
 
   try {
@@ -111,15 +186,27 @@ export async function matchRandseedRoom(
         onError: () => {
           roomConnectionStatus = "error";
         },
+        onPlayersChanged: (players) => {
+          if (Array.isArray(players)) {
+            cachedRoomPlayers = players;
+            if (playersChangedListener) {
+              playersChangedListener(players);
+            }
+          }
+        },
         onSnapshot: (snapshot) => {
           try {
+            const players = readSafeRoomPlayers(roomClientInstance, snapshot);
+            if (playersChangedListener && Array.isArray(players)) {
+              playersChangedListener(players);
+            }
             const validated = readRoomSnapshotState<Record<string, JsonValue>>(
               snapshot,
               (val: JsonValue): val is Record<string, JsonValue> =>
                 Boolean(val && typeof val === "object" && !Array.isArray(val))
             );
             if (snapshotListener) {
-              snapshotListener(validated, roomClientInstance?.allocation, snapshot);
+              snapshotListener(validated, roomClientInstance?.allocation, snapshot, players);
             }
           } catch {
             // Ignore malformed snapshot frame
@@ -132,16 +219,22 @@ export async function matchRandseedRoom(
     roomClientInstance.warm().catch(() => {});
 
     const snapshot = await roomClientInstance.connect();
+    const players = readSafeRoomPlayers(roomClientInstance, snapshot);
+    if (playersChangedListener && Array.isArray(players)) {
+      playersChangedListener(players);
+    }
     if (snapshotListener && snapshot?.state && typeof snapshot.state === "object") {
       snapshotListener(
         snapshot.state as Record<string, unknown>,
         roomClientInstance.allocation,
-        snapshot
+        snapshot,
+        players
       );
     }
     return {
       allocation: roomClientInstance.allocation,
       snapshot,
+      players,
     };
   } catch {
     // Fallback when running outside of WebSocket Room gateway

@@ -37,21 +37,21 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({ card, index, globalDel
   }, [globalDelayIndex, pan]);
   // Define different component sizes to be responsive
   const sizeClasses = {
-    sm: "w-[36px] h-[54px] sm:w-[50px] sm:h-[75px] md:w-[60px] md:h-[90px] p-1 sm:p-1.5 -ml-[18px] sm:-ml-[25px]",
-    md: "w-[36px] h-[54px] sm:w-[50px] sm:h-[75px] md:w-[60px] md:h-[90px] lg:w-[68px] lg:h-[102px] p-1 sm:p-1.5 md:p-2 -ml-[18px] sm:-ml-[25px] md:-ml-[30px]",
-    lg: "w-[50px] h-[75px] md:w-[70px] md:h-[105px] lg:w-[80px] lg:h-[120px] p-1.5 md:p-2.5 lg:p-3 -ml-[25px] md:-ml-[35px] lg:-ml-[40px]"
+    sm: "w-[40px] h-[60px] sm:w-[50px] sm:h-[75px] md:w-[60px] md:h-[90px] p-1 sm:p-1.5 -ml-[18px] sm:-ml-[25px]",
+    md: "w-[42px] h-[63px] sm:w-[50px] sm:h-[75px] md:w-[60px] md:h-[90px] lg:w-[68px] lg:h-[102px] p-1 sm:p-1.5 md:p-2 -ml-[19px] sm:-ml-[25px] md:-ml-[30px]",
+    lg: "w-[60px] h-[88px] sm:w-[68px] sm:h-[100px] md:w-[74px] md:h-[110px] lg:w-[82px] lg:h-[122px] p-1.5 sm:p-2 md:p-2.5 lg:p-3 -ml-[26px] sm:-ml-[30px] md:-ml-[35px] lg:-ml-[40px]"
   };
 
   const textClasses = {
     sm: "text-[12px] sm:text-[14px]",
-    md: "text-[12px] sm:text-[14px] md:text-[18px] lg:text-[20px]",
-    lg: "text-[14px] md:text-[20px] lg:text-[24px]"
+    md: "text-[13px] sm:text-[14px] md:text-[18px] lg:text-[20px]",
+    lg: "text-[17px] sm:text-[19px] md:text-[21px] lg:text-[24px]"
   };
 
   const suitClasses = {
-    sm: "text-[20px] sm:text-[32px]",
-    md: "text-[20px] sm:text-[32px] md:text-[40px] lg:text-[48px]",
-    lg: "text-[32px] md:text-[48px] lg:text-[56px]"
+    sm: "text-[22px] sm:text-[32px]",
+    md: "text-[24px] sm:text-[32px] md:text-[40px] lg:text-[48px]",
+    lg: "text-[36px] sm:text-[42px] md:text-[48px] lg:text-[56px]"
   };
 
   return (

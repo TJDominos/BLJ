@@ -99,23 +99,82 @@ export function RulesModal({ onClose, winningRule, settings }: { onClose: () => 
           
           <div className="space-y-2">
             <h3 className="text-white font-semibold uppercase tracking-wider text-xs">Perfect Pairs (Up to 25:1)</h3>
-            <ul className="space-y-1.5 font-mono text-xs">
-              <li className="flex justify-between"><span>Perfect Pair (Same suit)</span><span className="text-[#ece424]">25:1</span></li>
-              <li className="flex justify-between"><span>Colored Pair (Same color)</span><span className="text-[#ece424]">12:1</span></li>
-              <li className="flex justify-between"><span>Mixed Pair (Different color)</span><span className="text-[#ece424]">6:1</span></li>
-            </ul>
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="flex flex-col items-center gap-1.5 p-2 rounded-xl bg-white/5 border border-white/10">
+                <div className="flex items-center -space-x-1">
+                  <span className="w-5 h-7 rounded bg-white text-slate-950 border border-[#d4af37] flex items-center justify-center text-[9px] font-black -rotate-6">Q♠</span>
+                  <span className="w-5 h-7 rounded bg-white text-slate-950 border border-[#d4af37] flex items-center justify-center text-[9px] font-black rotate-6">Q♠</span>
+                </div>
+                <span className="text-[10px] text-white/80 font-semibold">Same Suit</span>
+                <span className="font-mono font-bold text-[#ece424]">25:1</span>
+              </div>
+              <div className="flex flex-col items-center gap-1.5 p-2 rounded-xl bg-white/5 border border-white/10">
+                <div className="flex items-center -space-x-1">
+                  <span className="w-5 h-7 rounded bg-white text-red-600 border border-slate-300 flex items-center justify-center text-[9px] font-black -rotate-6">Q♥</span>
+                  <span className="w-5 h-7 rounded bg-white text-red-600 border border-slate-300 flex items-center justify-center text-[9px] font-black rotate-6">Q♦</span>
+                </div>
+                <span className="text-[10px] text-white/80 font-semibold">Same Color</span>
+                <span className="font-mono font-bold text-[#ece424]">12:1</span>
+              </div>
+              <div className="flex flex-col items-center gap-1.5 p-2 rounded-xl bg-white/5 border border-white/10">
+                <div className="flex items-center -space-x-1">
+                  <span className="w-5 h-7 rounded bg-white text-slate-950 border border-slate-300 flex items-center justify-center text-[9px] font-black -rotate-6">Q♠</span>
+                  <span className="w-5 h-7 rounded bg-white text-red-600 border border-slate-300 flex items-center justify-center text-[9px] font-black rotate-6">Q♥</span>
+                </div>
+                <span className="text-[10px] text-white/80 font-semibold">Mixed</span>
+                <span className="font-mono font-bold text-[#ece424]">6:1</span>
+              </div>
+            </div>
           </div>
 
           <div className="space-y-2">
-            <h3 className="text-white font-semibold uppercase tracking-wider text-xs">21+3 (Up to 100:1)</h3>
-            <p className="text-[10px] text-white/50 leading-tight mb-2">Based on your first two cards and the dealer's upcard.</p>
-            <ul className="space-y-1.5 font-mono text-xs">
-              <li className="flex justify-between"><span>Suited Trips</span><span className="text-[#ece424]">100:1</span></li>
-              <li className="flex justify-between"><span>Straight Flush</span><span className="text-[#ece424]">40:1</span></li>
-              <li className="flex justify-between"><span>Three of a Kind</span><span className="text-[#ece424]">30:1</span></li>
-              <li className="flex justify-between"><span>Straight</span><span className="text-[#ece424]">10:1</span></li>
-              <li className="flex justify-between"><span>Flush</span><span className="text-[#ece424]">5:1</span></li>
-            </ul>
+            <h3 className="text-white font-semibold uppercase tracking-wider text-xs">21+3 Poker (Up to 100:1)</h3>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/10">
+                <div className="flex items-center gap-1.5">
+                  <div className="flex items-center -space-x-1">
+                    <span className="w-4.5 h-6 rounded bg-white text-slate-950 border border-[#d4af37] flex items-center justify-center text-[8px] font-black">K♠</span>
+                    <span className="w-4.5 h-6 rounded bg-white text-slate-950 border border-[#d4af37] flex items-center justify-center text-[8px] font-black">K♠</span>
+                    <span className="w-4.5 h-6 rounded bg-white text-slate-950 border border-[#d4af37] flex items-center justify-center text-[8px] font-black">K♠</span>
+                  </div>
+                  <span className="text-[10px] text-white/80">Suited 3</span>
+                </div>
+                <span className="font-mono font-bold text-[#ece424]">100:1</span>
+              </div>
+              <div className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/10">
+                <div className="flex items-center gap-1.5">
+                  <div className="flex items-center -space-x-1">
+                    <span className="w-4.5 h-6 rounded bg-white text-red-600 border border-slate-300 flex items-center justify-center text-[8px] font-black">9♥</span>
+                    <span className="w-4.5 h-6 rounded bg-white text-red-600 border border-slate-300 flex items-center justify-center text-[8px] font-black">10♥</span>
+                    <span className="w-4.5 h-6 rounded bg-white text-red-600 border border-slate-300 flex items-center justify-center text-[8px] font-black">J♥</span>
+                  </div>
+                  <span className="text-[10px] text-white/80">Str. Flush</span>
+                </div>
+                <span className="font-mono font-bold text-[#ece424]">40:1</span>
+              </div>
+              <div className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/10">
+                <div className="flex items-center gap-1.5">
+                  <div className="flex items-center -space-x-1">
+                    <span className="w-4.5 h-6 rounded bg-white text-slate-950 border border-slate-300 flex items-center justify-center text-[8px] font-black">8♠</span>
+                    <span className="w-4.5 h-6 rounded bg-white text-red-600 border border-slate-300 flex items-center justify-center text-[8px] font-black">8♥</span>
+                    <span className="w-4.5 h-6 rounded bg-white text-slate-950 border border-slate-300 flex items-center justify-center text-[8px] font-black">8♣</span>
+                  </div>
+                  <span className="text-[10px] text-white/80">3 of Kind</span>
+                </div>
+                <span className="font-mono font-bold text-[#ece424]">30:1</span>
+              </div>
+              <div className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/10">
+                <div className="flex items-center gap-1.5">
+                  <div className="flex items-center -space-x-1">
+                    <span className="w-4.5 h-6 rounded bg-white text-slate-950 border border-slate-300 flex items-center justify-center text-[8px] font-black">5♠</span>
+                    <span className="w-4.5 h-6 rounded bg-white text-red-600 border border-slate-300 flex items-center justify-center text-[8px] font-black">6♦</span>
+                    <span className="w-4.5 h-6 rounded bg-white text-slate-950 border border-slate-300 flex items-center justify-center text-[8px] font-black">7♣</span>
+                  </div>
+                  <span className="text-[10px] text-white/80">Str / Flush</span>
+                </div>
+                <span className="font-mono font-bold text-[#ece424]">10/5:1</span>
+              </div>
+            </div>
           </div>
 
           <div className="space-y-2">

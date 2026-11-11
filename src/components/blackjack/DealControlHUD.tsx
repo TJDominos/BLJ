@@ -66,15 +66,15 @@ export function DealControlHUD({
 
   return (
     <div className={className || "absolute bottom-1 sm:bottom-4 md:-bottom-5 w-full flex flex-col items-center z-30 px-4 pointer-events-none"}>
-      <div className="relative flex flex-col pointer-events-auto z-10 w-[96%] sm:w-auto drop-[0_10px_20px_rgba(0,0,0,0.6)]">
+      <div className="relative flex flex-col pointer-events-auto z-10 w-[92%] max-w-[360px] sm:max-w-none sm:w-auto drop-[0_10px_20px_rgba(0,0,0,0.6)]">
         <div 
-          className="relative flex flex-row items-center border-[2px] border-[#6b4c2a] rounded-full bg-gradient-to-b from-[#eac574] via-[#d0a758] to-[#997027] p-1 md:p-2 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8),inset_0_-1px_2px_rgba(0,0,0,0.4)] max-w-full w-full sm:w-[460px] h-[44px] sm:h-[60px]"
+          className="relative flex flex-row items-center border-[2px] border-[#6b4c2a] rounded-full bg-gradient-to-b from-[#eac574] via-[#d0a758] to-[#997027] p-1 md:p-2 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8),inset_0_-1px_2px_rgba(0,0,0,0.4)] max-w-full w-full sm:w-[460px] h-[40px] sm:h-[56px]"
         >
           <div className="absolute left-1 right-1 inset-y-1 bg-black/20 pointer-events-none rounded-full"></div>
 
           {/* Left Filigree */}
-          <div className="flex w-6 sm:w-10 flex-shrink-0 items-center justify-center text-[#5c3e1b] opacity-80 z-10 mr-1 sm:mr-1">
-            <svg viewBox="0 0 60 120" className="h-[1.5rem] sm:h-[2rem] w-auto">
+          <div className="flex w-5 sm:w-10 flex-shrink-0 items-center justify-center text-[#5c3e1b] opacity-80 z-10 mr-0.5 sm:mr-1">
+            <svg viewBox="0 0 60 120" className="h-[1.35rem] sm:h-[2rem] w-auto">
                 <path d="M60 0 C30 0 20 20 10 40 C0 55 0 65 10 80 C20 100 30 120 60 120 Z" fill="#d0a758" stroke="currentColor" strokeWidth="2" />
                 <path d="M50 15 C30 15 25 30 30 40 C35 50 45 45 45 35" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
                 <path d="M55 45 C40 45 35 55 40 65 C45 75 55 70 55 60" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
@@ -88,36 +88,36 @@ export function DealControlHUD({
                 {isTournament && (
                   <span className="text-[8px] sm:text-[9px] text-[#ffc53d] font-bold uppercase tracking-wider mb-0.5 sm:mb-1 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">Min Bet: {table.settings.tournament?.minBetChips || table.settings.minBet || 50}</span>
                 )}
-                <div className="flex items-center bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full w-[95px] sm:w-[136px] shrink-0 h-[32px] sm:h-[44px] p-1 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6),0_1px_1px_rgba(255,255,255,0.4)] border border-[#3a2510]">
+                <div className="flex items-center bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full w-[90px] sm:w-[136px] shrink-0 h-[28px] sm:h-[40px] p-0.5 sm:p-1 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6),0_1px_1px_rgba(255,255,255,0.4)] border border-[#3a2510]">
                     <button 
                       onClick={onMinus}
-                      className="w-[24px] h-[24px] sm:w-[32px] sm:h-[32px] rounded-[6px] sm:rounded-[8px] bg-gradient-to-b from-[#bd945d] to-[#987241] flex justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
+                      className="w-[22px] h-[22px] sm:w-[30px] sm:h-[30px] rounded-[6px] sm:rounded-[8px] bg-gradient-to-b from-[#bd945d] to-[#987241] flex justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
                     >
-                      <Minus className="w-3 h-3 sm:w-5 sm:h-5" />
+                      <Minus className="w-3 h-3 sm:w-4 sm:h-4" />
                     </button>
                     <input 
                         type="text"
-                        className="flex-1 bg-transparent border-none outline-none text-white font-black text-[12px] leading-[18px] sm:text-[18px] sm:leading-[24px] min-w-0 text-center px-0.5 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]"
+                        className="flex-1 bg-transparent border-none outline-none text-white font-black text-[11px] leading-[16px] sm:text-[16px] sm:leading-[22px] min-w-0 text-center px-0.5 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]"
                         value={betAmountStr}
                         onChange={onBetChange}
                         onBlur={onBetBlur}
                     />
                     <button 
                       onClick={onPlus}
-                      className="w-[24px] h-[24px] sm:w-[32px] sm:h-[32px] rounded-[6px] sm:rounded-[8px] bg-gradient-to-b from-[#bd945d] to-[#987241] flex justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
+                      className="w-[22px] h-[22px] sm:w-[30px] sm:h-[30px] rounded-[6px] sm:rounded-[8px] bg-gradient-to-b from-[#bd945d] to-[#987241] flex justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
                     >
-                      <Plus className="w-3 h-3 sm:w-5 sm:h-5" />
+                      <Plus className="w-3 h-3 sm:w-4 sm:h-4" />
                     </button>
                 </div>
               </div>
 
               {/* SIDE Toggles */}
               <div className="flex flex-col items-center justify-center shrink-0">
-                <span className="text-[9px] sm:text-xs text-white/90 font-black uppercase tracking-wider drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] mb-0.5 sm:mb-1" style={{WebkitTextStroke: '0.5px rgba(0,0,0,0.5)'}}>Side</span>
+                <span className="text-[8px] sm:text-[11px] text-white/90 font-black uppercase tracking-wider drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] mb-0.5" style={{WebkitTextStroke: '0.5px rgba(0,0,0,0.5)'}}>Side</span>
                 <button 
                   onClick={onSideBetsToggle}
-                  className={cn("w-8 h-4 sm:w-12 sm:h-6 rounded-full p-0.5 sm:p-1 transition-colors relative shadow-[inset_0_2px_4px_rgba(0,0,0,0.7)] border border-black/30", sideBetsEnabled ? "bg-[#32d5a4]" : "bg-[#454746]")}>
-                    <div className={cn("w-3 h-3 sm:w-4 sm:h-4 rounded-full transition-transform shadow-md", sideBetsEnabled ? "bg-white translate-x-4 sm:translate-x-6" : "bg-[#c0c0c0] translate-x-0")} />
+                  className={cn("w-7 h-3.5 sm:w-11 sm:h-5 rounded-full p-0.5 transition-colors relative shadow-[inset_0_2px_4px_rgba(0,0,0,0.7)] border border-black/30", sideBetsEnabled ? "bg-[#32d5a4]" : "bg-[#454746]")}>
+                    <div className={cn("w-2.5 h-2.5 sm:w-3.5 sm:h-3.5 rounded-full transition-transform shadow-md", sideBetsEnabled ? "bg-white translate-x-3.5 sm:translate-x-5" : "bg-[#c0c0c0] translate-x-0")} />
                 </button>
               </div>
 
@@ -125,8 +125,8 @@ export function DealControlHUD({
               {(() => {
                 if (!isAnySeatNotReady && mySeats.length > 0) {
                   return (
-                    <div className="relative w-[70px] sm:w-[110px] h-[32px] sm:h-[44px] flex items-center justify-center">
-                       <span className="text-white/75 font-bold text-xs sm:text-sm tracking-widest uppercase">
+                    <div className="relative w-[64px] sm:w-[104px] h-[28px] sm:h-[40px] flex items-center justify-center">
+                       <span className="text-white/75 font-bold text-[11px] sm:text-sm tracking-widest uppercase">
                          Ready
                        </span>
                     </div>
@@ -137,7 +137,7 @@ export function DealControlHUD({
                   <button 
                     onClick={onDeal}
                     className={cn(
-                      "relative overflow-hidden min-w-[70px] sm:min-w-[110px] h-[32px] sm:h-[44px] bg-gradient-to-b from-[#28a19b] to-[#126b6f] text-white rounded-[12px] sm:rounded-[20px] px-2 font-black tracking-widest text-[12px] sm:text-[16px] uppercase transition-all shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border border-[#0d4f52] flex items-center justify-center shrink-0 group hover:from-[#2ebaba] hover:to-[#178287]",
+                      "relative overflow-hidden min-w-[64px] sm:min-w-[104px] h-[28px] sm:h-[40px] bg-gradient-to-b from-[#28a19b] to-[#126b6f] text-white rounded-[10px] sm:rounded-[18px] px-2 font-black tracking-widest text-[11px] sm:text-[15px] uppercase transition-all shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border border-[#0d4f52] flex items-center justify-center shrink-0 group hover:from-[#2ebaba] hover:to-[#178287]",
                       dealCountdown !== null ? "animate-pulse shadow-[0_0_15px_rgba(40,161,155,0.8)]" : "active:scale-95"
                     )}
                   >
@@ -155,11 +155,11 @@ export function DealControlHUD({
               {/* AUTO Toggle */}
               {onAutoDealToggle && (
                 <div className="flex flex-col items-center justify-center shrink-0">
-                  <span className="text-[9px] sm:text-xs text-white/90 font-black uppercase tracking-wider drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] mb-0.5 sm:mb-1" style={{WebkitTextStroke: '0.5px rgba(0,0,0,0.5)'}}>Auto</span>
+                  <span className="text-[8px] sm:text-[11px] text-white/90 font-black uppercase tracking-wider drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] mb-0.5" style={{WebkitTextStroke: '0.5px rgba(0,0,0,0.5)'}}>Auto</span>
                   <button 
                     onClick={onAutoDealToggle}
                     className={cn(
-                      "w-5 h-5 sm:w-7 sm:h-7 rounded-full transition-all border border-[#836338] shrink-0 font-bold flex items-center justify-center",
+                      "w-4.5 h-4.5 sm:w-6 sm:h-6 rounded-full transition-all border border-[#836338] shrink-0 font-bold flex items-center justify-center",
                       autoDeal
                         ? "bg-gradient-to-b from-[#987241] to-[#bd945d] scale-95 shadow-[inset_0_2px_4px_rgba(0,0,0,0.4)]"
                         : "bg-gradient-to-b from-[#bd945d] to-[#987241] hover:from-[#cda36c] hover:to-[#a78150] shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)]"
@@ -172,8 +172,8 @@ export function DealControlHUD({
           </div>
 
           {/* Right Filigree */}
-          <div className="flex w-6 sm:w-10 flex-shrink-0 items-center justify-center text-[#5c3e1b] opacity-80 z-10 ml-1 sm:ml-1 scale-x-[-1]">
-             <svg viewBox="0 0 60 120" className="h-[1.5rem] sm:h-[2rem] w-auto">
+          <div className="flex w-5 sm:w-10 flex-shrink-0 items-center justify-center text-[#5c3e1b] opacity-80 z-10 ml-0.5 sm:ml-1 scale-x-[-1]">
+             <svg viewBox="0 0 60 120" className="h-[1.35rem] sm:h-[2rem] w-auto">
                 <path d="M60 0 C30 0 20 20 10 40 C0 55 0 65 10 80 C20 100 30 120 60 120 Z" fill="#d0a758" stroke="currentColor" strokeWidth="2" />
                 <path d="M50 15 C30 15 25 30 30 40 C35 50 45 45 45 35" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
                 <path d="M55 45 C40 45 35 55 40 65 C45 75 55 70 55 60" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
@@ -183,25 +183,25 @@ export function DealControlHUD({
         </div>
 
         {sideBetsEnabled && (
-          <div className="bg-gradient-to-b from-[#2b1c0e] to-[#1a1005] border border-t-0 border-[#513518] rounded-b-2xl pb-1.5 sm:pb-3 shadow-[0_10px_20px_rgba(0,0,0,0.6)] flex flex-row gap-2 sm:gap-4 justify-center items-center z-0 relative w-[90%] max-w-[360px] mx-auto -mt-6 sm:-mt-6">
+          <div className="bg-gradient-to-b from-[#2b1c0e] to-[#1a1005] border border-t-0 border-[#513518] rounded-b-2xl pb-1.5 sm:pb-2.5 shadow-[0_10px_20px_rgba(0,0,0,0.6)] flex flex-row gap-2 sm:gap-4 justify-center items-center z-0 relative w-[88%] max-w-[320px] sm:max-w-[360px] mx-auto -mt-5 sm:-mt-6">
               <div className="absolute inset-0 bg-black/20 pointer-events-none rounded-b-2xl"></div>
               
-              <div className="flex flex-col gap-0.5 items-center pt-8 sm:pt-8 w-full">
-                <div className="flex flex-row justify-center gap-4 sm:gap-6 w-full">
+              <div className="flex flex-col gap-0.5 items-center pt-6 sm:pt-7 w-full">
+                <div className="flex flex-row justify-center gap-3 sm:gap-6 w-full">
                   <div className="flex flex-col gap-0.5 items-center">
-                    <span className="text-[10px] sm:text-[12px] text-[#eac574] font-bold tracking-wide text-center drop-shadow-md leading-none whitespace-nowrap">
-                      Perfect Pair <span className="text-white/60 text-[9px] sm:text-[10px] font-mono">(11:1)</span>
+                    <span className="text-[9px] sm:text-[11px] text-[#eac574] font-bold tracking-wide text-center drop-shadow-md leading-none whitespace-nowrap">
+                      Perfect Pair <span className="text-white/60 text-[8px] sm:text-[10px] font-mono">(25:1)</span>
                     </span>
-                    <div className="flex items-center bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full w-[95px] sm:w-[130px] h-[30px] sm:h-[40px] p-0.5 sm:p-1 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6)] border border-[#3a2510]">
+                    <div className="flex items-center bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full w-[86px] sm:w-[124px] h-[26px] sm:h-[36px] p-0.5 sm:p-1 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6)] border border-[#3a2510]">
                         <button 
                           onClick={onPairMinus}
-                          className="flex w-[24px] h-[24px] sm:w-[32px] sm:h-[32px] rounded-full bg-gradient-to-b from-[#bd945d] to-[#987241] justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
+                          className="flex w-[20px] h-[20px] sm:w-[28px] sm:h-[28px] rounded-full bg-gradient-to-b from-[#bd945d] to-[#987241] justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
                         >
-                          <Minus className="w-3 h-3 sm:w-4 sm:h-4" />
+                          <Minus className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5" />
                         </button>
                         <input 
                           type="text"
-                          className="flex-1 bg-transparent border-none outline-none text-white font-black text-[11px] sm:text-[14px] min-w-0 text-center px-0.5 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]"
+                          className="flex-1 bg-transparent border-none outline-none text-white font-black text-[10px] sm:text-[13px] min-w-0 text-center px-0.5 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]"
                           value={pairBetStr}
                           onChange={onPairChange}
                           onBlur={onPairBlur}
@@ -209,27 +209,27 @@ export function DealControlHUD({
                         />
                         <button 
                           onClick={onPairPlus}
-                          className="flex w-[24px] h-[24px] sm:w-[32px] sm:h-[32px] rounded-full bg-gradient-to-b from-[#bd945d] to-[#987241] justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
+                          className="flex w-[20px] h-[20px] sm:w-[28px] sm:h-[28px] rounded-full bg-gradient-to-b from-[#bd945d] to-[#987241] justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
                         >
-                          <Plus className="w-3 h-3 sm:w-4 sm:h-4" />
+                          <Plus className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5" />
                         </button>
                     </div>
                   </div>
                   
                   <div className="flex flex-col gap-0.5 items-center">
-                    <span className="text-[10px] sm:text-[12px] text-[#eac574] font-bold tracking-wide text-center drop-shadow-md leading-none whitespace-nowrap">
-                      21+3 <span className="text-white/60 text-[9px] sm:text-[10px] font-mono">(100:1)</span>
+                    <span className="text-[9px] sm:text-[11px] text-[#eac574] font-bold tracking-wide text-center drop-shadow-md leading-none whitespace-nowrap">
+                      21+3 <span className="text-white/60 text-[8px] sm:text-[10px] font-mono">(100:1)</span>
                     </span>
-                    <div className="flex items-center bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full w-[95px] sm:w-[130px] h-[30px] sm:h-[40px] p-0.5 sm:p-1 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6)] border border-[#3a2510]">
+                    <div className="flex items-center bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full w-[86px] sm:w-[124px] h-[26px] sm:h-[36px] p-0.5 sm:p-1 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6)] border border-[#3a2510]">
                         <button 
                           onClick={onPlus3Minus}
-                          className="flex w-[24px] h-[24px] sm:w-[32px] sm:h-[32px] rounded-full bg-gradient-to-b from-[#bd945d] to-[#987241] justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
+                          className="flex w-[20px] h-[20px] sm:w-[28px] sm:h-[28px] rounded-full bg-gradient-to-b from-[#bd945d] to-[#987241] justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
                         >
-                          <Minus className="w-3 h-3 sm:w-4 sm:h-4" />
+                          <Minus className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5" />
                         </button>
                         <input 
                           type="text"
-                          className="flex-1 bg-transparent border-none outline-none text-white font-black text-[11px] sm:text-[14px] min-w-0 text-center px-0.5 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]"
+                          className="flex-1 bg-transparent border-none outline-none text-white font-black text-[10px] sm:text-[13px] min-w-0 text-center px-0.5 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]"
                           value={plus3BetStr}
                           onChange={onPlus3Change}
                           onBlur={onPlus3Blur}
@@ -237,9 +237,9 @@ export function DealControlHUD({
                         />
                         <button 
                           onClick={onPlus3Plus}
-                          className="flex w-[24px] h-[24px] sm:w-[32px] sm:h-[32px] rounded-full bg-gradient-to-b from-[#bd945d] to-[#987241] justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
+                          className="flex w-[20px] h-[20px] sm:w-[28px] sm:h-[28px] rounded-full bg-gradient-to-b from-[#bd945d] to-[#987241] justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
                         >
-                          <Plus className="w-3 h-3 sm:w-4 sm:h-4" />
+                          <Plus className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5" />
                         </button>
                     </div>
                   </div>

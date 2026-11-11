@@ -280,18 +280,45 @@ async function startServer() {
       expectedTick: number;
       committedTick: number;
       status: "applied" | "rejected" | "unresolved";
-    }>
-  ) => ({
-    type: "snapshot" as const,
-    scope: roomScope,
-    matchId: inst.matchId,
-    matchSeq: inst.matchSeq,
-    tick: inst.tick,
-    state: projectBlackjackRoomState(inst.state).publicState,
-    broadcasts: inst.broadcasts || [],
-    gameResult: { over: false },
-    ...(actionReceipts && actionReceipts.length > 0 ? { actionReceipts } : {}),
-  });
+    }>,
+    viewerPlayerId?: string
+  ) => {
+    const playerIds: string[] = Array.isArray(inst.state?.players) ? inst.state.players : [];
+    const players = playerIds.map((pid) => {
+      const displayName =
+        inst.state?.playerNames?.[pid] || usersDb[pid]?.name || pid;
+      const avatarUrl =
+        inst.state?.playerAvatars?.[pid] || usersDb[pid]?.avatar || undefined;
+      return {
+        playerId: pid,
+        joinedAt: Date.now(),
+        ...(displayName ? { displayName } : {}),
+        ...(avatarUrl ? { avatarUrl } : {}),
+      };
+    });
+    const projection = projectBlackjackRoomState(inst.state);
+    const statePayload = viewerPlayerId
+      ? {
+          ...(projection.publicState as Record<string, unknown>),
+          self: {
+            playerId: viewerPlayerId,
+            privateState: projection.privateStates[viewerPlayerId] || null,
+          },
+        }
+      : projection.publicState;
+    return {
+      type: "snapshot" as const,
+      scope: roomScope,
+      matchId: inst.matchId,
+      matchSeq: inst.matchSeq,
+      tick: inst.tick,
+      players,
+      state: statePayload,
+      broadcasts: inst.broadcasts || [],
+      gameResult: { over: false },
+      ...(actionReceipts && actionReceipts.length > 0 ? { actionReceipts } : {}),
+    };
+  };
 
   const broadcastRoomSnapshot = (
     inst: NonNullable<ReturnType<typeof hostedRoomInstances.get>>,
@@ -309,7 +336,7 @@ async function startServer() {
         continue;
       }
       const playerReceipts = actionReceipts?.filter((r) => r.playerId === client.playerId);
-      const frame = buildRoomSnapshotFrame(inst, playerReceipts);
+      const frame = buildRoomSnapshotFrame(inst, playerReceipts, client.playerId);
       client.socket.write(encodeWsTextFrame(JSON.stringify(frame)));
     }
   };
@@ -434,7 +461,7 @@ async function startServer() {
       const inst = await getOrCreateHostedRoom(req.params.roomId, resolved.playerId);
       res.json({
         success: true,
-        data: buildRoomSnapshotFrame(inst),
+        data: buildRoomSnapshotFrame(inst, undefined, resolved.playerId),
       });
     } catch (err: any) {
       res.status(400).json({ success: false, code: "STATE_FAILED", error: err?.message });
@@ -537,7 +564,7 @@ async function startServer() {
     };
   };
 
-  app.post("/api/game/session", (req, res) => {
+  app.post("/api/game/session", async (req, res) => {
     try {
       const platformIdentity = resolveAuthenticatedPlatformPlayer(req);
       const { userId, name = "Player", avatar, publisherKey, isCreator } = req.body || {};
@@ -561,14 +588,23 @@ async function startServer() {
         isCreatorAuth,
         resolvedAvatar
       );
+      const inst = await getOrCreateHostedRoom("table_1", resolvedId);
+      if (!inst.state.playerNames) inst.state.playerNames = {};
+      if (!inst.state.playerAvatars) inst.state.playerAvatars = {};
+      if (resolvedName && resolvedName !== "Player") {
+        inst.state.playerNames[resolvedId] = resolvedName;
+      }
+      if (resolvedAvatar) {
+        inst.state.playerAvatars[resolvedId] = resolvedAvatar;
+      }
       res.setHeader(
         "Set-Cookie",
         `rs_player_id=${encodeURIComponent(resolvedId)}; Path=/; SameSite=Lax`
       );
-      reconcileSystemTables();
+      const snapFrame = buildRoomSnapshotFrame(inst, undefined, resolvedId);
       res.json({
         user,
-        tables: sanitizeTablesMapForClient(tablesDb, resolvedId),
+        roomSnapshot: snapFrame.state,
       });
     } catch (err: any) {
       res.status(400).json({ error: err?.message || "Failed to initialize session" });
@@ -609,9 +645,9 @@ async function startServer() {
 
   app.post(["/api/rooms", "/api/game/tables"], async (req, res) => {
     try {
-      const { userId = "host_user", userName = "Player", settings, liquidity = 0 } = req.body || {};
-      getOrCreateUser(userId, userName);
-      const room = await hostTableApi.createTable(userId, userName, settings, liquidity);
+      const { userId = "host_user", userName = "Player", userAvatar, settings, liquidity = 0 } = req.body || {};
+      getOrCreateUser(userId, userName, false, userAvatar);
+      const room = await hostTableApi.createTable(userId, userName, settings, liquidity, userAvatar);
       res.status(201).json(buildStatePayload(userId, { room, table: room }));
     } catch (err: any) {
       res.status(400).json({ error: err?.message || "Failed to create room" });
@@ -926,7 +962,7 @@ async function startServer() {
       inst.sockets.add(clientEntry);
 
       // Send initial authoritative RoomSnapshot immediately on connect
-      socket.write(encodeWsTextFrame(JSON.stringify(buildRoomSnapshotFrame(inst))));
+      socket.write(encodeWsTextFrame(JSON.stringify(buildRoomSnapshotFrame(inst, undefined, playerId))));
 
       let buffer = head && head.length > 0 ? Buffer.from(head) : Buffer.alloc(0);
 

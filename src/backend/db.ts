@@ -60,41 +60,13 @@ export interface HouseTokenStats {
   totalRefillsCount: number;
 }
 
-const INITIAL_BASE_USERS: Array<{ id: string; name: string; balance: number }> = [
-  { id: 'player_system_demo', name: 'Player', balance: 5000 },
-  { id: 'usr_sarah_v', name: 'Sarah Connor', balance: 8400 },
-  { id: 'usr_michael_b', name: 'Michael B.', balance: 12500 },
-  { id: 'usr_elena_r', name: 'Elena Rostova', balance: 6200 },
-  { id: 'usr_kenji_t', name: 'Kenji Takahashi', balance: 9100 },
-  { id: 'usr_david_k', name: 'David Kim', balance: 4800 },
-  { id: 'usr_amira_s', name: 'Amira Said', balance: 15400 },
-  { id: 'usr_lucas_m', name: 'Lucas Silva', balance: 7300 },
-  { id: 'usr_chloe_d', name: 'Chloe Dubois', balance: 11000 },
-  { id: 'usr_oliver_w', name: 'Oliver Wright', balance: 5500 },
-  { id: 'usr_zhao_l', name: 'Zhao Lei', balance: 18200 },
-  { id: 'usr_hanna_m', name: 'Hanna Mueller', balance: 6700 },
-  { id: 'usr_marcus_a', name: 'Marcus Aurelius', balance: 22000 },
-];
-
-// Authoritative Server-Side User & Game Coin Wallet Store
+// Authoritative Server-Side User & Game Coin Wallet Store (only real authenticated/active users)
 export const usersDb: Record<string, User> = {};
 
-// Initialize base registered users
-for (const u of INITIAL_BASE_USERS) {
-  usersDb[u.id] = {
-    id: u.id,
-    name: u.name,
-    balance: u.balance,
-    bonusBalance: 0,
-    role: 'player',
-    isCreator: false,
-  };
-}
-
 export const houseStats: HouseTokenStats = {
-  totalTokensIssuedByHouse: INITIAL_BASE_USERS.length * DEFAULT_GAME_COINS, // 13 * 5,000 = 65,000
-  totalTokensPaidOutToPlayers: 38400, // baseline winnings paid out to players across historical hands
-  totalRefillsCount: 6,
+  totalTokensIssuedByHouse: 0,
+  totalTokensPaidOutToPlayers: 0,
+  totalRefillsCount: 0,
 };
 
 /**
@@ -129,8 +101,14 @@ export function getOrCreateUser(
       usersDb[userId].role = 'creator';
       usersDb[userId].isCreator = true;
     }
-    // Sync updated name & avatar to any seats currently occupied by this user
+    // Sync updated name & avatar to any seats or hosted tables owned by this user
     for (const table of Object.values(tablesDb)) {
+      if (table.houseId === userId) {
+        table.houseName = usersDb[userId].name;
+        if (usersDb[userId].avatar) {
+          table.houseAvatar = usersDb[userId].avatar;
+        }
+      }
       for (const seat of table.seats) {
         if (seat.userId === userId) {
           seat.name = usersDb[userId].name;

@@ -13,7 +13,7 @@ export const hostTableApi = {
     return JSON.parse(JSON.stringify(tablesDb));
   },
 
-  async createTable(userId: string, _userName: string, settings: TableSettings, liquidity: number): Promise<Table> {
+  async createTable(userId: string, userName: string, settings: TableSettings, liquidity: number, userAvatar?: string): Promise<Table> {
     await delay();
     const trimmedName = typeof settings.name === 'string' ? settings.name.trim() : '';
     if (!trimmedName) {
@@ -35,6 +35,9 @@ export const hostTableApi = {
 
     const now = Date.now();
     const maxHostingTimeMs = DEFAULT_CUSTOM_TABLE_MAX_HOSTING_TIME_MS;
+    const hostUser = usersDb[userId];
+    const resolvedHostName = (userName && userName !== 'Player' ? userName : hostUser?.name) || userName || 'Host';
+    const resolvedHostAvatar = userAvatar || hostUser?.avatar;
 
     const tableId = `table_${Math.random().toString(36).substr(2, 9)}`;
     const newTable: Table = {
@@ -42,6 +45,8 @@ export const hostTableApi = {
       name: trimmedName,
       description: '',
       houseId: userId,
+      houseName: resolvedHostName,
+      houseAvatar: resolvedHostAvatar,
       createdAt: now,
       visits: 0,
       liquidity,
@@ -58,6 +63,7 @@ export const hostTableApi = {
       discardedCards: [],
       currentTurnIndex: -1,
       roundsPlayed: 0,
+      roundHistory: [],
       emptySince: now,
       maxHostingTimeMs,
       expiresAt: now + maxHostingTimeMs

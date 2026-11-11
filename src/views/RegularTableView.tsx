@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils';
 import { soundManager } from '@/lib/sounds';
 import { RulesModal } from './RulesModal';
 import { PlayingCard } from '@/components/blackjack/PlayingCardUI';
-import { DelayedScore } from '@/components/blackjack/DelayedScore';
+import { DelayedScore, useDealRevealedSeats } from '@/components/blackjack/DelayedScore';
 import { DealerArea } from '@/components/blackjack/DealerAreaUI';
 import { WinAnimation } from '@/components/blackjack/WinAnimation';
 import { GoldenWreath } from '@/components/blackjack/GoldenWreath';
@@ -102,8 +102,10 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
   const recentWinAmount = useUIStore(selectRecentWinAmount);
   const setRecentWinAmount = uiStore.setRecentWinAmount;
   const playMode = useUIStore(selectPlayMode);
+  const [isStatsOpen, setIsStatsOpen] = useState(false);
 
   const table = tables[activeTableId || ''];
+  const isSeatDealRevealed = useDealRevealedSeats(table?.status, table?.seats?.length || 7);
   const mySeats = React.useMemo(() => table?.seats.map((s, i) => s.userId === currentUser?.id ? i : -1).filter(i => i >= 0) || [], [table?.seats?.map(s => s.userId)?.join(), currentUser?.id]);
 
   const setPlayMode = useUIStore(state => state.setPlayMode);
@@ -130,15 +132,24 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
 
   const previousDeckLength = React.useRef(table?.deck?.length || 0);
   const previousStatus = React.useRef(table?.status);
+  const previousRoundsPlayed = React.useRef<number | undefined>(table?.roundsPlayed);
   const seatsContainerRef = React.useRef<HTMLDivElement>(null);
   const isResolvingRef = React.useRef(false);
   const isFirstLoadRef = React.useRef(true);
   const isPlacingBetRef = React.useRef(false);
 
+  const isRoundJustSettled = Boolean(
+    table &&
+    table.status === 'waiting' &&
+    (previousStatus.current === 'playing' ||
+      (previousRoundsPlayed.current !== undefined &&
+        (table.roundsPlayed || 0) > previousRoundsPlayed.current))
+  );
+
   if (table?.status === 'playing') {
     isResolvingRef.current = false;
   }
-  if (table && previousStatus.current === 'playing' && table.status === 'waiting' && recentWinAmount === null) {
+  if (isRoundJustSettled && recentWinAmount === null) {
      isResolvingRef.current = true;
   } else if (recentWinAmount !== null) {
      isResolvingRef.current = false;
@@ -275,18 +286,27 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
   }, [isMuted]);
 
   useEffect(() => {
-    if (table && previousStatus.current === 'playing' && table.status === 'waiting') {
+    const settledNow =
+      table &&
+      table.status === 'waiting' &&
+      (previousStatus.current === 'playing' ||
+        (previousRoundsPlayed.current !== undefined &&
+          (table.roundsPlayed || 0) > previousRoundsPlayed.current));
+    if (settledNow) {
        // Find the most recent record
        const lastRecord = gameRecords[0];
        if (lastRecord && lastRecord.tableId === table.id) {
            // net win is amount won > bet ? true : false
-           const totalBet = lastRecord.seatResults?.reduce((sum, sr) => sum + sr.bet, 0) || 0;
            const winningSeats: number[] = [];
            let myWon = false;
            table.seats.forEach((s, idx) => {
                const res = lastRecord.seatResults?.find(sr => sr.seatIndex === idx);
                const isHandWin = s.hand && (s.hand.status === 'won' || s.hand.status === 'blackjack');
-               if (isHandWin || (res && res.net > 0)) {
+               const hasSideOrInsWin = Boolean(
+                 (res && ((res.sideBetWin || 0) > 0 || (res.insuranceWin || 0) > 0 || (res.win || 0) > 0)) ||
+                 (s.hand && ((s.hand.sideBetPairWon || 0) > 0 || (s.hand.sideBetPlus3Won || 0) > 0))
+               );
+               if (isHandWin || (res && res.net > 0) || hasSideOrInsWin) {
                  winningSeats.push(idx);
                  if (s.userId === currentUser?.id) myWon = true;
                }
@@ -309,7 +329,8 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
        }
     }
     previousStatus.current = table?.status;
-  }, [table?.status, table?.id, JSON.stringify(table?.seats), gameRecords]);
+    previousRoundsPlayed.current = table?.roundsPlayed;
+  }, [table?.status, table?.id, table?.roundsPlayed, JSON.stringify(table?.seats), gameRecords]);
 
   useEffect(() => {
     if (table) {
@@ -350,7 +371,17 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
 
   useBotBehavior(table, hit, stand);
 
+  const activeTurnSeatForEffects =
+    table?.status === 'playing' && table.currentTurnIndex >= 0
+      ? table.seats[table.currentTurnIndex]
+      : undefined;
+  const isActiveTurnDealRevealed =
+    table?.status === 'playing' && table.currentTurnIndex >= 0
+      ? isSeatDealRevealed(table.currentTurnIndex, activeTurnSeatForEffects?.originalSeatIndex)
+      : true;
+
   useEffect(() => {
+    if (!isActiveTurnDealRevealed) return;
     if (actionCountdown !== null && actionCountdown > 0) {
       const isTurn = table?.status === 'playing' && table?.currentTurnIndex >= 0 && table?.seats[table.currentTurnIndex]?.userId === currentUser?.id;
       if (isTurn && actionCountdown <= 6) {
@@ -366,23 +397,23 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
         stand(table.id, activeSeat);
       }
     }
-  }, [actionCountdown, table?.status, table?.id, table?.currentTurnIndex, stand, hit, currentUser?.id, JSON.stringify(table?.seats)]);
+  }, [actionCountdown, isActiveTurnDealRevealed, table?.status, table?.id, table?.currentTurnIndex, stand, hit, currentUser?.id, JSON.stringify(table?.seats)]);
 
   const prevActionSnapshot = React.useRef('');
   useEffect(() => {
     if (!table || !currentUser) return;
     const isTurn = table.status === 'playing' && table.currentTurnIndex >= 0 && table.seats[table.currentTurnIndex]?.userId === currentUser.id;
-    if (isTurn) {
+    if (isTurn && isActiveTurnDealRevealed) {
         const snapshot = `${table.currentTurnIndex}`;
         if (prevActionSnapshot.current !== snapshot) {
             const pan = table.seats.length > 1 && table.currentTurnIndex >= 0 ? (table.currentTurnIndex / (table.seats.length - 1)) * 2 - 1 : 0;
             soundManager.playBell(pan);
             prevActionSnapshot.current = snapshot;
         }
-    } else {
+    } else if (!isTurn) {
         prevActionSnapshot.current = '';
     }
-  }, [table?.status, table?.currentTurnIndex, JSON.stringify(table?.seats), currentUser?.id]);
+  }, [table?.status, table?.currentTurnIndex, isActiveTurnDealRevealed, JSON.stringify(table?.seats), currentUser?.id]);
 
   if (!table || !currentUser) {
     return (
@@ -406,7 +437,13 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
   })() : 0;
   
   const canSplit = canDouble && activeHand?.cards[0].value === activeHand?.cards[1].value && myUserBal >= (activeHand?.bet || 0) && currentHandsCountForSeat < 4;
-  const canBuyInsurance = canDouble && table.dealerHand?.cards[0].value === 'A' && !activeHand?.insuranceBet;
+  const canBuyInsurance =
+    isMyTurn &&
+    activeHand?.cards.length === 2 &&
+    !table.seats[activeSeatIndex]?.isSplitHand &&
+    myUserBal >= (activeHand?.bet || 0) / 2 &&
+    table.dealerHand?.cards[0]?.value === 'A' &&
+    !activeHand?.insuranceBet;
 
   const sideBetsTotalStr = sideBetsEnabled ? (parseInt(pairBetStr.replace(/,/g, '') || '0') + parseInt(plus3BetStr.replace(/,/g, '') || '0')) : 0;
   const myTotalBet = table.status === 'playing' 
@@ -478,11 +515,9 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
       if (isPlacingBetRef.current) return;
       try {
         isPlacingBetRef.current = true;
-        await Promise.all(
-          mySeats.map(seatIndex => 
-            placeBet(table.id, seatIndex, amount, { pair: pairAmt, twentyOnePlusThree: plus3Amt })
-          )
-        );
+        for (const seatIndex of mySeats) {
+          await placeBet(table.id, seatIndex, amount, { pair: pairAmt, twentyOnePlusThree: plus3Amt });
+        }
       } catch (err: any) {
         console.warn("Could not place bet:", err);
       } finally {
@@ -667,62 +702,72 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
         <ConfirmModal action={confirmAction} onClose={() => setConfirmAction(null)} />
       )}
 
-      {/* Top-Left Exit Button on Table Felt (using HeaderUI exit icon) */}
-      <button
-        onClick={() => onNavigate('lobby')}
-        className="fixed top-4 left-4 z-[90] w-10 h-10 flex items-center justify-center text-white/75 hover:text-white rounded-full bg-black/45 hover:bg-black/65 border border-white/15 backdrop-blur-sm transition-colors cursor-pointer pointer-events-auto shadow-lg"
-        title="Return / Exit"
-      >
-        <LogOut className="w-5 h-5 scale-x-[-1]" />
-      </button>
+      {/* Cross-table Personal Stats Widget & Floating Trigger (Right Side) */}
+      <RankWidget onOpenChange={setIsStatsOpen} />
 
-      {/* Floating Tables Lobby Button */}
-      <div className="fixed left-0 top-[calc(50%-2.5rem)] md:top-[calc(50%-1rem)] -translate-y-1/2 z-[90] flex flex-col gap-[7px] pointer-events-auto">
-        <div 
-          className="bg-zinc-950 border-y-2 border-r-2 border-[#10b981] rounded-r-2xl p-2 md:p-3 pl-2.5 md:pl-4 shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-transform hover:translate-x-1 cursor-pointer flex flex-col items-center group"
-          onClick={() => onToggleSidebar && onToggleSidebar()}
-          title="Tables Lobby"
-        >
-          <Menu className="w-5 h-5 md:w-6 md:h-6 text-zinc-300" />
-        </div>
-      </div>
-
-      {/* Floating Play Board Button */}
-      <div className="fixed left-0 top-[calc(50%+2.5rem)] md:top-[calc(50%+3.5rem)] -translate-y-1/2 z-[90] flex flex-col gap-[7px] pointer-events-auto">
-        <div 
-          className="bg-zinc-950 border-y-2 border-r-2 border-[#3b82f6] rounded-r-2xl p-2 md:p-3 pl-2.5 md:pl-4 shadow-[0_0_15px_rgba(59,130,246,0.3)] transition-transform hover:translate-x-1 cursor-pointer flex flex-col items-center group"
+      {/* Floating Play Board Trigger Button & Sidebar (Left Side - Top) */}
+      <div className="fixed left-0 top-[calc(50%-2.5rem)] md:top-[calc(50%-3.5rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
+        <button
+          type="button"
           onClick={() => setIsTablePlayersOpen(true)}
-          title="Play Board"
+          title="Play Board (Table Record & My Record)"
+          className="bg-zinc-950 border-y-2 border-r-2 border-[#d4af37] rounded-r-2xl p-2.5 md:p-3 pl-3 md:pl-4 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:translate-x-1 cursor-pointer flex flex-col items-center group relative"
         >
-          <Coins className="w-5 h-5 md:w-6 md:h-6 text-zinc-300 group-hover:text-[#3b82f6] transition-colors" />
-        </div>
+          <Crown className="w-5 h-5 md:w-6 md:h-6 text-[#ffd86b] group-hover:scale-110 transition-transform" />
+          <span className="text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">
+            Board
+          </span>
+        </button>
       </div>
-
-      <TablePlayersSidebar 
-        isOpen={isTablePlayersOpen} 
-        onClose={() => setIsTablePlayersOpen(false)} 
+      <TablePlayersSidebar
+        isOpen={isTablePlayersOpen}
+        onClose={() => setIsTablePlayersOpen(false)}
         table={table}
         gameRecords={gameRecords}
       />
 
-      <RankWidget />
+      {/* Floating Table List (Lobby Sidebar) Trigger Button (Left Side - Bottom) */}
+      <div className="fixed left-0 top-[calc(50%+2.5rem)] md:top-[calc(50%+3.5rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
+        <button
+          type="button"
+          onClick={() => onToggleSidebar && onToggleSidebar()}
+          title="Tables Lobby"
+          className="bg-zinc-950 border-y-2 border-r-2 border-[#d4af37] rounded-r-2xl p-2.5 md:p-3 pl-3 md:pl-4 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:translate-x-1 cursor-pointer flex flex-col items-center group relative"
+        >
+          <div className="relative">
+            <Menu className="w-5 h-5 md:w-6 md:h-6 text-[#ffd86b] group-hover:scale-110 transition-transform" />
+          </div>
+          <span className="text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">
+            Tables
+          </span>
+        </button>
+      </div>
 
-      <div className="w-full max-w-[1024px] flex flex-col items-center gap-1 z-40 px-2 sm:px-4 pt-3 sm:pt-4 pb-1 relative pointer-events-none shrink-0">
-        <div className="flex flex-row items-center justify-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-[420px] mx-auto mt-[-2px]">
-          <div className="relative flex flex-row items-center border-[2px] border-[#6b4c2a] rounded-full bg-gradient-to-b from-[#eac574] via-[#d0a758] to-[#997027] p-1 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8),inset_0_-1px_2px_rgba(0,0,0,0.4),0_4px_10px_rgba(0,0,0,0.5)] justify-between flex-1 h-[40px] sm:h-[44px] min-w-[240px]">
+      {/* Top Header Bar: Exit button on left, centered Balance & Host Tables pill in middle, spacer on right */}
+      <div className="w-full max-w-[1024px] flex items-center justify-between gap-1.5 sm:gap-3 z-40 px-2 sm:px-4 pt-2.5 sm:pt-3 md:pt-4 pb-0.5 relative pointer-events-none shrink-0">
+        <button
+          onClick={() => onNavigate('lobby')}
+          className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 flex items-center justify-center text-white/80 hover:text-white rounded-full bg-black/50 hover:bg-black/70 border border-white/20 backdrop-blur-md transition-all cursor-pointer pointer-events-auto shadow-lg shrink-0"
+          title="Return to Lobby"
+        >
+          <LogOut className="w-4 h-4 sm:w-4.5 sm:h-4.5 scale-x-[-1]" />
+        </button>
+
+        <div className="flex flex-row items-center justify-center gap-1.5 sm:gap-3 pointer-events-auto flex-1 max-w-[440px] mx-auto min-w-0">
+          <div className="relative flex flex-row items-center border-[2px] border-[#6b4c2a] rounded-full bg-gradient-to-b from-[#eac574] via-[#d0a758] to-[#997027] p-0.5 sm:p-1 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8),inset_0_-1px_2px_rgba(0,0,0,0.4),0_4px_10px_rgba(0,0,0,0.5)] justify-between flex-1 h-[36px] sm:h-[40px] md:h-[44px] min-w-0">
             <div className="absolute left-1 right-1 inset-y-1 bg-black/20 pointer-events-none rounded-full z-0"></div>
 
-              <div id="balance-container" className="flex-1 flex flex-row items-center justify-between h-full w-full relative z-10 bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full px-3 sm:px-4 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6),0_1px_1px_rgba(255,255,255,0.4)] border border-[#3a2510]">
-               <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold tracking-wider">
+              <div id="balance-container" className="flex-1 flex flex-row items-center justify-between h-full w-full relative z-10 bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full px-2 sm:px-3.5 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6),0_1px_1px_rgba(255,255,255,0.4)] border border-[#3a2510] min-w-0">
+               <div className="flex items-center gap-1 sm:gap-1.5 text-[10px] sm:text-[11px] font-bold tracking-wider truncate">
                   {(() => {
                     const userBal = table.userBalances?.[currentUser.id];
                     const displayBalance = userBal ? userBal.balance : currentUser.balance;
                     const isOutOfCoins = displayBalance < table.settings.minBet && (table.status === 'waiting' || myTotalBet === 0);
                     return (
                       <>
-                        <CurrencyIcon currency="Chip" className="w-3.5 h-3.5" />
-                        <div className="flex items-center">
-                          <span className="text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-mono text-[#ffc53d]">
+                        <CurrencyIcon currency="Chip" className="w-3.5 h-3.5 shrink-0" />
+                        <div className="flex items-center truncate">
+                          <span className="text-[13px] sm:text-[15px] md:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-mono text-[#ffc53d] truncate">
                             {displayBalance.toLocaleString('en-US', {minimumFractionDigits: displayBalance % 1 !== 0 ? 2 : 0, maximumFractionDigits: 2})}
                           </span>
                           {isOutOfCoins && (
@@ -731,10 +776,10 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                                 soundManager.playChip();
                                 await refillGameCoins(table.id);
                               }}
-                              className="ml-2 text-black text-[10px] px-2 py-0.5 rounded-full border border-white/30 transition-colors pointer-events-auto shadow-[0_2px_6px_rgba(0,0,0,0.5)] hover:brightness-110 bg-gradient-to-r from-[#ffd86b] to-[#eaaa08] font-extrabold tracking-tight cursor-pointer whitespace-nowrap"
+                              className="ml-1 sm:ml-2 text-black text-[9px] sm:text-[10px] px-1.5 sm:px-2 py-0.5 rounded-full border border-white/30 transition-colors pointer-events-auto shadow-[0_2px_6px_rgba(0,0,0,0.5)] hover:brightness-110 bg-gradient-to-r from-[#ffd86b] to-[#eaaa08] font-extrabold tracking-tight cursor-pointer whitespace-nowrap shrink-0"
                               title="Claim free 5,000 Game Coins refill"
                             >
-                              +5,000 COINS
+                              +5K
                             </button>
                           )}
                         </div>
@@ -743,10 +788,10 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                  })()}
                </div>
   
-               <div className="w-px h-4 bg-white/10 mx-2 shadow-[1px_0_0_rgba(0,0,0,0.3)]" />
+               <div className="w-px h-3.5 sm:h-4 bg-white/10 mx-1 sm:mx-2 shadow-[1px_0_0_rgba(0,0,0,0.3)] shrink-0" />
   
                <div 
-                 className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold tracking-wider cursor-pointer hover:opacity-80 transition-opacity"
+                 className="flex items-center gap-1 text-[10px] sm:text-[11px] font-bold tracking-wider cursor-pointer hover:opacity-80 transition-opacity shrink-0"
                  onClick={() => setShowHistory(!showHistory)}
                >
                  {recentWinAmount ? (
@@ -755,28 +800,28 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                      initial={{ y: -10, opacity: 0 }}
                      animate={{ y: 0, opacity: 1 }}
                      className={cn(
-                       "flex items-center gap-2 text-[13px] sm:text-[14px]",
+                       "flex items-center gap-1 sm:gap-2 text-[12px] sm:text-[14px]",
                        recentWinAmount.won ? "text-emerald-400" : (recentWinAmount.amount > 0 ? "text-yellow-400" : "text-white/60")
                      )}
                    >
-                     <span className="uppercase font-bold tracking-wider drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">
-                        {recentWinAmount.won ? "WIN" : (recentWinAmount.amount > 0 ? "RETURN" : "")}
+                     <span className="uppercase font-bold tracking-wider drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] text-[10px] sm:text-[12px]">
+                        {recentWinAmount.won ? "WIN" : (recentWinAmount.amount > 0 ? "RET" : "")}
                      </span>
                      {recentWinAmount.amount > 0 && (
                        <>
-                         <CurrencyIcon currency="Chip" className="w-3.5 h-3.5" />
-                         <span className="font-mono text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] text-[#ffc53d]">{recentWinAmount.amount % 1 !== 0 ? recentWinAmount.amount.toFixed(2) : recentWinAmount.amount}</span>
+                         <CurrencyIcon currency="Chip" className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                         <span className="font-mono text-[13px] sm:text-[15px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] text-[#ffc53d]">{recentWinAmount.amount % 1 !== 0 ? recentWinAmount.amount.toFixed(2) : recentWinAmount.amount}</span>
                        </>
                      )}
                    </motion.div>
                  ) : (
-                   <div className="flex items-center gap-1.5 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">
-                     <div className="flex items-center gap-1 text-white/60 uppercase">
-                       <ArrowDown className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                   <div className="flex items-center gap-1 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">
+                     <div className="flex items-center gap-0.5 text-white/60 uppercase text-[9px] sm:text-[10px]">
+                       <ArrowDown className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                        <span>Bet</span>
                      </div>
-                     <CurrencyIcon currency="Chip" className="w-3.5 h-3.5" />
-                     <span className="font-mono text-[14px] sm:text-[16px] text-[#ffc53d]">{myTotalBet % 1 !== 0 ? myTotalBet.toFixed(2) : myTotalBet}</span>
+                     <CurrencyIcon currency="Chip" className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
+                     <span className="font-mono text-[12px] sm:text-[15px] text-[#ffc53d]">{myTotalBet % 1 !== 0 ? myTotalBet.toFixed(2) : myTotalBet}</span>
                    </div>
                  )}
                </div>
@@ -808,14 +853,18 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                     processNavigate();
                 }
             }}
-            className={cn("flex text-[10px] sm:text-[11px] font-black uppercase tracking-wider text-white px-2 sm:px-2.5 py-1.5 sm:py-2 rounded-[12px] sm:rounded-[14px] items-center gap-1 shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border transition-transform whitespace-nowrap shrink-0 group relative", isPlayerDealt ? "bg-black/50 border-white/10 opacity-50" : "bg-gradient-to-b from-[#28a19b] to-[#126b6f] hover:from-[#2ebaba] hover:to-[#178287] border-[#0d4f52] hover:scale-105 active:scale-95")}
+            className={cn("flex text-[9px] sm:text-[11px] font-black uppercase tracking-wider text-white px-1.5 sm:px-2.5 py-1.5 sm:py-2 rounded-[10px] sm:rounded-[14px] items-center gap-1 shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border transition-transform whitespace-nowrap shrink-0 group relative", isPlayerDealt ? "bg-black/50 border-white/10 opacity-50" : "bg-gradient-to-b from-[#28a19b] to-[#126b6f] hover:from-[#2ebaba] hover:to-[#178287] border-[#0d4f52] hover:scale-105 active:scale-95")}
           >
             {hasLowLiquidityAlert && (
-               <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-pulse border border-white/20 shadow-[0_0_8px_rgba(239,68,68,0.8)] z-10" />
+               <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse border border-white/20 shadow-[0_0_8px_rgba(239,68,68,0.8)] z-10" />
             )}
-            <span className="drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">{hasHostedTables ? "Manage Tables" : "Host Tables"}</span>
+            <span className="drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">{hasHostedTables ? "Manage" : "Host"}</span>
           </button>
         </div>
+
+        {/* Right Symmetrical Spacer */}
+        <div className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 shrink-0 pointer-events-none" />
+      </div>
                {showHistory && (
                  <div className="fixed inset-0 z-50 pointer-events-auto bg-black/40 backdrop-blur-sm" onClick={() => setShowHistory(false)}></div>
                )}
@@ -837,9 +886,12 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                    <div className="text-white/40 text-xs text-center py-4">No records yet.</div>
                  ) : (
                    <div className="flex flex-col gap-3">
-                     {gameRecords.map(record => {
-                        const totalBet = record.seatResults?.reduce((sum, sr) => sum + sr.bet, 0) || 0;
-                        const totalNet = record.seatResults?.reduce((sum, sr) => sum + sr.net, 0) || (record.amountWon - totalBet);
+                     {gameRecords.filter(r => (r.seatResults || []).some(sr => sr.userId === currentUser.id)).map(record => {
+                        const mySeatResults = (record.seatResults || []).filter(sr => sr.userId === currentUser.id);
+                        const totalBet = mySeatResults.reduce((sum, sr) => sum + (sr.bet || 0) + (sr.sideBet || 0) + (sr.insuranceBet || 0), 0) || 0;
+                        const totalNet = mySeatResults.length > 0
+                          ? mySeatResults.reduce((sum, sr) => sum + (sr.net || 0), 0)
+                          : (record.amountWon - totalBet);
 
                         const ts = new Date(record.timestamp);
                         const yy = ts.getFullYear().toString().slice(-2);
@@ -892,9 +944,9 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                                 </div>
                               </div>
                             </div>
-                            {record.seatResults && record.seatResults.length > 0 && (
+                            {mySeatResults.length > 0 && (
                                <div className="w-full mt-3 pt-3 border-t border-white/5 flex flex-col gap-2">
-                                 {record.seatResults.map((sr, idx) => (
+                                 {mySeatResults.map((sr, idx) => (
                                     <div key={idx} className="flex flex-col gap-1.5 border-b border-white/5 last:border-0 pb-2 last:pb-0">
                                       <div className="flex justify-between items-center">
                                         <span className="text-white/60 text-[11px] uppercase tracking-wider font-bold">Seat {sr.seatIndex + 1} {sr.isSplit && <span className="text-blue-400/80 ml-1">(Split Hand)</span>}</span>
@@ -919,7 +971,28 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                                           {!!sr.sideBet && sr.sideBet > 0 && (
                                             <div className="flex flex-col">
                                               <span className="text-white/30 text-[9px] font-bold">SIDE</span>
-                                              <span className="text-white/80 text-[11px] font-mono">{sr.sideBet} {!!sr.sideBetWin && sr.sideBetWin > 0 ? <span className="text-emerald-400 ml-1">(+{sr.sideBetWin})</span> : <span className="text-[#ff6b6b] ml-1">(-{sr.sideBet})</span>}</span>
+                                              <span className="text-white/80 text-[11px] font-mono">
+                                                {sr.sideBet}{' '}
+                                                {!!sr.sideBetWin && sr.sideBetWin > 0 ? (
+                                                  <span className="text-emerald-400 ml-1">
+                                                    (+{sr.sideBetWin}
+                                                    {(() => {
+                                                      const tags: string[] = [];
+                                                      if ((sr.pairWin || 0) > 0 && (sr.pairBet || 0) > 0) {
+                                                        const m = Math.round((sr.pairWin || 0) / (sr.pairBet || 1)) - 1;
+                                                        tags.push(m >= 25 ? 'Perfect Pair 25:1' : m >= 12 ? 'Colored Pair 12:1' : `Mixed Pair ${m}:1`);
+                                                      }
+                                                      if ((sr.plus3Win || 0) > 0 && (sr.plus3Bet || 0) > 0) {
+                                                        const m = Math.round((sr.plus3Win || 0) / (sr.plus3Bet || 1)) - 1;
+                                                        tags.push(m >= 100 ? 'Suited Trips 100:1' : m >= 40 ? 'Str. Flush 40:1' : m >= 30 ? 'Trips 30:1' : m >= 10 ? 'Straight 10:1' : `Flush ${m}:1`);
+                                                      }
+                                                      return tags.length > 0 ? ` · ${tags.join(', ')}` : '';
+                                                    })()})
+                                                  </span>
+                                                ) : (
+                                                  <span className="text-[#ff6b6b] ml-1">(-{sr.sideBet})</span>
+                                                )}
+                                              </span>
                                             </div>
                                           )}
                                           <div className="flex flex-col">
@@ -944,8 +1017,6 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                </motion.div>
              )}
            </AnimatePresence>
-
-        </div>
 
       <div className="flex-1 w-full max-w-[1024px] flex flex-col items-center justify-between pb-0 pt-0 mt-0 ml-0 relative min-h-0 overflow-hidden origin-center">
 
@@ -1012,6 +1083,8 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            <DealerArea 
              houseId={table.houseId}
              name={table.name}
+             houseName={table.houseName || (table.houseId === currentUser.id ? currentUser.name : undefined)}
+             houseAvatar={table.houseAvatar || (table.houseId === currentUser.id ? currentUser.avatar : undefined)}
              dealerHand={table.status === 'playing' || recentWinAmount !== null || isResolvingRef.current ? table.dealerHand : null}
              totalSeats={table.seats.length}
              recentWinAmount={recentWinAmount}
@@ -1020,7 +1093,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            />
 
            {/* Base curved lines decoration */}
-           <div className="absolute top-[35%] sm:top-[40%] left-0 right-0 bottom-0 w-full overflow-hidden pointer-events-none flex justify-center items-start z-0 mt-[30px] sm:mt-[40px] md:mt-[50px]">
+           <div className="absolute top-[29%] sm:top-[32%] [@media(max-height:520px)_and_(orientation:landscape)]:top-[26%] left-0 right-0 bottom-0 w-full overflow-hidden pointer-events-none flex justify-center items-start z-0 mt-[14px] sm:mt-[20px] md:mt-[24px] [@media(max-height:520px)_and_(orientation:landscape)]:mt-[6px]">
              {/* Outer golden line */}
              <div className="w-[240%] sm:w-[140%] md:w-[110%] aspect-[2/1] border-t-[8px] sm:border-t-[10px] border-[#c6a364] opacity-70 rounded-[100%] absolute top-0 shadow-[0_-2px_4px_rgba(0,0,0,0.8),inset_0_2px_2px_rgba(255,255,255,0.3)]"></div>
              {/* Inner thin golden line */}
@@ -1030,14 +1103,14 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            </div>
 
            {/* Game Rules Center Area */}
-           <div className="absolute top-[48%] sm:top-[50%] left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 px-2 sm:px-4 whitespace-nowrap scale-[0.6] sm:scale-[0.8] md:scale-100 flex flex-col items-center gap-1 sm:gap-1.5 pointer-events-none">
+           <div className="absolute top-[38%] sm:top-[40%] [@media(max-height:520px)_and_(orientation:landscape)]:top-[34%] mt-4 [@media(max-height:520px)_and_(orientation:landscape)]:mt-1 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 px-2 sm:px-4 whitespace-nowrap scale-[0.6] sm:scale-[0.8] md:scale-100 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.55] flex flex-col items-center gap-1 sm:gap-1.5 pointer-events-none">
               <span className="text-[#c6a364] text-[11px] md:text-[16px] font-black tracking-[0.3em] uppercase opacity-90" style={{ textShadow: '0px 1px 1px rgba(0,0,0,1), 0px -1px 1px rgba(0,0,0,0.8), 0px 0px 3px rgba(176,142,85,0.4)' }}>
                 Blackjack Pays 3 to 2
               </span>
               <span className="text-[#c6a364] text-[8px] md:text-[10px] font-bold tracking-[0.2em] uppercase opacity-70" style={{ textShadow: '0px 1px 1px rgba(0,0,0,1)' }}>
                 Dealer must draw to 16 and stand on all 17s
               </span>
-              <span className="text-[#c6a364] text-[8px] md:text-[10px] font-bold tracking-[0.2em] uppercase opacity-70 flex items-center gap-2 sm:gap-3 mt-1 sm:mt-2" style={{ textShadow: '0px 1px 1px rgba(0,0,0,1)' }}>
+              <span className="text-[#c6a364] text-[8px] md:text-[10px] font-bold tracking-[0.2em] uppercase opacity-70 flex items-center gap-2 sm:gap-3 mt-1 sm:mt-1.5" style={{ textShadow: '0px 1px 1px rgba(0,0,0,1)' }}>
                 <span className="w-8 sm:w-16 h-[1.5px] bg-gradient-to-r from-transparent to-[#c6a364] shadow-[0_1px_1px_rgba(0,0,0,0.8)]"></span>
                 Insurance pays 2 to 1
                 <span className="w-8 sm:w-16 h-[1.5px] bg-gradient-to-l from-transparent to-[#c6a364] shadow-[0_1px_1px_rgba(0,0,0,0.8)]"></span>
@@ -1049,12 +1122,12 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                     initial={{ opacity: 0, scale: 0.8 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.8 }}
-                    className="absolute top-[100%] mt-3 sm:mt-5 z-[200] flex items-center justify-center pointer-events-none"
+                    className="absolute top-[100%] mt-2 sm:mt-3 z-[200] flex items-center justify-center pointer-events-none"
                   >
                     <div className="p-[2px] rounded-[10px] bg-gradient-to-br from-[#f8fafc] via-[#cbd5e1] to-[#64748b] shadow-[0_8px_16px_rgba(0,0,0,0.8)] overflow-hidden">
-                      <div className="px-6 py-2 rounded-[8px] flex items-center justify-center border border-[#f8fafc]/30 relative shadow-[inset_0_0_20px_rgba(0,0,0,0.8)] bg-gradient-to-r from-[#1a1c20] via-[#2d3139] to-[#1a1c20]">
+                      <div className="px-5 py-1.5 rounded-[8px] flex items-center justify-center border border-[#f8fafc]/30 relative shadow-[inset_0_0_20px_rgba(0,0,0,0.8)] bg-gradient-to-r from-[#1a1c20] via-[#2d3139] to-[#1a1c20]">
                         <div className="absolute inset-0 bg-gradient-to-b from-transparent to-black/60 rounded-[8px]"></div>
-                        <span className="text-[#f8fafc] text-2xl font-mono font-black tracking-[0.2em] drop-shadow-[0_2px_2px_rgba(0,0,0,1)] z-10" style={{ textShadow: "0 2px 4px #000, 0 0 10px rgba(248,250,252,0.4)" }}>
+                        <span className="text-[#f8fafc] text-xl sm:text-2xl font-mono font-black tracking-[0.2em] drop-shadow-[0_2px_2px_rgba(0,0,0,1)] z-10" style={{ textShadow: "0 2px 4px #000, 0 0 10px rgba(248,250,252,0.4)" }}>
                           {dealCountdown > 0 ? `DEAL IN ${dealCountdown}s` : 'DEALING...'}
                         </span>
                       </div>
@@ -1091,7 +1164,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            </div>
 
            {/* Discard Pile (Left Top) */}
-           <div className="absolute top-[72px] left-2 sm:top-[90px] sm:left-8 lg:top-16 lg:left-16 flex flex-col items-center pointer-events-auto cursor-pointer group" onClick={() => setShowDiscardStats(!showDiscardStats)}>
+           <div className="absolute top-[52px] left-2 sm:top-[58px] sm:left-8 lg:top-14 lg:left-16 [@media(max-height:520px)_and_(orientation:landscape)]:top-[36px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.65] [@media(max-height:520px)_and_(orientation:landscape)]:origin-top flex flex-col items-center pointer-events-auto cursor-pointer group" onClick={() => setShowDiscardStats(!showDiscardStats)}>
              <div className="relative w-[40px] h-[60px] sm:w-[56px] sm:h-[80px] md:w-[72px] md:h-[104px] lg:w-[92px] lg:h-[130px] group-hover:scale-105 transition-transform duration-200 z-30">
                {table.discardCount > 0 ? (
                  <div className="absolute inset-0 rounded-[6px] md:rounded-[8px] flex items-center justify-center overflow-hidden shadow-lg bg-[url('/discard.png')] bg-contain bg-center bg-no-repeat bg-[#2c2b2a]/80">
@@ -1158,7 +1231,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            </div>
 
            {/* Shoe / Deck (Right Top) */}
-           <div className="absolute top-[72px] right-2 sm:top-[90px] sm:right-8 lg:top-16 lg:right-16 z-10 flex flex-col items-center gap-2 pointer-events-none">
+           <div className="absolute top-[52px] right-2 sm:top-[58px] sm:right-8 lg:top-14 lg:right-16 [@media(max-height:520px)_and_(orientation:landscape)]:top-[36px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.65] [@media(max-height:520px)_and_(orientation:landscape)]:origin-top z-10 flex flex-col items-center gap-2 pointer-events-none">
              <div className="relative w-[40px] h-[60px] sm:w-[56px] sm:h-[80px] md:w-[72px] md:h-[104px] lg:w-[92px] lg:h-[130px]">
                {Array.from({ length: 12 }).map((_, i) => (
                  <div key={i} className={cn("absolute inset-0 rounded-lg shadow-sm border", i === 3 ? "bg-red-600 border-red-700" : "bg-white border-gray-300")} style={{ transform: `translate(${-i * 1.5}px, ${-i * 1.5}px)` }}>
@@ -1178,20 +1251,27 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            </div>
 
            {/* Player Area */}
-           <div className="w-full flex-[6] flex flex-col items-center justify-center relative z-20 mt-2 sm:mt-4 md:mt-0 lg:mb-4">
+           <div className="w-full flex-[7] flex flex-col items-center justify-end relative z-20 mt-0 mb-0">
              
-             <div className="relative w-full z-10 flex items-center justify-center group/seats h-full max-h-full">
-               <div ref={seatsContainerRef} className={cn("flex w-full md:w-[94%] mx-auto h-full pt-[10px] md:pt-[20px] mt-auto pb-[60px] sm:pb-[80px] md:pb-[90px] justify-start gap-[2%] sm:gap-[1%] items-center px-[4%] md:px-0 z-10 transition-transform duration-300 overflow-x-auto snap-x snap-mandatory md:snap-none hide-scrollbar-custom")}>
+             <div className="relative w-full z-10 flex items-end justify-center group/seats h-full max-h-full">
+               <div ref={seatsContainerRef} className={cn("flex w-full md:w-[94%] max-w-[964px] mx-auto h-full md:h-[480px] max-h-full pt-[10px] sm:pt-[18px] md:pt-[32px] mt-auto mb-[6px] sm:mb-[10px] md:mb-[16px] pb-[124px] sm:pb-[144px] md:pb-[152px] [@media(max-height:520px)_and_(orientation:landscape)]:!h-auto [@media(max-height:520px)_and_(orientation:landscape)]:!pt-[4px] [@media(max-height:520px)_and_(orientation:landscape)]:!pb-[58px] [@media(max-height:520px)_and_(orientation:landscape)]:!mb-0 justify-start gap-[2%] sm:gap-[1%] items-end px-[4%] md:px-0 z-10 transition-transform duration-300 overflow-x-auto md:overflow-visible snap-x snap-mandatory md:snap-none hide-scrollbar-custom")}>
                  <style>{`.hide-scrollbar-custom::-webkit-scrollbar { display: none; }`}</style>
                  {table.seats.map((seat, seatIdx) => {
                      const isThisSeatTurn = table.status === 'playing' && table.currentTurnIndex === seatIdx;
                    const isSelected = mySeats.includes(seatIdx);
                    let isPairWon: boolean | null = null;
                    let isPlus3Won: boolean | null = null;
+                   const seatDealRevealed = isSeatDealRevealed(seatIdx, seat.originalSeatIndex);
                    
-                   if (seat.hand && seat.hand.cards && seat.hand.cards.length >= 2) {
-                     isPairWon = seat.hand.cards[0].value === seat.hand.cards[1].value;
-                     if (table.dealerHand && table.dealerHand.cards && table.dealerHand.cards.length >= 1) {
+                   if (seatDealRevealed && seat.hand && seat.hand.cards && seat.hand.cards.length >= 2) {
+                     if (seat.hand.sideBetPairWon !== undefined) {
+                       isPairWon = seat.hand.sideBetPairWon > 0;
+                     } else {
+                       isPairWon = seat.hand.cards[0].value === seat.hand.cards[1].value;
+                     }
+                     if (seat.hand.sideBetPlus3Won !== undefined) {
+                       isPlus3Won = seat.hand.sideBetPlus3Won > 0;
+                     } else if (table.dealerHand && table.dealerHand.cards && table.dealerHand.cards.length >= 1) {
                        const c1 = seat.hand.cards[0];
                        const c2 = seat.hand.cards[1];
                        const d1 = table.dealerHand.cards[0];
@@ -1210,29 +1290,21 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                    // if (isEmptyInPlaying) return null;
   
                    return (
-                     <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-[20px] md:pt-0 pb-[80px] sm:pb-[90px] md:pb-[90px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[150px] sm:h-[180px] md:h-[200px] rounded-[16px] sm:rounded-[24px] min-w-[31%] max-w-[31%] md:min-w-[13.5%] md:max-w-[13.5%] shrink-0 snap-center mx-auto", isThisSeatTurn ? "scale-110 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent"))}>
+                     <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-[8px] sm:pt-[14px] md:pt-[20px] pb-[74px] sm:pb-[86px] md:pb-[96px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[215px] sm:h-[250px] md:h-[285px] [@media(max-height:520px)_and_(orientation:landscape)]:!h-[155px] [@media(max-height:520px)_and_(orientation:landscape)]:!pt-[4px] [@media(max-height:520px)_and_(orientation:landscape)]:!pb-[52px] rounded-[16px] sm:rounded-[24px] min-w-[31%] max-w-[31%] md:min-w-[13.5%] md:max-w-[13.5%] shrink-0 snap-center mx-auto", isThisSeatTurn ? "scale-105 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent"))}>
                      
                      {/* YOU indicator label for played cards */}
 
 
                      {/* If hand exists, render cards and score */}
                      {seat.hand && (
-                       <div className={cn("flex flex-col items-center justify-end transition-opacity relative z-20 w-full mb-0", (table.status === "waiting" && !recentWinAmount && !isResolvingRef.current) && "opacity-20")}>
-                          <div className="flex flex-row items-center gap-2 z-30 w-full justify-center mb-1 sm:mb-2 pointer-events-none relative">
+                       <div className={cn("flex flex-col items-center justify-end transition-opacity relative z-20 w-full mb-0 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.72] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom", (table.status === "waiting" && !recentWinAmount && !isResolvingRef.current) && "opacity-20")}>
+                          <div className="flex flex-row items-center gap-1.5 z-30 w-full justify-center mb-1.5 sm:mb-2 pointer-events-none relative">
                             <motion.span 
                               key="score"
                               initial={{ scale: 0.5, opacity: 0 }}
                               animate={{ scale: 1, opacity: 1 }}
                               transition={{ delay: seat.hand.cards.length <= 2 ? ((table.seats.length + 1) + (table.seats.length - 1 - seatIdx)) * 0.15 + 0.2 : 0 }}
-                              className="bg-[#1e2129] border border-emerald-500/30 text-emerald-400 font-mono text-sm px-3 py-1 rounded shadow-lg relative">
-                              {table.status === 'playing' && table.currentTurnIndex === seatIdx && actionCountdown !== null && (
-                                <div className={cn(
-                                  "absolute -top-5 -right-5 w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm font-mono tracking-tighter z-50 shadow-[0_0_15px_rgba(0,0,0,0.8)] border-[1.5px]",
-                                  actionCountdown <= 5 ? "bg-yellow-500 text-black border-yellow-300 animate-pulse shadow-[0_0_15px_rgba(234,179,8,0.8)]" : "bg-yellow-400 text-black border-yellow-600 shadow-[0_0_10px_rgba(250,204,21,0.6)]"
-                                )}>
-                                  {actionCountdown}
-                                </div>
-                              )}
+                              className="bg-[#1e2129] border border-emerald-500/40 text-emerald-400 font-mono text-sm font-bold px-3 py-0.5 rounded shadow-lg relative inline-flex items-center justify-center">
                               <DelayedScore 
                                 score={seat.hand.score} 
                                 cardsLength={seat.hand.cards.length} 
@@ -1265,38 +1337,46 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                             </AnimatePresence>
                           </div>
 
-                          {((seat.hand.sideBets && (seat.hand.sideBets.pair > 0 || seat.hand.sideBets.twentyOnePlusThree > 0)) || seat.hand.insuranceBet) && (
-                            <div className="absolute top-[85%] left-1/2 -translate-x-1/2 flex gap-1 sm:gap-2 z-20 justify-center items-center scale-[0.85] origin-top sm:origin-center sm:scale-100 pb-2">
+                          {Boolean((seat.hand.sideBets && (seat.hand.sideBets.pair > 0 || seat.hand.sideBets.twentyOnePlusThree > 0)) || (seat.hand.insuranceBet && seat.hand.insuranceBet > 0)) && (
+                            <div className="relative mt-1.5 sm:mt-2 flex gap-1 sm:gap-1.5 z-20 justify-center items-center shrink-0">
                               {seat.hand.sideBets && seat.hand.sideBets.pair > 0 && (
-                                <div className={cn("w-[46px] h-[46px] sm:w-[50px] sm:h-[50px] rounded-full flex flex-col items-center justify-center border text-[8px] sm:text-[10px] font-bold tracking-tighter uppercase transition-all duration-500 relative shrink-0", 
-                                    isPairWon === true ? "bg-green-500/80 border-green-400 text-white shadow-[0_0_15px_rgba(34,197,94,0.6)] scale-110" : 
+                                <div className={cn("w-[34px] h-[34px] sm:w-[38px] sm:h-[38px] md:w-[42px] md:h-[42px] rounded-full flex flex-col items-center justify-center border text-[7px] sm:text-[9px] font-bold tracking-tighter uppercase transition-all duration-500 relative shrink-0", 
+                                    isPairWon === true ? "bg-green-500/90 border-green-300 text-white shadow-[0_0_15px_rgba(34,197,94,0.75)] scale-110" : 
                                     isPairWon === false ? "bg-red-500/30 border-red-500/30 text-white/50" : 
                                     "bg-blue-500/80 border-blue-400 text-white shadow-[0_0_10px_rgba(59,130,246,0.5)]"
                                   )}>
                                   <span>Pair</span>
-                                  <span className="font-mono text-[8px] sm:text-[9px] md:text-[11px]">${seat.hand.sideBets.pair}</span>
-                                  {isPairWon === true && <div className="absolute -top-1 -right-1 text-[10px] sm:text-xs">✅</div>}
-                                  {isPairWon === false && <div className="absolute -top-1 -right-1 text-[10px] sm:text-xs opacity-50">❌</div>}
+                                  <span className="font-mono text-[7px] sm:text-[8px] md:text-[9px] leading-none">
+                                    {isPairWon === true && (seat.hand.sideBetPairWon || 0) > 0
+                                      ? `+$${seat.hand.sideBetPairWon}`
+                                      : `$${seat.hand.sideBets.pair}`}
+                                  </span>
+                                  {isPairWon === true && <div className="absolute -top-1 -right-1 text-[9px] sm:text-[10px]">✅</div>}
+                                  {isPairWon === false && <div className="absolute -top-1 -right-1 text-[9px] sm:text-[10px] opacity-50">❌</div>}
                                 </div>
                               )}
                               {seat.hand.sideBets && seat.hand.sideBets.twentyOnePlusThree > 0 && (
-                                <div className={cn("w-[46px] h-[46px] sm:w-[50px] sm:h-[50px] rounded-full flex flex-col items-center justify-center border text-[8px] sm:text-[10px] font-bold tracking-tighter uppercase transition-all duration-500 relative shrink-0", 
-                                    isPlus3Won === true ? "bg-green-500/80 border-green-400 text-white shadow-[0_0_15px_rgba(34,197,94,0.6)] scale-110" : 
+                                <div className={cn("w-[34px] h-[34px] sm:w-[38px] sm:h-[38px] md:w-[42px] md:h-[42px] rounded-full flex flex-col items-center justify-center border text-[7px] sm:text-[9px] font-bold tracking-tighter uppercase transition-all duration-500 relative shrink-0", 
+                                    isPlus3Won === true ? "bg-green-500/90 border-green-300 text-white shadow-[0_0_15px_rgba(34,197,94,0.75)] scale-110" : 
                                     isPlus3Won === false ? "bg-red-500/30 border-red-500/30 text-white/50" : 
                                     "bg-[#ffc53d] border-[#eaaa08] text-black shadow-[0_0_10px_rgba(255,197,61,0.5)]"
                                   )}>
                                   <span>21+3</span>
-                                  <span className="font-mono text-[8px] sm:text-[9px] md:text-[11px]">${seat.hand.sideBets.twentyOnePlusThree}</span>
-                                  {isPlus3Won === true && <div className="absolute -top-1 -right-1 text-[10px] sm:text-xs">✅</div>}
-                                  {isPlus3Won === false && <div className="absolute -top-1 -right-1 text-[10px] sm:text-xs opacity-50">❌</div>}
+                                  <span className="font-mono text-[7px] sm:text-[8px] md:text-[9px] leading-none">
+                                    {isPlus3Won === true && (seat.hand.sideBetPlus3Won || 0) > 0
+                                      ? `+$${seat.hand.sideBetPlus3Won}`
+                                      : `$${seat.hand.sideBets.twentyOnePlusThree}`}
+                                  </span>
+                                  {isPlus3Won === true && <div className="absolute -top-1 -right-1 text-[9px] sm:text-[10px]">✅</div>}
+                                  {isPlus3Won === false && <div className="absolute -top-1 -right-1 text-[9px] sm:text-[10px] opacity-50">❌</div>}
                                 </div>
                               )}
                               {seat.hand.insuranceBet && seat.hand.insuranceBet > 0 && (
-                                <div className={cn("w-[46px] h-[46px] sm:w-[50px] sm:h-[50px] rounded-full flex flex-col items-center justify-center border text-[7px] sm:text-[9px] font-bold tracking-tighter uppercase transition-all duration-500 relative shrink-0", 
+                                <div className={cn("w-[34px] h-[34px] sm:w-[38px] sm:h-[38px] md:w-[42px] md:h-[42px] rounded-full flex flex-col items-center justify-center border text-[6px] sm:text-[8px] font-bold tracking-tighter uppercase transition-all duration-500 relative shrink-0", 
                                     "bg-purple-600/80 border-purple-400 text-white shadow-[0_0_10px_rgba(147,51,234,0.5)]"
                                   )}>
                                   <span>Insure</span>
-                                  <span className="font-mono text-[8px] sm:text-[9px] md:text-[11px]">${seat.hand.insuranceBet}</span>
+                                  <span className="font-mono text-[7px] sm:text-[8px] md:text-[10px]">${seat.hand.insuranceBet}</span>
                                 </div>
                               )}
                             </div>
@@ -1306,18 +1386,21 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
 
                       {/* Display Bet & Win/Loss info */}
                       {(seat.userId !== null) && (seat.hand || (table.status === 'waiting' && gameRecords[0]?.tableId === table.id && gameRecords[0].seatResults?.find(sr => sr.seatIndex === seatIdx))) && (
-                        <div className="absolute bottom-[40px] sm:bottom-[50px] md:bottom-[55px] left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 pointer-events-none z-[100] w-full justify-center">
+                        <div className="absolute bottom-[46px] sm:bottom-[54px] md:bottom-[60px] [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-[34px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.82] left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 pointer-events-none z-[100] w-full justify-center">
                           {(()=>{
                             const isWait = table.status === 'waiting';
                             const sr = (isWait && gameRecords[0]?.tableId === table.id) ? gameRecords[0].seatResults?.find(s => s.seatIndex === seatIdx) : null;
-                            const betAmount = sr ? sr.bet : (seat.hand ? (seat.hand.bet + (seat.hand.sideBets?.pair || 0) + (seat.hand.sideBets?.twentyOnePlusThree || 0) + (seat.hand.insuranceBet || 0)) : 0);
+                            const betAmount = sr
+                              ? ((sr.bet || 0) + (sr.sideBet || 0) + (sr.insuranceBet || 0))
+                              : (seat.hand ? (seat.hand.bet + (seat.hand.sideBets?.pair || 0) + (seat.hand.sideBets?.twentyOnePlusThree || 0) + (seat.hand.insuranceBet || 0)) : 0);
+                            const winPayout = sr ? (sr.win || 0) : 0;
                             
                             if (!betAmount) return null;
 
                             return (
                               <>
-                                <div className={cn("flex items-center gap-1.5 bg-black/60 px-3 py-1 rounded-full border border-white/10 backdrop-blur-md shadow-xl", 
-                                  sr && sr.net > 0 ? "border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.2)]" : (sr && sr.net < 0 ? "border-[#ff6b6b]/40" : "")
+                                <div className={cn("flex items-center gap-1.5 bg-black/60 px-2.5 py-1 rounded-full border border-white/10 backdrop-blur-md shadow-xl", 
+                                  (sr && (sr.net > 0 || winPayout > 0)) ? "border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.2)]" : (sr && sr.net < 0 ? "border-[#ff6b6b]/40" : "")
                                 )}>
                                   <div className="flex flex-col items-end">
                                     <span className="text-[9px] uppercase tracking-wider text-white/50 font-bold leading-none mt-[1px]">BET</span>
@@ -1338,6 +1421,11 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                                      );
                                   })()}
                                   <span className="text-[12px] font-mono text-white leading-none mt-0.5">{betAmount % 1 !== 0 ? betAmount.toFixed(2) : betAmount}</span>
+                                  {sr && winPayout > 0 && (
+                                    <span className="text-[11px] font-mono font-bold text-emerald-400 leading-none mt-0.5 ml-0.5">
+                                      +{winPayout % 1 !== 0 ? winPayout.toFixed(2) : winPayout}
+                                    </span>
+                                  )}
                                 </div>
                               </>
                             );
@@ -1353,6 +1441,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                         currentUser={currentUser}
                         isSelected={isSelected}
                         dealCountdown={dealCountdown}
+                        actionCountdown={isThisSeatTurn && seatDealRevealed ? actionCountdown : null}
                         shakeSeats={shakeSeats}
                         onClick={() => toggleSeatSelection(seatIdx)}
                       />
@@ -1360,20 +1449,30 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                  );
                })}
              </div>
-             {/* Left/Right scroll indicators */}
-             <div className="absolute left-0 right-0 top-[35%] sm:top-[40%] -translate-y-1/2 flex justify-between pointer-events-none px-1 z-20">
-                <button onClick={() => scrollSeats('left')} className="pointer-events-auto opacity-50 bg-black/40 rounded-full p-2 hover:bg-black/60 active:opacity-100 transition-opacity">
-                  <ChevronLeft className="w-6 h-6 text-white drop-shadow-md" />
+             {/* Left/Right seat scroll indicators (visible on mobile/tablet or when seats scroll) */}
+             <div className="absolute left-1.5 right-1.5 sm:left-3 sm:right-3 bottom-[134px] sm:bottom-[154px] md:bottom-[168px] [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-[42px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-75 flex justify-between pointer-events-none z-30">
+                <button
+                  type="button"
+                  onClick={() => scrollSeats('left')}
+                  className="pointer-events-auto flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-[#0a180f]/90 hover:bg-[#122e1d] active:scale-95 border-2 border-[#d4af37]/80 text-[#ffd86b] shadow-[0_4px_16px_rgba(0,0,0,0.85)] backdrop-blur-md transition-all cursor-pointer group"
+                  title="Scroll Seats Left"
+                >
+                  <ChevronLeft className="w-5 h-5 sm:w-6 sm:h-6 group-hover:-translate-x-0.5 transition-transform" />
                 </button>
-                <button onClick={() => scrollSeats('right')} className="pointer-events-auto opacity-50 bg-black/40 rounded-full p-2 hover:bg-black/60 active:opacity-100 transition-opacity">
-                  <ChevronRight className="w-6 h-6 text-white drop-shadow-md" />
+                <button
+                  type="button"
+                  onClick={() => scrollSeats('right')}
+                  className="pointer-events-auto flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-[#0a180f]/90 hover:bg-[#122e1d] active:scale-95 border-2 border-[#d4af37]/80 text-[#ffd86b] shadow-[0_4px_16px_rgba(0,0,0,0.85)] backdrop-blur-md transition-all cursor-pointer group"
+                  title="Scroll Seats Right"
+                >
+                  <ChevronRight className="w-5 h-5 sm:w-6 sm:h-6 group-hover:translate-x-0.5 transition-transform" />
                 </button>
              </div>
            </div>
        </div>
 
                 {/* Bottom Control Overlay (HUD) */}
-         {table.status === 'waiting' && !showRules && !showHistory && !isCommentsOpen && !confirmAction && !isSidebarOpen && table.seats.some(s => s.userId === currentUser.id || s.userId === null) && (
+         {table.status === 'waiting' && !showRules && !showHistory && !isCommentsOpen && !confirmAction && !isSidebarOpen && !isTablePlayersOpen && !isStatsOpen && table.seats.some(s => s.userId === currentUser.id || s.userId === null) && (
             <DealControlHUD 
               table={table}
               mySeats={mySeats}
@@ -1399,12 +1498,12 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
               onSideBetsToggle={() => setSideBetsEnabled(!sideBetsEnabled)}
               autoDeal={autoDeal}
               onAutoDealToggle={() => setAutoDeal(!autoDeal)}
-              className="absolute bottom-2 w-full flex flex-col items-center z-[100] px-4 pointer-events-none"
+              className="absolute bottom-2 [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-0.5 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.78] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom w-full flex flex-col items-center z-[80] px-4 pointer-events-none"
             />
          )}
 
-         {table.status === 'playing' && isMyTurn && !isSidebarOpen && (
-           <div className="absolute bottom-2 w-full flex flex-col items-center z-[100] px-4 pointer-events-none">
+         {table.status === 'playing' && isMyTurn && isActiveTurnDealRevealed && !isSidebarOpen && !isTablePlayersOpen && !isStatsOpen && (
+           <div className="absolute bottom-2 [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-0.5 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.78] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom w-full flex flex-col items-center z-[80] px-4 pointer-events-none">
              <ActiveTurnHUD 
                tableId={table.id}
                activeSeatIndex={activeSeatIndex}

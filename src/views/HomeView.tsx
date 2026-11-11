@@ -7,6 +7,8 @@ import {
   Users,
   Lock,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   X,
   Settings,
   Volume2,
@@ -14,13 +16,17 @@ import {
   BarChart3,
   RefreshCw,
   KeyRound,
-  LogOut
+  LogOut,
+  User,
+  Zap
 } from 'lucide-react';
 import { useGameStore, getRuntimeGameStats, TableSettings, TournamentSettings } from '@/store/gameStore';
 import { useUIStore, selectIsMuted } from '@/store/uiStore';
 import { systemConfig } from '@/config/systemConfig';
 import { calculateBaseRTP } from '@/backend/gameRules';
 import { CurrencyIcon } from '@/components/CurrencyIcon';
+import { RankWidget } from '@/components/blackjack/RankWidget';
+import { RoyalBlackjackLogo } from '@/components/blackjack/DealerAreaUI';
 import { soundManager } from '@/lib/sounds';
 import { setRandseedMuted } from '@/lib/randseedRuntime';
 import { cn } from '@/lib/utils';
@@ -30,12 +36,13 @@ interface HomeViewProps {
   onNavigate: (view: 'lobby' | 'table' | 'host_table' | 'manage_tables', tableId?: string) => void;
 }
 
-type RoomFilter = 'all' | 'regular' | 'tournament';
+type RoomFilter = 'regular' | 'tournament';
 
 export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
   const {
     tables,
     currentUser,
+    onlinePlayers,
     createTable,
     gameRecords,
     setCreatorIdentity,
@@ -46,14 +53,72 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
   const isMuted = useUIStore(selectIsMuted);
   const setIsMuted = useUIStore(state => state.setIsMuted);
 
-  const [roomFilter, setRoomFilter] = useState<RoomFilter>('all');
-  const [activeRulesTab, setActiveRulesTab] = useState<'core' | 'sidebets' | 'modes'>('core');
+  const [roomFilter, setRoomFilter] = useState<RoomFilter>('regular');
+  const [activeRulesTab, setActiveRulesTab] = useState<'online' | 'core' | 'sidebets' | 'modes'>('online');
+  const [isMobileOnlineExpanded, setIsMobileOnlineExpanded] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showMyStatsModal, setShowMyStatsModal] = useState(false);
 
   const userHostedTables = useMemo(
     () => Object.values(tables).filter(t => t.houseId === currentUser?.id && t.status !== 'closed'),
     [tables, currentUser?.id]
   );
+
+  // Real online players list enriched with current table info
+  const realOnlineList = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        userId: string;
+        name: string;
+        avatar?: string;
+        tableId?: string;
+        tableName?: string;
+        isPlaying?: boolean;
+      }
+    >();
+
+    for (const p of onlinePlayers) {
+      if (!p.userId) continue;
+      map.set(p.userId, {
+        userId: p.userId,
+        name: p.userId === currentUser?.id ? (currentUser.name || p.name) : p.name,
+        avatar: p.userId === currentUser?.id ? (currentUser.avatar || p.avatar) : p.avatar,
+        tableId: p.tableId,
+        tableName: p.tableName,
+        isPlaying: p.isPlaying,
+      });
+    }
+
+    // Also ensure any seated player on active tables is represented with their real seat data
+    for (const t of Object.values(tables)) {
+      if (t.status === 'closed' || t.status === 'closing') continue;
+      for (const s of t.seats) {
+        if (!s.userId) continue;
+        const existing = map.get(s.userId);
+        const isMe = s.userId === currentUser?.id;
+        map.set(s.userId, {
+          userId: s.userId,
+          name: isMe ? (currentUser?.name || s.name || 'Player') : (existing?.name || s.name || s.userId.substring(0, 12)),
+          avatar: isMe ? (currentUser?.avatar || s.avatar) : (existing?.avatar || s.avatar),
+          tableId: t.id,
+          tableName: t.name,
+          isPlaying: Boolean(s.hand) || t.status === 'playing',
+        });
+      }
+    }
+
+    if (currentUser && !map.has(currentUser.id)) {
+      map.set(currentUser.id, {
+        userId: currentUser.id,
+        name: currentUser.name,
+        avatar: currentUser.avatar,
+        isPlaying: false,
+      });
+    }
+
+    return Array.from(map.values());
+  }, [onlinePlayers, tables, currentUser]);
 
   // Creator perspective is enabled by default (Platform SDK also provides creator identity)
   const isCreator = true;
@@ -222,7 +287,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
   };
 
   return (
-    <div className="w-full h-full max-w-[1280px] max-h-[720px] mx-auto flex flex-col bg-[#070b09] text-slate-100 select-none overflow-hidden relative">
+    <div className="w-full h-full max-w-[1280px] mx-auto flex flex-col bg-[#070b09] text-slate-100 select-none overflow-hidden relative">
       {/* Ambient Felt Radial Lighting */}
       <div
         className="absolute inset-0 pointer-events-none z-0"
@@ -235,22 +300,22 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
       {/* Iframe Max-Size Container (1280x720) */}
       <div className="relative z-10 w-full h-full flex flex-col overflow-hidden">
         {/* Top Header Bar: Global left/right padding 16px (px-4) */}
-        <header className="w-full h-16 shrink-0 bg-[#111613]/95 border-b border-[#c6a364]/20 px-4 flex items-center justify-between gap-4">
+        <header className="w-full h-14 sm:h-16 shrink-0 bg-[#111613]/95 border-b border-[#c6a364]/20 px-2.5 sm:px-4 flex items-center justify-between gap-2 sm:gap-4">
           {/* Brand Title */}
-          <div className="flex items-center gap-3 shrink-0">
-            <Crown className="w-6 h-6 text-[#d4af37] shrink-0" />
-            <span className="text-xl sm:text-2xl font-bold tracking-wider text-[#f5e6c8] whitespace-nowrap">
-              ROYAL BLACKJACK
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0 min-w-0">
+            <RoyalBlackjackLogo className="w-7 h-7 sm:w-8 sm:h-8 rounded-full shadow-md shrink-0" />
+            <span className="text-sm sm:text-lg md:text-2xl font-bold tracking-wider text-[#f5e6c8] whitespace-nowrap truncate">
+              <span className="hidden xs:inline">ROYAL </span>BLACKJACK
             </span>
           </div>
 
-          {/* Right Controls: Game Coins Balance + Creator Game Stats */}
-          <div className="flex items-center gap-2.5 shrink-0">
+          {/* Right Controls: Game Coins Balance + My Stats + Game Stats */}
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
             {currentUser && (
-              <div className="flex items-center gap-2 text-sm bg-black/45 border border-white/10 rounded-full px-4 py-2 tabular-nums">
-                <CurrencyIcon currency="Chip" className="w-4 h-4" />
-                <span className="text-slate-300 hidden sm:inline">Game Coins</span>
-                <span className="text-base font-mono font-bold text-[#ffc53d]">
+              <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm bg-black/45 border border-white/10 rounded-full px-2.5 sm:px-4 py-1.5 sm:py-2 tabular-nums">
+                <CurrencyIcon currency="Chip" className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                <span className="text-slate-300 hidden md:inline">Coins</span>
+                <span className="text-xs sm:text-base font-mono font-bold text-[#ffc53d]">
                   {currentUser.balance.toLocaleString()}
                 </span>
                 {currentUser.balance <= 0 && (
@@ -259,47 +324,52 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                       soundManager.playChip();
                       refillGameCoins();
                     }}
-                    className="ml-2 px-3 py-1 rounded-full bg-gradient-to-r from-[#ffd86b] to-[#eaaa08] text-[#090d0b] text-xs font-extrabold tracking-tight hover:brightness-110 transition-all cursor-pointer"
+                    className="ml-1 sm:ml-2 px-2 sm:px-3 py-0.5 sm:py-1 rounded-full bg-gradient-to-r from-[#ffd86b] to-[#eaaa08] text-[#090d0b] text-[10px] sm:text-xs font-extrabold tracking-tight hover:brightness-110 transition-all cursor-pointer whitespace-nowrap"
                     title="Claim free 5,000 Game Coins refill"
                   >
-                    +5,000 Free
+                    +5K
                   </button>
                 )}
               </div>
             )}
 
-            {/* Game Stats Entry */}
-            <div className="flex items-center gap-2">
+            {/* My Stats & Game Stats Entries */}
+            <div className="flex items-center gap-1.5 sm:gap-2">
               <button
-                onClick={handleOpenStats}
-                title="Game Runtime Statistics"
-                className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-semibold text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 transition-colors whitespace-nowrap cursor-pointer"
+                onClick={() => setShowMyStatsModal(true)}
+                title="My Stats (Personal Cross-Table Records)"
+                className="flex items-center gap-1 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold text-[#ffd86b] bg-[#d4af37]/15 hover:bg-[#d4af37]/25 border border-[#d4af37]/40 transition-colors whitespace-nowrap cursor-pointer"
               >
-                <BarChart3 className="w-4 h-4 text-emerald-400" />
-                <span>Game Stats</span>
+                <User className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#ffd86b] shrink-0" />
+                <span className="hidden xs:inline">My </span>
+                <span>Stats</span>
               </button>
+
+              {isCreator && (
+                <button
+                  onClick={handleOpenStats}
+                  title="Creator Report"
+                  className="flex items-center gap-1 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  <BarChart3 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400 shrink-0" />
+                  <span>Report</span>
+                </button>
+              )}
             </div>
           </div>
         </header>
 
-        {/* Main Workspace: Global padding 16px (p-4), grid spacing (gap-4) fitted to 1280x720 */}
-        <main className="flex-1 min-h-0 w-full p-4 grid grid-cols-1 lg:grid-cols-12 gap-4 overflow-y-auto lg:overflow-hidden">
-          {/* LEFT COLUMN (5 Cols): Blackjack Felt Visual + Full-Size Game Rules */}
-          <div className="lg:col-span-5 flex flex-col gap-4 min-h-0">
+        {/* Main Workspace: Global padding 16px (p-4), stacked flex on mobile to prevent overlap, 12-col grid on desktop */}
+        <style>{`.hide-scrollbar-custom::-webkit-scrollbar { display: none; } .hide-scrollbar-custom { -ms-overflow-style: none; scrollbar-width: none; }`}</style>
+        <main className="flex-1 min-h-0 w-full p-3 sm:p-4 flex flex-col lg:grid lg:grid-cols-12 gap-3.5 sm:gap-4 overflow-y-auto lg:overflow-hidden hide-scrollbar-custom">
+          {/* LEFT COLUMN (5 Cols): Blackjack Felt Visual + Collapsible Online Players / Game Rules */}
+          <div className="w-full lg:col-span-5 flex flex-col gap-3.5 sm:gap-4 shrink-0 lg:shrink lg:min-h-0">
             {/* 1. Blackjack Poker Felt Showcase */}
-            <div className="shrink-0 relative rounded-2xl bg-gradient-to-b from-[#164e2e] via-[#113d23] to-[#0b2616] border-2 border-[#6b4c2a] shadow-[inset_0_0_42px_rgba(0,0,0,0.75)] p-5 flex flex-col justify-between overflow-hidden">
+            <div className="shrink-0 relative rounded-2xl bg-gradient-to-b from-[#164e2e] via-[#113d23] to-[#0b2616] border-2 border-[#6b4c2a] shadow-[inset_0_0_42px_rgba(0,0,0,0.75)] p-4 sm:p-5 flex flex-col justify-center overflow-hidden">
               <div className="absolute inset-x-3 top-3 bottom-3 rounded-2xl border border-[#d4af37]/20 pointer-events-none" />
 
-              {/* Top Felt Banner */}
-              <div className="relative z-10 flex items-center justify-between gap-2 text-base sm:text-lg font-mono font-bold tracking-wider text-[#f0d078] uppercase">
-                <span>♠ ♥ BLACKJACK PAYS 3 TO 2 ♣ ♦</span>
-                <span className="text-xs sm:text-sm px-2.5 py-0.5 rounded-md bg-black/35 border border-[#d4af37]/30 text-[#f5e6c8]">
-                  RTP {calculateBaseRTP('standard')}%
-                </span>
-              </div>
-
               {/* Cards Showcase: Dealer vs Player 21 */}
-              <div className="relative z-10 mt-4 mb-1 flex items-center justify-around gap-4 py-1">
+              <div className="relative z-10 my-1 flex items-center justify-around gap-4 py-1">
                 <div className="flex flex-col items-center gap-2">
                   <span className="text-xs sm:text-sm uppercase tracking-wider text-emerald-200 font-semibold">
                     Dealer · 17 Stands
@@ -313,9 +383,9 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                       />
                     </div>
                     <div className="w-14 h-20 rounded-lg bg-white text-slate-900 border border-slate-200 shadow-lg p-2 flex flex-col justify-between rotate-6">
-                      <div className="text-xs font-black leading-none">Q♣</div>
+                      <div className="text-xs font-black leading-none">7♣</div>
                       <div className="self-center text-xl leading-none">♣</div>
-                      <div className="text-xs font-black leading-none self-end rotate-180">Q</div>
+                      <div className="text-xs font-black leading-none self-end rotate-180">7</div>
                     </div>
                   </div>
                 </div>
@@ -345,14 +415,70 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
               </div>
             </div>
 
-            {/* 2. Game Rules & Payouts Card */}
-            <div className="flex-1 min-h-0 rounded-2xl bg-[#111714]/95 border border-white/10 p-5 flex flex-col overflow-hidden">
-              <div className="flex items-center justify-between gap-2 pb-3 border-b border-white/10 shrink-0">
-                <h2 className="text-lg font-bold text-white tracking-wide whitespace-nowrap">Game Rules & Payouts</h2>
+            {/* 2. Online Players & Game Rules Card (Collapsible on Mobile, Collapsed by Default) */}
+            <div className="lg:flex-1 lg:min-h-0 rounded-2xl bg-[#111714]/95 border border-white/10 p-3.5 sm:p-5 flex flex-col overflow-hidden shrink-0">
+              <div
+                className={cn(
+                  'flex flex-wrap items-center justify-between gap-2 shrink-0',
+                  isMobileOnlineExpanded ? 'pb-3 border-b border-white/10' : 'lg:pb-3 lg:border-b lg:border-white/10'
+                )}
+              >
+                <button
+                  type="button"
+                  onClick={() => setIsMobileOnlineExpanded(prev => !prev)}
+                  className="flex items-center gap-2 text-left cursor-pointer lg:cursor-default"
+                >
+                  <h2 className="text-sm sm:text-lg font-bold text-white tracking-wide whitespace-nowrap flex items-center gap-2">
+                    {activeRulesTab === 'online' ? (
+                      <>
+                        <Zap className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <span>Online Players</span>
+                        <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
+                          {realOnlineList.length}
+                        </span>
+                      </>
+                    ) : (
+                      <span>Game Rules & Payouts</span>
+                    )}
+                  </h2>
+                  <span className="lg:hidden inline-flex items-center gap-1 text-xs font-semibold text-emerald-300 bg-white/5 border border-white/10 px-2 py-0.5 rounded-lg">
+                    {isMobileOnlineExpanded ? (
+                      <>
+                        <span>Hide</span>
+                        <ChevronUp className="w-3.5 h-3.5" />
+                      </>
+                    ) : (
+                      <>
+                        <span>Show</span>
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      </>
+                    )}
+                  </span>
+                </button>
 
-                <div className="flex items-center gap-1 bg-black/40 p-1 rounded-xl border border-white/10 text-xs sm:text-sm shrink-0">
+                <div
+                  className={cn(
+                    'items-center gap-1 bg-black/40 p-1 rounded-xl border border-white/10 text-xs shrink-0',
+                    isMobileOnlineExpanded ? 'flex' : 'hidden lg:flex'
+                  )}
+                >
                   <button
-                    onClick={() => setActiveRulesTab('core')}
+                    onClick={() => {
+                      setActiveRulesTab('online');
+                      setIsMobileOnlineExpanded(true);
+                    }}
+                    className={cn(
+                      'px-2.5 py-1 rounded-lg font-semibold transition-colors whitespace-nowrap cursor-pointer flex items-center gap-1',
+                      activeRulesTab === 'online' ? 'bg-emerald-500 text-[#090d0b] font-bold' : 'text-slate-300 hover:text-white'
+                    )}
+                  >
+                    <span>Online ({realOnlineList.length})</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setActiveRulesTab('core');
+                      setIsMobileOnlineExpanded(true);
+                    }}
                     className={cn(
                       'px-2.5 py-1 rounded-lg font-semibold transition-colors whitespace-nowrap cursor-pointer',
                       activeRulesTab === 'core' ? 'bg-[#d4af37] text-[#090d0b]' : 'text-slate-300 hover:text-white'
@@ -361,7 +487,10 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                     Core
                   </button>
                   <button
-                    onClick={() => setActiveRulesTab('sidebets')}
+                    onClick={() => {
+                      setActiveRulesTab('sidebets');
+                      setIsMobileOnlineExpanded(true);
+                    }}
                     className={cn(
                       'px-2.5 py-1 rounded-lg font-semibold transition-colors whitespace-nowrap cursor-pointer',
                       activeRulesTab === 'sidebets' ? 'bg-[#d4af37] text-[#090d0b]' : 'text-slate-300 hover:text-white'
@@ -370,7 +499,10 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                     Side Bets
                   </button>
                   <button
-                    onClick={() => setActiveRulesTab('modes')}
+                    onClick={() => {
+                      setActiveRulesTab('modes');
+                      setIsMobileOnlineExpanded(true);
+                    }}
                     className={cn(
                       'px-2.5 py-1 rounded-lg font-semibold transition-colors whitespace-nowrap cursor-pointer',
                       activeRulesTab === 'modes' ? 'bg-[#d4af37] text-[#090d0b]' : 'text-slate-300 hover:text-white'
@@ -381,149 +513,361 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 </div>
               </div>
 
-              <div className="flex-1 min-h-0 overflow-y-auto pt-3 pr-1 space-y-2.5 text-sm sm:text-base">
+              <div
+                className={cn(
+                  'lg:flex-1 lg:min-h-0 overflow-y-auto pt-3 pr-1 space-y-2 text-xs sm:text-sm hide-scrollbar-custom',
+                  isMobileOnlineExpanded ? 'block max-h-[260px] lg:max-h-none' : 'hidden lg:block'
+                )}
+              >
+                {activeRulesTab === 'online' && (
+                  <div className="space-y-2">
+                    {realOnlineList.length === 0 ? (
+                      <div className="text-center py-8 text-slate-400 text-sm">
+                        No online players found.
+                      </div>
+                    ) : (
+                      realOnlineList.map((player) => {
+                        const isMe = player.userId === currentUser?.id;
+                        return (
+                          <div
+                            key={player.userId}
+                            className="flex items-center justify-between gap-3 py-2.5 px-3.5 rounded-xl bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 transition-colors"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="relative shrink-0">
+                                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#126b6f] to-[#0a3e40] border border-[#d4af37]/40 overflow-hidden flex items-center justify-center text-white font-bold text-xs select-none">
+                                  {player.avatar ? (
+                                    <img
+                                      src={player.avatar}
+                                      alt={player.name}
+                                      className="w-full h-full object-cover"
+                                    />
+                                  ) : (
+                                    (player.name || 'P').charAt(0).toUpperCase()
+                                  )}
+                                </div>
+                                <span
+                                  className={cn(
+                                    'absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border border-[#111714]',
+                                    player.tableId
+                                      ? 'bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.8)]'
+                                      : 'bg-sky-400'
+                                  )}
+                                  title={player.tableId ? 'At Table' : 'In Lobby'}
+                                />
+                              </div>
+
+                              <div className="min-w-0">
+                                <div className="text-sm font-bold text-white truncate flex items-center gap-1.5">
+                                  <span className="truncate">{player.name}</span>
+                                  {isMe && (
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono shrink-0">
+                                      You
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[11px] text-slate-400 font-mono">
+                                  {player.tableId ? 'Playing at Table' : 'In Lobby'}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="shrink-0">
+                              {player.tableId && player.tableName ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onSelectTable(player.tableId!)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 hover:text-white transition-all cursor-pointer max-w-[160px]"
+                                  title={`Join ${player.tableName}`}
+                                >
+                                  <span className="truncate">{player.tableName}</span>
+                                  <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+                                </button>
+                              ) : (
+                                <span className="px-2.5 py-1 rounded-lg text-xs font-mono bg-white/5 border border-white/10 text-slate-400">
+                                  Lobby
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+
                 {activeRulesTab === 'core' && (
-                  <>
-                    <div className="flex items-center justify-between py-2.5 px-4 rounded-xl bg-white/[0.03] border border-white/5">
-                      <span className="text-slate-200 font-medium">Natural Blackjack (A + 10/J/Q/K)</span>
-                      <span className="font-mono font-bold text-[#f5d97e]">Pays 3 : 2</span>
+                  <div className="grid grid-cols-2 gap-2">
+                    {/* 1. Blackjack 3:2 Visual Tile */}
+                    <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-white/[0.03] border border-white/5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex items-center -space-x-1.5 shrink-0">
+                          <div className="w-5 h-7 rounded bg-white text-slate-950 border border-[#d4af37] shadow flex items-center justify-center text-[9px] font-black -rotate-6">
+                            A♠
+                          </div>
+                          <div className="w-5 h-7 rounded bg-white text-red-600 border border-[#d4af37] shadow flex items-center justify-center text-[9px] font-black rotate-6">
+                            K♦
+                          </div>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-white truncate">Blackjack</div>
+                          <div className="text-[10px] text-slate-400 truncate">A + 10/J/Q/K</div>
+                        </div>
+                      </div>
+                      <span className="font-mono font-black text-xs sm:text-sm text-[#f5d97e] bg-[#d4af37]/15 border border-[#d4af37]/30 px-2 py-0.5 rounded-md shrink-0">
+                        3:2
+                      </span>
                     </div>
-                    <div className="flex items-center justify-between py-2.5 px-4 rounded-xl bg-white/[0.03] border border-white/5">
-                      <span className="text-slate-200 font-medium">Standard Winning Hand</span>
-                      <span className="font-mono font-bold text-emerald-400">Pays 1 : 1</span>
+
+                    {/* 2. Standard Win 1:1 Visual Tile */}
+                    <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-white/[0.03] border border-white/5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-7 h-7 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center shrink-0">
+                          <Trophy className="w-3.5 h-3.5 text-emerald-400" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-white truncate">Win Hand</div>
+                          <div className="text-[10px] text-slate-400 truncate">Beat Dealer</div>
+                        </div>
+                      </div>
+                      <span className="font-mono font-black text-xs sm:text-sm text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md shrink-0">
+                        1:1
+                      </span>
                     </div>
-                    <div className="flex items-center justify-between py-2.5 px-4 rounded-xl bg-white/[0.03] border border-white/5">
-                      <span className="text-slate-200 font-medium">Insurance (When Dealer shows Ace)</span>
-                      <span className="font-mono font-bold text-sky-400">Pays 2 : 1</span>
+
+                    {/* 3. Insurance 2:1 Visual Tile */}
+                    <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-white/[0.03] border border-white/5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-7 h-7 rounded-lg bg-sky-500/15 border border-sky-400/30 flex flex-col items-center justify-center shrink-0 leading-none">
+                          <span className="text-[9px] font-black text-sky-300">A</span>
+                          <span className="text-[7px] font-bold text-sky-400 uppercase">Ins</span>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-white truncate">Insurance</div>
+                          <div className="text-[10px] text-slate-400 truncate">vs Dealer A</div>
+                        </div>
+                      </div>
+                      <span className="font-mono font-black text-xs sm:text-sm text-sky-300 bg-sky-500/15 border border-sky-400/30 px-2 py-0.5 rounded-md shrink-0">
+                        2:1
+                      </span>
                     </div>
-                    <div className="flex items-center justify-between py-2.5 px-4 rounded-xl bg-white/[0.03] border border-white/5">
-                      <span className="text-slate-200 font-medium">Dealer Drawing Rule</span>
-                      <span className="font-mono font-semibold text-slate-100">Hits ≤ 16 · Stands on all 17</span>
+
+                    {/* 4. Dealer Rule Visual Tile */}
+                    <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-white/[0.03] border border-white/5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-7 h-7 rounded-lg bg-amber-500/15 border border-amber-400/30 flex items-center justify-center font-mono font-black text-xs text-amber-300 shrink-0">
+                          17
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-white truncate">Dealer</div>
+                          <div className="text-[10px] text-slate-400 truncate">Hit ≤16</div>
+                        </div>
+                      </div>
+                      <span className="font-mono font-bold text-[11px] sm:text-xs text-slate-100 bg-white/10 border border-white/15 px-2 py-0.5 rounded-md shrink-0">
+                        Stand 17
+                      </span>
                     </div>
-                  </>
+
+                    {/* 5. Last Rule: 6-Deck Shoe Visual Tile */}
+                    <div className="col-span-2 flex items-center justify-between gap-2 p-2.5 rounded-xl bg-white/[0.03] border border-white/5">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="relative w-8 h-7 flex items-center justify-center shrink-0">
+                          <div className="w-5 h-6 rounded bg-emerald-900 border border-white/30 absolute left-0.5 top-0.5 shadow" />
+                          <div className="w-5 h-6 rounded bg-red-600 border border-red-300 absolute left-1.5 top-0.5 shadow flex items-center justify-center text-[7px] font-black text-white">
+                            75%
+                          </div>
+                          <div className="w-5 h-6 rounded bg-[#18452B] border border-[#d4af37]/70 absolute left-2.5 top-0.5 shadow" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-white truncate">6-Deck Shoe</div>
+                          <div className="text-[10px] text-slate-400 truncate">Reshuffled at 75% cut card</div>
+                        </div>
+                      </div>
+                      <span className="font-mono font-bold text-[11px] sm:text-xs text-[#ffc53d] bg-[#ffc53d]/10 border border-[#ffc53d]/30 px-2 py-0.5 rounded-md shrink-0">
+                        6 Decks · 75%
+                      </span>
+                    </div>
+                  </div>
                 )}
 
                 {activeRulesTab === 'sidebets' && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="rounded-xl bg-white/[0.03] border border-white/5 p-3.5 space-y-2 text-sm">
-                      <div className="text-base font-bold text-[#f5d97e]">Perfect Pair</div>
-                      <div className="flex justify-between text-slate-200">
-                        <span>Perfect Pair</span>
-                        <span className="font-mono font-bold text-white">25:1</span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {/* Perfect Pair Visual Graphics */}
+                    <div className="rounded-xl bg-white/[0.03] border border-white/5 p-2.5 space-y-2 text-xs">
+                      <div className="flex items-center justify-between border-b border-white/5 pb-1.5">
+                        <span className="text-xs font-bold text-[#f5d97e]">Perfect Pair</span>
+                        <span className="text-[10px] text-slate-400 font-mono">1st 2 Cards</span>
                       </div>
-                      <div className="flex justify-between text-slate-200">
-                        <span>Colored Pair</span>
-                        <span className="font-mono font-bold text-white">12:1</span>
+
+                      {/* Perfect Pair 25:1 */}
+                      <div className="flex items-center justify-between gap-2 bg-black/25 px-2 py-1.5 rounded-lg border border-white/5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="flex items-center -space-x-1 shrink-0">
+                            <span className="w-5 h-6 rounded bg-white text-slate-950 border border-[#d4af37] shadow flex items-center justify-center text-[9px] font-black -rotate-6">Q♠</span>
+                            <span className="w-5 h-6 rounded bg-white text-slate-950 border border-[#d4af37] shadow flex items-center justify-center text-[9px] font-black rotate-6">Q♠</span>
+                          </div>
+                          <span className="text-[11px] font-semibold text-slate-200 truncate">Same Suit</span>
+                        </div>
+                        <span className="font-mono font-black text-xs text-[#f5d97e] bg-[#d4af37]/15 border border-[#d4af37]/30 px-1.5 py-0.5 rounded shrink-0">25:1</span>
                       </div>
-                      <div className="flex justify-between text-slate-200">
-                        <span>Mixed Pair</span>
-                        <span className="font-mono font-bold text-white">6:1</span>
+
+                      {/* Colored Pair 12:1 */}
+                      <div className="flex items-center justify-between gap-2 bg-black/25 px-2 py-1.5 rounded-lg border border-white/5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="flex items-center -space-x-1 shrink-0">
+                            <span className="w-5 h-6 rounded bg-white text-red-600 border border-slate-300 shadow flex items-center justify-center text-[9px] font-black -rotate-6">Q♥</span>
+                            <span className="w-5 h-6 rounded bg-white text-red-600 border border-slate-300 shadow flex items-center justify-center text-[9px] font-black rotate-6">Q♦</span>
+                          </div>
+                          <span className="text-[11px] font-semibold text-slate-200 truncate">Same Color</span>
+                        </div>
+                        <span className="font-mono font-black text-xs text-white bg-white/10 border border-white/15 px-1.5 py-0.5 rounded shrink-0">12:1</span>
+                      </div>
+
+                      {/* Mixed Pair 6:1 */}
+                      <div className="flex items-center justify-between gap-2 bg-black/25 px-2 py-1.5 rounded-lg border border-white/5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="flex items-center -space-x-1 shrink-0">
+                            <span className="w-5 h-6 rounded bg-white text-slate-950 border border-slate-300 shadow flex items-center justify-center text-[9px] font-black -rotate-6">Q♠</span>
+                            <span className="w-5 h-6 rounded bg-white text-red-600 border border-slate-300 shadow flex items-center justify-center text-[9px] font-black rotate-6">Q♥</span>
+                          </div>
+                          <span className="text-[11px] font-semibold text-slate-200 truncate">Mixed</span>
+                        </div>
+                        <span className="font-mono font-black text-xs text-slate-200 bg-white/5 border border-white/10 px-1.5 py-0.5 rounded shrink-0">6:1</span>
                       </div>
                     </div>
 
-                    <div className="rounded-xl bg-white/[0.03] border border-white/5 p-3.5 space-y-2 text-sm">
-                      <div className="text-base font-bold text-emerald-400">21 + 3 Poker</div>
-                      <div className="flex justify-between text-slate-200">
-                        <span>Suited Trips</span>
-                        <span className="font-mono font-bold text-white">100:1</span>
+                    {/* 21 + 3 Poker Visual Graphics */}
+                    <div className="rounded-xl bg-white/[0.03] border border-white/5 p-2.5 space-y-1.5 text-xs">
+                      <div className="flex items-center justify-between border-b border-white/5 pb-1.5">
+                        <span className="text-xs font-bold text-emerald-400">21 + 3 Poker</span>
+                        <span className="text-[10px] text-slate-400 font-mono">Your 2 + Dealer 1</span>
                       </div>
-                      <div className="flex justify-between text-slate-200">
-                        <span>Straight Flush</span>
-                        <span className="font-mono font-bold text-white">40:1</span>
+
+                      {/* Suited Trips 100:1 */}
+                      <div className="flex items-center justify-between gap-1.5 bg-black/25 px-2 py-1 rounded-lg border border-white/5">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <div className="flex items-center -space-x-1 shrink-0">
+                            <span className="w-4.5 h-5.5 rounded bg-white text-slate-950 border border-[#d4af37] shadow flex items-center justify-center text-[8px] font-black">K♠</span>
+                            <span className="w-4.5 h-5.5 rounded bg-white text-slate-950 border border-[#d4af37] shadow flex items-center justify-center text-[8px] font-black">K♠</span>
+                            <span className="w-4.5 h-5.5 rounded bg-white text-slate-950 border border-[#d4af37] shadow flex items-center justify-center text-[8px] font-black">K♠</span>
+                          </div>
+                          <span className="text-[10px] font-semibold text-slate-200 truncate">Suited 3</span>
+                        </div>
+                        <span className="font-mono font-black text-[11px] text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 rounded shrink-0">100:1</span>
                       </div>
-                      <div className="flex justify-between text-slate-200">
-                        <span>Three of a Kind</span>
-                        <span className="font-mono font-bold text-white">30:1</span>
+
+                      {/* Straight Flush 40:1 */}
+                      <div className="flex items-center justify-between gap-1.5 bg-black/25 px-2 py-1 rounded-lg border border-white/5">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <div className="flex items-center -space-x-1 shrink-0">
+                            <span className="w-4.5 h-5.5 rounded bg-white text-red-600 border border-slate-300 shadow flex items-center justify-center text-[8px] font-black">9♥</span>
+                            <span className="w-4.5 h-5.5 rounded bg-white text-red-600 border border-slate-300 shadow flex items-center justify-center text-[8px] font-black">10♥</span>
+                            <span className="w-4.5 h-5.5 rounded bg-white text-red-600 border border-slate-300 shadow flex items-center justify-center text-[8px] font-black">J♥</span>
+                          </div>
+                          <span className="text-[10px] font-semibold text-slate-200 truncate">Str. Flush</span>
+                        </div>
+                        <span className="font-mono font-black text-[11px] text-[#f5d97e] bg-[#d4af37]/15 border border-[#d4af37]/30 px-1.5 py-0.5 rounded shrink-0">40:1</span>
                       </div>
-                      <div className="flex justify-between text-slate-200">
-                        <span>Straight / Flush</span>
-                        <span className="font-mono font-bold text-white">10:1 / 5:1</span>
+
+                      {/* Three of a Kind 30:1 */}
+                      <div className="flex items-center justify-between gap-1.5 bg-black/25 px-2 py-1 rounded-lg border border-white/5">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <div className="flex items-center -space-x-1 shrink-0">
+                            <span className="w-4.5 h-5.5 rounded bg-white text-slate-950 border border-slate-300 shadow flex items-center justify-center text-[8px] font-black">8♠</span>
+                            <span className="w-4.5 h-5.5 rounded bg-white text-red-600 border border-slate-300 shadow flex items-center justify-center text-[8px] font-black">8♥</span>
+                            <span className="w-4.5 h-5.5 rounded bg-white text-slate-950 border border-slate-300 shadow flex items-center justify-center text-[8px] font-black">8♣</span>
+                          </div>
+                          <span className="text-[10px] font-semibold text-slate-200 truncate">3 of Kind</span>
+                        </div>
+                        <span className="font-mono font-black text-[11px] text-white bg-white/10 border border-white/15 px-1.5 py-0.5 rounded shrink-0">30:1</span>
+                      </div>
+
+                      {/* Straight 10:1 & Flush 5:1 */}
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <div className="flex items-center justify-between gap-1 bg-black/25 px-1.5 py-1 rounded-lg border border-white/5">
+                          <div className="flex items-center -space-x-1 shrink-0">
+                            <span className="w-4 h-5 rounded bg-white text-slate-950 border border-slate-300 flex items-center justify-center text-[7px] font-black">5♠</span>
+                            <span className="w-4 h-5 rounded bg-white text-red-600 border border-slate-300 flex items-center justify-center text-[7px] font-black">6♦</span>
+                            <span className="w-4 h-5 rounded bg-white text-slate-950 border border-slate-300 flex items-center justify-center text-[7px] font-black">7♣</span>
+                          </div>
+                          <span className="font-mono font-bold text-[10px] text-slate-200">10:1</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-1 bg-black/25 px-1.5 py-1 rounded-lg border border-white/5">
+                          <div className="flex items-center -space-x-1 shrink-0">
+                            <span className="w-4 h-5 rounded bg-white text-red-600 border border-slate-300 flex items-center justify-center text-[7px] font-black">2♦</span>
+                            <span className="w-4 h-5 rounded bg-white text-red-600 border border-slate-300 flex items-center justify-center text-[7px] font-black">7♦</span>
+                            <span className="w-4 h-5 rounded bg-white text-red-600 border border-slate-300 flex items-center justify-center text-[7px] font-black">K♦</span>
+                          </div>
+                          <span className="font-mono font-bold text-[10px] text-slate-200">5:1</span>
+                        </div>
                       </div>
                     </div>
                   </div>
                 )}
 
                 {activeRulesTab === 'modes' && (
-                  <div className="space-y-2.5 text-sm sm:text-base text-slate-200 leading-relaxed">
-                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/5">
-                      <span className="font-bold text-white">Double Down & Split: </span>
+                  <div className="space-y-2 text-xs sm:text-sm text-slate-200 leading-snug">
+                    <div className="p-2.5 sm:p-3 rounded-xl bg-white/[0.03] border border-white/5">
+                      <span className="font-bold text-white">Double & Split: </span>
                       Double on any first 2 cards; split matching ranks up to 4 hands (split Aces receive 1 card each and stand).
                     </div>
-                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/5">
+                    <div className="p-2.5 sm:p-3 rounded-xl bg-white/[0.03] border border-white/5">
                       <span className="font-bold text-[#f5d97e]">Tournament Ticket & Allowance: </span>
-                      Players purchase a tournament ticket using Game Coins, and every player receives an equal locked Tournament Allowance. Prize pool is awarded in Game Coins per Survivor Cap or Round Cap rules.
+                      Buy a ticket with Game Coins for an equal locked Allowance. Prize pool is awarded in Game Coins per Survivor Cap or Round Cap rules.
                     </div>
                   </div>
-                )}
-              </div>
-
-              {/* Creator Identity Status Footer */}
-              <div className="pt-2.5 mt-2 border-t border-white/10 flex items-center justify-between text-xs text-slate-400 shrink-0">
-                <span>6 Decks · 75% Penetration · Deterministic Shoe</span>
-                {!isCreator ? (
-                  <button
-                    onClick={() => setCreatorIdentity(true)}
-                    className="flex items-center gap-1.5 text-slate-400 hover:text-[#f5d97e] transition-colors cursor-pointer"
-                    title="Switch to Creator View (Platform SDK provides identity)"
-                  >
-                    <KeyRound className="w-3.5 h-3.5" />
-                    <span>Creator View</span>
-                  </button>
-                ) : (
-                  <span className="text-emerald-400 font-semibold">Creator Identity Active</span>
                 )}
               </div>
             </div>
           </div>
 
           {/* RIGHT COLUMN (7 Cols): Filter Bar + Create Custom Table + Tables List */}
-          <div className="lg:col-span-7 rounded-2xl bg-[#111714]/95 border border-white/10 p-5 flex flex-col min-h-0 overflow-hidden">
-            {/* Top Bar: Filter Tabs on Left + Create Custom Table Button on Right */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pb-4 mb-4 border-b border-white/10 shrink-0">
-              <div className="flex items-center gap-1.5 bg-black/40 p-1.5 rounded-xl border border-white/10 text-sm">
-                {(
-                  [
-                    { id: 'all', label: 'All Tables' },
-                    { id: 'regular', label: 'Regular' },
-                    { id: 'tournament', label: 'Tournament' }
-                  ] as const
-                ).map((tab) => (
-                  <button
-                    key={tab.id}
-                    onClick={() => setRoomFilter(tab.id)}
-                    className={cn(
-                      'px-4 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer',
-                      roomFilter === tab.id ? 'bg-[#d4af37] text-[#090d0b]' : 'text-slate-300 hover:text-white'
-                    )}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex items-center gap-3">
-                {userHostedTables.length > 0 && (
-                  <button
-                    onClick={() => onNavigate('manage_tables')}
-                    className="px-4 py-2 rounded-xl text-sm font-semibold text-slate-200 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors flex items-center gap-2 cursor-pointer"
-                  >
-                    <Settings className="w-4 h-4 text-[#d4af37]" />
-                    <span>My Tables ({userHostedTables.length})</span>
-                  </button>
-                )}
+          <div className="w-full lg:col-span-7 rounded-2xl bg-[#111714]/95 border border-white/10 p-3.5 sm:p-5 flex flex-col shrink-0 lg:shrink lg:min-h-0 lg:overflow-hidden">
+            {/* Top Bar: Regular & Tournament Tabs + Custom Table Button on the same row */}
+            <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 pb-3 sm:pb-4 mb-3 sm:mb-4 border-b border-white/10 shrink-0">
+              <div className="flex items-center gap-1.5 sm:gap-2.5 flex-nowrap max-w-full overflow-x-auto hide-scrollbar-custom">
+                <div className="flex items-center gap-1 sm:gap-1.5 bg-black/40 p-1 sm:p-1.5 rounded-xl border border-white/10 text-xs sm:text-sm shrink-0">
+                  {(
+                    [
+                      { id: 'regular', label: 'Regular' },
+                      { id: 'tournament', label: 'Tournament' }
+                    ] as const
+                  ).map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setRoomFilter(tab.id)}
+                      className={cn(
+                        'px-2.5 sm:px-4 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap',
+                        roomFilter === tab.id ? 'bg-[#d4af37] text-[#090d0b]' : 'text-slate-300 hover:text-white'
+                      )}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
 
                 <button
                   onClick={() => setShowCreateModal(true)}
-                  className="px-5 py-2 rounded-xl text-sm sm:text-base font-bold text-[#04120b] bg-gradient-to-b from-emerald-400 to-emerald-600 hover:from-emerald-300 hover:to-emerald-500 border border-emerald-300/40 shadow-[0_4px_14px_rgba(16,185,129,0.28)] transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer"
+                  className="px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-bold text-[#04120b] bg-gradient-to-b from-emerald-400 to-emerald-600 hover:from-emerald-300 hover:to-emerald-500 border border-emerald-300/40 shadow-[0_4px_14px_rgba(16,185,129,0.28)] transition-all flex items-center gap-1 sm:gap-1.5 whitespace-nowrap cursor-pointer shrink-0"
                 >
-                  <Plus className="w-5 h-5 stroke-[2.5]" />
-                  <span>Create Custom Table</span>
+                  <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5]" />
+                  <span>Custom Table</span>
                 </button>
               </div>
+
+              {userHostedTables.length > 0 && (
+                <button
+                  onClick={() => onNavigate('manage_tables')}
+                  className="px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-200 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors flex items-center gap-1.5 sm:gap-2 cursor-pointer"
+                >
+                  <Settings className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#d4af37]" />
+                  <span>My Tables ({userHostedTables.length})</span>
+                </button>
+              )}
             </div>
 
-            {/* Tables List */}
-            <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4">
+            {/* Tables List (Scrollbars hidden) */}
+            <div className="lg:flex-1 lg:min-h-0 lg:overflow-y-auto space-y-3 sm:space-y-4 hide-scrollbar-custom">
               {filteredRooms.map((room) => {
                 const isTournament = room.settings.mode === 'tournament';
                 const isSystemTable = room.houseId === 'system';
@@ -537,7 +881,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                     key={room.id}
                     onClick={() => onSelectTable(room.id)}
                     className={cn(
-                      'group relative rounded-2xl p-5 sm:p-6 border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4 cursor-pointer',
+                      'group relative rounded-2xl p-4 sm:p-5 md:p-6 border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 cursor-pointer',
                       isSystemTable
                         ? 'bg-gradient-to-r from-[#14241b] to-[#0f1814] border-[#c6a364]/40 hover:border-[#d4af37]'
                         : 'bg-[#141b17] border-white/10 hover:border-[#c6a364]/50'
@@ -645,7 +989,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                         e.stopPropagation();
                         onSelectTable(room.id);
                       }}
-                      className="px-5 py-3 rounded-xl text-sm sm:text-base font-bold text-[#090d0b] bg-[#e5c158] group-hover:bg-[#f5d97e] transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                      className="w-full sm:w-auto px-4 sm:px-5 py-2.5 sm:py-3 rounded-xl text-sm sm:text-base font-bold text-[#090d0b] bg-[#e5c158] group-hover:bg-[#f5d97e] transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       <span>Enter Table</span>
                       <ChevronRight className="w-5 h-5" />
@@ -1348,6 +1692,13 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
           </div>
         )}
       </AnimatePresence>
+
+      {/* MY STATS SLIDE-OVER PANEL ON HOME VIEW */}
+      <RankWidget
+        externalOpen={showMyStatsModal}
+        onExternalClose={() => setShowMyStatsModal(false)}
+        hideFloatingTrigger
+      />
     </div>
   );
 }

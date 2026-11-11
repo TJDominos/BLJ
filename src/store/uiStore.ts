@@ -56,7 +56,7 @@ type UIStore = UIState & UIActions;
 
 const initialState: UIState = {
   betAmountStr: '0',
-  sideBetsEnabled: false,
+  sideBetsEnabled: true,
   autoDeal: false,
   pairBetStr: '10',
   plus3BetStr: '10',

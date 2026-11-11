@@ -92,7 +92,7 @@ export function LiveTablesSidebar({
   };
 
   return (
-    <div className="fixed inset-y-0 left-0 z-[100] flex w-full pointer-events-none">
+    <div className="fixed inset-y-0 left-0 z-[260] flex w-full pointer-events-none">
       <motion.div 
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
@@ -104,7 +104,7 @@ export function LiveTablesSidebar({
         initial={{ x: -400 }}
         animate={{ x: 0 }}
         exit={{ x: -400 }}
-        className="w-[360px] md:w-[400px] h-full bg-[#111216] border-r border-white/5 flex flex-col shadow-2xl relative pointer-events-auto"
+        className="w-[88vw] max-w-[360px] md:w-[400px] md:max-w-[400px] h-full bg-[#111216] border-r border-white/5 flex flex-col shadow-2xl relative pointer-events-auto"
       >
         <div className="p-4 border-b border-white/5 bg-gradient-to-b from-[#1a1c22] to-transparent">
           <div className="flex items-center justify-between mb-4">

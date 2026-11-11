@@ -1,28 +1,21 @@
 import { create } from 'zustand';
-import {
-  tablesDb,
-  usersDb,
-  houseStats,
-  getOrCreateUser,
-  claimServerRefill,
-  reconcileSystemTables,
-  DEFAULT_GAME_COINS,
-} from '../backend/db';
-import { gameApi } from '../backend/gameApi';
-import { hostTableApi } from '../backend/hostTableApi';
-import {
-  ROYAL_BLACKJACK_RULES_VERSION,
-  sanitizeTablesMapForClient,
-} from '../backend/platformContract';
+import { ROYAL_BLACKJACK_RULES_VERSION } from '../backend/platformContract';
 import {
   RANDSEED_GAME_ID,
   GAME_SLUG,
+  initRandseedRuntime,
+  getRandseedPlayerProfile,
+  onRandseedProfileUpdate,
+  getRandseedOnlinePlayers,
   isRandseedRoomConnected,
   getRandseedRoomAllocation,
   matchRandseedRoom,
   sendRandseedRoomAction,
   readyRandseedRoom,
+  type RoomPlayer,
 } from '../lib/randseedRuntime';
+
+export const DEFAULT_GAME_COINS = 5000;
 
 export type User = {
   id: string;
@@ -124,6 +117,7 @@ export interface TableSettings {
   actionTimeLimit: number;
   isPublic: boolean;
   tableCode?: string; // 4-digit PIN for private custom tables
+  tableCodeHash?: string;
   hasTableCode?: boolean;
   maxSeats: number;
   winningRule: WinningRule;
@@ -135,6 +129,8 @@ export interface Table {
   name: string;
   description?: string;
   houseId: string; // The user hosting the table (or "system" if auto)
+  houseName?: string;
+  houseAvatar?: string;
   createdAt: number;
   visits: number;
   liquidity: number;
@@ -162,14 +158,27 @@ export interface Table {
     seatResults: SeatResult[];
     dealerScore: number;
   };
+  roundHistory?: Array<{
+    roundId: string;
+    timestamp: number;
+    winnings: Record<string, number>;
+    seatResults: SeatResult[];
+    dealerScore: number;
+  }>;
 }
 
 export interface SeatResult {
   seatIndex: number;
   userId?: string;
+  playerName?: string;
+  playerAvatar?: string;
   bet: number;
   sideBet?: number;
   sideBetWin?: number;
+  pairBet?: number;
+  pairWin?: number;
+  plus3Bet?: number;
+  plus3Win?: number;
   insuranceBet?: number;
   insuranceWin?: number;
   isSplit?: boolean;
@@ -190,12 +199,74 @@ export interface GameRecord {
   currency?: 'Gcoin' | 'Bonus';
 }
 
+export interface OnlinePlayerEntry {
+  userId: string;
+  name: string;
+  avatar?: string;
+  joinedAt?: number;
+  tableId?: string;
+  tableName?: string;
+  isPlaying?: boolean;
+}
+
 const sessionStartedAtMs = Date.now();
 const MASKED_CARD: PlayingCard = { suit: 'spades', value: 'A', isHidden: true };
 
 // Authoritative online room state cache from RandSeed RoomClient
 let latestOnlineRoomState: Record<string, any> | null = null;
 let latestOnlineRoomId: string = 'table_1';
+
+function computeClientTableCodeHash(tableId: string, code: string): string {
+  const input = `${tableId}:${code.trim()}:royal_bj_pin`;
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+function createInitialPlaceholderTable(): Table {
+  return {
+    id: 'table_1',
+    name: 'Table #1',
+    description: '',
+    houseId: 'system',
+    createdAt: sessionStartedAtMs,
+    visits: 1,
+    roundsPlayed: 0,
+    liquidity: 100000,
+    initialLiquidity: 100000,
+    safeAccountAddress: '',
+    settings: {
+      name: 'Table #1',
+      description: '',
+      mode: 'regular',
+      minBet: 10,
+      maxBet: 500,
+      minBuyIn: 50,
+      secretBets: false,
+      actionTimeLimit: 20,
+      isPublic: true,
+      maxSeats: 7,
+      winningRule: 'standard',
+      order: 'seat',
+    },
+    seats: Array.from({ length: 7 }, () => ({
+      userId: null,
+      isReady: false,
+      hand: null,
+    })),
+    userBalances: {},
+    inviteLink: '/t/table_1',
+    status: 'waiting',
+    dealerHand: null,
+    deck: Array.from({ length: 312 }, () => ({ ...MASKED_CARD })),
+    discardCount: 0,
+    discardedCards: [],
+    currentTurnIndex: -1,
+  };
+}
 
 /**
  * Unwraps a RandSeed RoomSnapshot.state payload regardless of whether the platform
@@ -213,7 +284,12 @@ function unwrapOnlineRoomState(raw: Record<string, any> | null | undefined): Rec
     base = { ...raw, ...(raw.publicState as Record<string, any>) };
   } else if (raw.state && typeof raw.state === 'object' && !Array.isArray(raw.state)) {
     return unwrapOnlineRoomState(raw.state as Record<string, any>);
-  } else if (raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data) && Array.isArray((raw.data as any).seats)) {
+  } else if (
+    raw.data &&
+    typeof raw.data === 'object' &&
+    !Array.isArray(raw.data) &&
+    Array.isArray((raw.data as any).seats)
+  ) {
     base = { ...raw, ...(raw.data as Record<string, any>) };
   }
 
@@ -256,22 +332,30 @@ function unwrapOnlineRoomState(raw: Record<string, any> | null | undefined): Rec
         ...base,
         balances: nextBalances,
         walletCoins: nextWalletCoins,
+        _privateState: privateState,
       };
     }
 
-    if (Array.isArray(privateState.mySeats) && Array.isArray(base.seats)) {
-      const mySeatMap = new Map<number, any>();
+    if (Array.isArray(privateState.mySeats)) {
+      const primarySeatMap = new Map<number, any>();
+      const customSeatMap = new Map<string, Map<number, any>>();
       for (const ms of privateState.mySeats) {
-        if (ms && typeof ms.seatIndex === 'number') {
-          mySeatMap.set(ms.seatIndex, ms);
+        if (!ms || typeof ms.seatIndex !== 'number') continue;
+        const tid = typeof ms.tableId === 'string' && ms.tableId ? ms.tableId : 'table_1';
+        if (tid === 'table_1') {
+          primarySeatMap.set(ms.seatIndex, ms);
+        } else {
+          if (!customSeatMap.has(tid)) customSeatMap.set(tid, new Map());
+          customSeatMap.get(tid)!.set(ms.seatIndex, ms);
         }
       }
-      if (mySeatMap.size > 0) {
+
+      if (primarySeatMap.size > 0 && Array.isArray(base.seats)) {
         base = {
           ...base,
           seats: base.seats.map((s: any, idx: number) => {
             const seatIdx = typeof s?.seatIndex === 'number' ? s.seatIndex : idx;
-            const mySeat = mySeatMap.get(seatIdx);
+            const mySeat = primarySeatMap.get(seatIdx);
             if (!mySeat || !s?.hand) return s;
             return {
               ...s,
@@ -284,6 +368,34 @@ function unwrapOnlineRoomState(raw: Record<string, any> | null | undefined): Rec
           }),
         };
       }
+
+      if (customSeatMap.size > 0 && base.customTables && typeof base.customTables === 'object') {
+        const nextCustomTables = { ...base.customTables };
+        for (const [tid, seatMap] of customSeatMap.entries()) {
+          const ct = nextCustomTables[tid];
+          if (!ct || !Array.isArray(ct.seats)) continue;
+          nextCustomTables[tid] = {
+            ...ct,
+            seats: ct.seats.map((s: any, idx: number) => {
+              const seatIdx = typeof s?.seatIndex === 'number' ? s.seatIndex : idx;
+              const mySeat = seatMap.get(seatIdx);
+              if (!mySeat || !s?.hand) return s;
+              return {
+                ...s,
+                hand: {
+                  ...s.hand,
+                  bet: typeof mySeat.actualBet === 'number' ? mySeat.actualBet : s.hand.bet,
+                  sideBets: mySeat.sideBets || s.hand.sideBets,
+                },
+              };
+            }),
+          };
+        }
+        base = {
+          ...base,
+          customTables: nextCustomTables,
+        };
+      }
     }
   }
 
@@ -293,7 +405,8 @@ function unwrapOnlineRoomState(raw: Record<string, any> | null | undefined): Rec
 function mapRoomStateToTable(
   rawRoomState: Record<string, any>,
   tableId: string,
-  existing?: Table
+  existing?: Table,
+  ownedCodeOverride?: string
 ): Table {
   const roomState = unwrapOnlineRoomState(rawRoomState);
   const mode: TableMode = roomState.mode === 'tournament' ? 'tournament' : 'regular';
@@ -337,11 +450,9 @@ function mapRoomStateToTable(
           ? s.userId
           : null;
       const resolvedName =
-        s?.name ||
-        (pid ? playerNames[pid] || usersDb[pid]?.name || pid : undefined);
+        s?.name || (pid ? playerNames[pid] || pid : undefined);
       const resolvedAvatar =
-        s?.avatar ||
-        (pid ? playerAvatars[pid] || usersDb[pid]?.avatar : undefined);
+        s?.avatar || (pid ? playerAvatars[pid] : undefined);
 
       return {
         userId: pid,
@@ -387,10 +498,15 @@ function mapRoomStateToTable(
     { balance: number; initialBuyIn: number; currency?: 'Gcoin' | 'Bonus' }
   > = { ...(existing?.userBalances || {}) };
 
+  const startingBuyIn =
+    mode === 'tournament'
+      ? Number(roomState.tournament?.startingChips) || DEFAULT_GAME_COINS
+      : DEFAULT_GAME_COINS;
+
   for (const [pid, bal] of Object.entries(balances)) {
     userBalances[pid] = {
       balance: Number(bal) || 0,
-      initialBuyIn: DEFAULT_GAME_COINS,
+      initialBuyIn: userBalances[pid]?.initialBuyIn || startingBuyIn,
       currency: 'Gcoin',
     };
   }
@@ -405,6 +521,15 @@ function mapRoomStateToTable(
   const isPlayingPhase =
     roomState.phase === 'playing' || roomState.phase === 'dealer_turn';
 
+  const resolvedStatus: Table['status'] =
+    roomState.status === 'closed' ||
+    roomState.status === 'closing' ||
+    roomState.status === 'paused'
+      ? roomState.status
+      : isPlayingPhase
+      ? 'playing'
+      : 'waiting';
+
   const dealerHand: Hand | null = roomState.dealerHand
     ? {
         cards: Array.isArray(roomState.dealerHand.cards)
@@ -418,27 +543,60 @@ function mapRoomStateToTable(
       }
     : null;
 
+  const tableName =
+    (typeof roomState.name === 'string' && roomState.name.trim()) ||
+    existing?.name ||
+    (tableId === 'table_1' ? 'Table #1' : tableId);
+  const tableDesc =
+    typeof roomState.description === 'string'
+      ? roomState.description
+      : existing?.description || '';
+  const houseId =
+    (typeof roomState.houseId === 'string' && roomState.houseId) ||
+    existing?.houseId ||
+    'system';
+  const houseName =
+    roomState.houseName ||
+    (houseId !== 'system' ? playerNames[houseId] || existing?.houseName || houseId : undefined);
+  const houseAvatar =
+    roomState.houseAvatar ||
+    (houseId !== 'system' ? playerAvatars[houseId] || existing?.houseAvatar : undefined);
+  const hasTableCode = Boolean(roomState.hasTableCode ?? existing?.settings?.hasTableCode);
+  const tableCode =
+    ownedCodeOverride ||
+    (typeof roomState.tableCode === 'string' ? roomState.tableCode : existing?.settings?.tableCode);
+  const tableCodeHash =
+    typeof roomState.tableCodeHash === 'string'
+      ? roomState.tableCodeHash
+      : existing?.settings?.tableCodeHash;
+  const isPublic = hasTableCode ? false : Boolean(roomState.isPublic ?? existing?.settings?.isPublic ?? true);
+
   return {
     id: tableId,
-    name: existing?.name || 'Table #1',
-    description: existing?.description || '',
-    houseId: existing?.houseId || 'system',
-    createdAt: existing?.createdAt || sessionStartedAtMs,
-    visits: existing?.visits || 1,
-    liquidity: existing?.liquidity || 100000,
-    initialLiquidity: existing?.initialLiquidity || 100000,
+    name: tableName,
+    description: tableDesc,
+    houseId,
+    houseName,
+    houseAvatar,
+    createdAt: Number(roomState.createdAt) || existing?.createdAt || sessionStartedAtMs,
+    visits: Number(roomState.visits ?? existing?.visits ?? 1),
+    liquidity: Number(roomState.liquidity ?? existing?.liquidity ?? 100000),
+    initialLiquidity: Number(roomState.initialLiquidity ?? existing?.initialLiquidity ?? 100000),
     safeAccountAddress: '',
     settings: {
-      name: existing?.settings?.name || 'Table #1',
-      description: existing?.settings?.description || '',
+      name: tableName,
+      description: tableDesc,
       mode,
       tournament: roomState.tournament || existing?.settings?.tournament,
       minBet,
       maxBet,
-      minBuyIn: minBet * 5,
+      minBuyIn: mode === 'tournament' ? Number(roomState.tournament?.ticketPrice) || 100 : minBet * 5,
       secretBets: mode === 'tournament',
       actionTimeLimit,
-      isPublic: true,
+      isPublic,
+      hasTableCode,
+      tableCode,
+      tableCodeHash,
       maxSeats: baseSeatCount,
       winningRule,
       order,
@@ -446,7 +604,7 @@ function mapRoomStateToTable(
     seats,
     userBalances,
     inviteLink: `/t/${tableId}`,
-    status: isPlayingPhase ? 'playing' : 'waiting',
+    status: resolvedStatus,
     dealerHand,
     deck: Array.from({ length: Math.max(0, deckCount) }, () => ({ ...MASKED_CARD })),
     discardCount: Number(roomState.discardCount) || 0,
@@ -459,8 +617,53 @@ function mapRoomStateToTable(
     tournamentHistory: Array.isArray(roomState.tournamentHistory)
       ? roomState.tournamentHistory
       : existing?.tournamentHistory || [],
+    emptySince: roomState.emptySince ?? existing?.emptySince ?? null,
+    maxHostingTimeMs: roomState.maxHostingTimeMs ?? existing?.maxHostingTimeMs,
+    expiresAt: roomState.expiresAt ?? existing?.expiresAt ?? null,
     lastRoundSummary: roomState.lastRoundSummary || existing?.lastRoundSummary,
+    roundHistory: Array.isArray(roomState.roundHistory)
+      ? roomState.roundHistory
+      : existing?.roundHistory || [],
   };
+}
+
+function mapAllRoomTablesFromSnapshot(
+  roomState: Record<string, any>,
+  existingTables: Record<string, Table>
+): Record<string, Table> {
+  const ownedTableCodes: Record<string, string> =
+    roomState._privateState?.ownedTableCodes &&
+    typeof roomState._privateState.ownedTableCodes === 'object'
+      ? roomState._privateState.ownedTableCodes
+      : {};
+
+  const nextTables: Record<string, Table> = {};
+  nextTables['table_1'] = mapRoomStateToTable(
+    roomState,
+    'table_1',
+    existingTables['table_1']
+  );
+
+  if (roomState.customTables && typeof roomState.customTables === 'object') {
+    for (const [tid, rawSub] of Object.entries(roomState.customTables)) {
+      if (!rawSub || typeof rawSub !== 'object') continue;
+      const subObj = rawSub as Record<string, any>;
+      if (subObj.status === 'closed') continue;
+      nextTables[tid] = mapRoomStateToTable(
+        {
+          ...subObj,
+          playerNames: roomState.playerNames,
+          playerAvatars: roomState.playerAvatars,
+          walletCoins: roomState.walletCoins,
+        },
+        tid,
+        existingTables[tid],
+        ownedTableCodes[tid]
+      );
+    }
+  }
+
+  return nextTables;
 }
 
 function appendRoundRecordIfNew(
@@ -468,38 +671,205 @@ function appendRoundRecordIfNew(
   table: Table,
   userId?: string
 ): GameRecord[] {
-  if (!userId) return currentRecords;
-  const summary = table.lastRoundSummary;
-  if (!summary || !summary.roundId) return currentRecords;
-  if (currentRecords.some((r) => r.id === summary.roundId)) return currentRecords;
+  const summariesToProcess: Array<NonNullable<Table['lastRoundSummary']>> = [];
+  if (Array.isArray(table.roundHistory) && table.roundHistory.length > 0) {
+    // Process oldest to newest so unshifting keeps newest first
+    for (let i = table.roundHistory.length - 1; i >= 0; i--) {
+      const s = table.roundHistory[i];
+      if (s && s.roundId) summariesToProcess.push(s);
+    }
+  } else if (table.lastRoundSummary && table.lastRoundSummary.roundId) {
+    summariesToProcess.push(table.lastRoundSummary);
+  }
 
-  const mySeatResults = (summary.seatResults || []).filter((sr) => sr.userId === userId);
-  if (mySeatResults.length === 0) return currentRecords;
+  if (summariesToProcess.length === 0) return currentRecords;
 
-  const amountWon = summary.winnings?.[userId] || 0;
-  const totalNet = mySeatResults.reduce((sum, sr) => sum + (sr.net || 0), 0);
-  const hasBlackjack = mySeatResults.some((sr) => sr.action === 'blackjack');
-  const resType: 'win' | 'lose' | 'push' | 'blackjack' = hasBlackjack
-    ? 'blackjack'
-    : totalNet > 0
-    ? 'win'
-    : totalNet < 0
-    ? 'lose'
-    : 'push';
+  let nextRecords = currentRecords;
+  const existingIds = new Set(currentRecords.map((r) => r.id));
 
-  return [
-    {
-      id: summary.roundId,
-      tableId: table.id,
-      result: resType,
-      amountWon,
-      timestamp: summary.timestamp || Date.now(),
-      seatResults: mySeatResults,
-      dealerScore: summary.dealerScore,
-      currency: 'Gcoin' as const,
-    },
-    ...currentRecords,
-  ].slice(0, 50);
+  for (const summary of summariesToProcess) {
+    if (!summary?.roundId || existingIds.has(summary.roundId)) continue;
+    const allSeatResults = summary.seatResults || [];
+    if (allSeatResults.length === 0) continue;
+
+    const mySeatResults = userId
+      ? allSeatResults.filter((sr) => sr.userId === userId)
+      : allSeatResults;
+    const amountWon = userId ? summary.winnings?.[userId] || 0 : 0;
+    const totalNet = mySeatResults.reduce((sum, sr) => sum + (sr.net || 0), 0);
+    const hasBlackjack = mySeatResults.some((sr) => sr.action === 'blackjack');
+    const resType: 'win' | 'lose' | 'push' | 'blackjack' = hasBlackjack
+      ? 'blackjack'
+      : totalNet > 0
+      ? 'win'
+      : totalNet < 0
+      ? 'lose'
+      : 'push';
+
+    existingIds.add(summary.roundId);
+    nextRecords = [
+      {
+        id: summary.roundId,
+        tableId: table.id,
+        result: resType,
+        amountWon,
+        timestamp: summary.timestamp || Date.now(),
+        seatResults: allSeatResults,
+        dealerScore: summary.dealerScore,
+        currency: 'Gcoin' as const,
+      },
+      ...nextRecords,
+    ];
+  }
+
+  return nextRecords.slice(0, 100);
+}
+
+function buildOnlinePlayersList(
+  tables: Record<string, Table>,
+  currentUser: User | null,
+  roomPlayers?: RoomPlayer[],
+  roomState?: Record<string, any> | null
+): OnlinePlayerEntry[] {
+  const map = new Map<string, OnlinePlayerEntry>();
+  const sdkPlayers = roomPlayers ?? getRandseedOnlinePlayers();
+  const stateNames: Record<string, string> =
+    roomState?.playerNames && typeof roomState.playerNames === 'object'
+      ? roomState.playerNames
+      : {};
+  const stateAvatars: Record<string, string> =
+    roomState?.playerAvatars && typeof roomState.playerAvatars === 'object'
+      ? roomState.playerAvatars
+      : {};
+
+  const findPlayerTableInfo = (uid: string) => {
+    for (const t of Object.values(tables)) {
+      if (t.status === 'closed' || t.status === 'closing') continue;
+      const seat = t.seats.find((s) => s.userId === uid);
+      if (seat) {
+        return {
+          tableId: t.id,
+          tableName: t.name,
+          isPlaying: Boolean(seat.hand && t.status === 'playing'),
+          seatName: seat.name,
+          seatAvatar: seat.avatar,
+        };
+      }
+    }
+    return null;
+  };
+
+  for (const rp of sdkPlayers) {
+    if (!rp || typeof rp.playerId !== 'string') continue;
+    const uid = rp.playerId.trim();
+    if (!uid || uid.startsWith('bot_')) continue;
+    const isMe = currentUser?.id === uid;
+    const tableInfo = findPlayerTableInfo(uid);
+    const resolvedName =
+      (typeof rp.displayName === 'string' && rp.displayName.trim()) ||
+      (isMe && currentUser?.name && currentUser.name !== 'Player' ? currentUser.name : '') ||
+      stateNames[uid] ||
+      tableInfo?.seatName ||
+      (isMe ? currentUser?.name : '') ||
+      uid;
+    const resolvedAvatar =
+      (typeof rp.avatarUrl === 'string' && rp.avatarUrl.trim()) ||
+      (isMe ? currentUser?.avatar : undefined) ||
+      stateAvatars[uid] ||
+      tableInfo?.seatAvatar ||
+      undefined;
+
+    map.set(uid, {
+      userId: uid,
+      name: resolvedName,
+      avatar: resolvedAvatar,
+      joinedAt: rp.joinedAt,
+      tableId: tableInfo?.tableId,
+      tableName: tableInfo?.tableName,
+      isPlaying: tableInfo?.isPlaying ?? false,
+    });
+  }
+
+  const statePlayerIds: string[] = Array.isArray(roomState?.players) ? roomState.players : [];
+  for (const rawId of statePlayerIds) {
+    if (typeof rawId !== 'string') continue;
+    const uid = rawId.trim();
+    if (!uid || uid.startsWith('bot_') || map.has(uid)) continue;
+    const isMe = currentUser?.id === uid;
+    const tableInfo = findPlayerTableInfo(uid);
+    const resolvedName =
+      (isMe && currentUser?.name && currentUser.name !== 'Player' ? currentUser.name : '') ||
+      stateNames[uid] ||
+      tableInfo?.seatName ||
+      (isMe ? currentUser?.name : '') ||
+      uid;
+    const resolvedAvatar =
+      (isMe ? currentUser?.avatar : undefined) ||
+      stateAvatars[uid] ||
+      tableInfo?.seatAvatar ||
+      undefined;
+
+    map.set(uid, {
+      userId: uid,
+      name: resolvedName,
+      avatar: resolvedAvatar,
+      tableId: tableInfo?.tableId,
+      tableName: tableInfo?.tableName,
+      isPlaying: tableInfo?.isPlaying ?? false,
+    });
+  }
+
+  for (const t of Object.values(tables)) {
+    if (t.status === 'closed' || t.status === 'closing') continue;
+    for (const s of t.seats) {
+      if (!s.userId || s.userId.startsWith('bot_')) continue;
+      const uid = s.userId;
+      if (map.has(uid)) {
+        const existing = map.get(uid)!;
+        if (!existing.tableId) {
+          existing.tableId = t.id;
+          existing.tableName = t.name;
+          existing.isPlaying = Boolean(s.hand && t.status === 'playing');
+        }
+        continue;
+      }
+      const isMe = currentUser?.id === uid;
+      const resolvedName =
+        (isMe && currentUser?.name && currentUser.name !== 'Player' ? currentUser.name : '') ||
+        s.name ||
+        stateNames[uid] ||
+        (isMe ? currentUser?.name : '') ||
+        uid;
+      const resolvedAvatar =
+        (isMe ? currentUser?.avatar : undefined) ||
+        s.avatar ||
+        stateAvatars[uid] ||
+        undefined;
+
+      map.set(uid, {
+        userId: uid,
+        name: resolvedName,
+        avatar: resolvedAvatar,
+        tableId: t.id,
+        tableName: t.name,
+        isPlaying: Boolean(s.hand && t.status === 'playing'),
+      });
+    }
+  }
+
+  if (currentUser?.id && !map.has(currentUser.id)) {
+    const tableInfo = findPlayerTableInfo(currentUser.id);
+    map.set(currentUser.id, {
+      userId: currentUser.id,
+      name: currentUser.name || 'Player',
+      avatar: currentUser.avatar,
+      tableId: tableInfo?.tableId,
+      tableName: tableInfo?.tableName,
+      isPlaying: tableInfo?.isPlaying ?? false,
+    });
+  }
+
+  return Array.from(map.values());
 }
 
 async function postBackendJson<T = any>(url: string, body: Record<string, any>): Promise<T | null> {
@@ -519,10 +889,8 @@ async function postBackendJson<T = any>(url: string, body: Record<string, any>):
 }
 
 export function getRuntimeGameStats() {
-  reconcileSystemTables();
-  const stateTables = useGameStore.getState().tables;
-  const allTables =
-    Object.keys(stateTables).length > 0 ? Object.values(stateTables) : Object.values(tablesDb);
+  const storeState = useGameStore.getState();
+  const allTables = Object.values(storeState.tables);
   const activeRooms = allTables.filter((t) => t.status !== 'closed');
   const totalRoundsPlayed = allTables.reduce((sum, t) => sum + (t.roundsPlayed || 0), 0);
   const totalVisits = allTables.reduce((sum, t) => sum + (t.visits || 0), 0);
@@ -531,9 +899,11 @@ export function getRuntimeGameStats() {
     0
   );
 
-  const totalUsersCount = Object.keys(usersDb).length;
-  const tokensIssued = houseStats.totalTokensIssuedByHouse;
-  const tokensPaidOut = houseStats.totalTokensPaidOutToPlayers;
+  const onlinePlayersCount = Math.max(1, storeState.onlinePlayers.length);
+  const tokensIssued =
+    Number(latestOnlineRoomState?.totalTokensIssued) || onlinePlayersCount * DEFAULT_GAME_COINS;
+  const tokensPaidOut = Number(latestOnlineRoomState?.totalTokensPaidOut) || 0;
+  const totalRefillsCount = Number(latestOnlineRoomState?.totalRefillsCount) || 0;
   const houseDistributedTokens = tokensIssued + tokensPaidOut;
 
   return {
@@ -545,11 +915,11 @@ export function getRuntimeGameStats() {
     seatedPlayersCount: seatedPlayers,
     totalRoundsPlayed,
     totalVisits,
-    totalUsersCount,
+    totalUsersCount: onlinePlayersCount,
     houseDistributedTokens,
     tokensIssued,
     tokensPaidOut,
-    totalRefillsCount: houseStats.totalRefillsCount,
+    totalRefillsCount,
     isCreator: true,
     rooms: activeRooms.map((r) => ({
       id: r.id,
@@ -569,6 +939,7 @@ interface GameStore {
   tables: Record<string, Table>;
   activeTableId: string | null;
   gameRecords: GameRecord[];
+  onlinePlayers: OnlinePlayerEntry[];
   unlockedTableIds: Record<string, boolean>;
 
   login: (name: string, overrideUserId?: string, avatar?: string, isCreator?: boolean) => Promise<void>;
@@ -624,9 +995,29 @@ function getOrPersistSessionUserId(overrideUserId?: string): string {
 export const useGameStore = create<GameStore>((set, get) => {
   const applyOnlineRoomSnapshot = (
     rawRoomState: Record<string, any>,
-    allocation?: { roomId: string; playerId: string }
+    allocation?: { roomId: string; playerId: string },
+    roomPlayers?: RoomPlayer[]
   ) => {
     const roomState = unwrapOnlineRoomState(rawRoomState);
+    const sdkProfile = getRandseedPlayerProfile();
+    const sdkPlayers = roomPlayers ?? getRandseedOnlinePlayers();
+
+    if (!roomState.playerNames || typeof roomState.playerNames !== 'object') {
+      roomState.playerNames = {};
+    }
+    if (!roomState.playerAvatars || typeof roomState.playerAvatars !== 'object') {
+      roomState.playerAvatars = {};
+    }
+    for (const rp of sdkPlayers) {
+      if (!rp?.playerId) continue;
+      if (rp.displayName) {
+        roomState.playerNames[rp.playerId] = rp.displayName;
+      }
+      if (rp.avatarUrl) {
+        roomState.playerAvatars[rp.playerId] = rp.avatarUrl;
+      }
+    }
+
     latestOnlineRoomState = roomState;
     if (allocation?.roomId) {
       latestOnlineRoomId = allocation.roomId;
@@ -634,12 +1025,30 @@ export const useGameStore = create<GameStore>((set, get) => {
 
     const current = get().currentUser;
     const resolvedId = allocation?.playerId || current?.id || getOrPersistSessionUserId();
-    const resolvedName =
-      roomState.playerNames?.[resolvedId] || current?.name || 'Player';
-    const resolvedAvatar =
-      roomState.playerAvatars?.[resolvedId] || current?.avatar;
+    const myRoomPlayer = sdkPlayers.find((p) => p.playerId === resolvedId);
 
-    const syncedUser = getOrCreateUser(resolvedId, resolvedName, true, resolvedAvatar);
+    const resolvedName =
+      sdkProfile?.displayName ||
+      myRoomPlayer?.displayName ||
+      (roomState.playerNames?.[resolvedId] && roomState.playerNames[resolvedId] !== resolvedId
+        ? roomState.playerNames[resolvedId]
+        : '') ||
+      (current?.name && current.name !== 'Player' ? current.name : '') ||
+      roomState.playerNames?.[resolvedId] ||
+      'Player';
+
+    const resolvedAvatar =
+      sdkProfile?.avatarUrl ||
+      myRoomPlayer?.avatarUrl ||
+      roomState.playerAvatars?.[resolvedId] ||
+      current?.avatar ||
+      undefined;
+
+    roomState.playerNames[resolvedId] = resolvedName;
+    if (resolvedAvatar) {
+      roomState.playerAvatars[resolvedId] = resolvedAvatar;
+    }
+
     const walletMap = (roomState.walletCoins || roomState.balances || {}) as Record<string, number>;
     const balMap = (roomState.balances || {}) as Record<string, number>;
     const effectiveBalance =
@@ -647,63 +1056,162 @@ export const useGameStore = create<GameStore>((set, get) => {
         ? walletMap[resolvedId]
         : typeof balMap[resolvedId] === 'number'
         ? balMap[resolvedId]
-        : syncedUser.balance;
+        : current?.balance ?? DEFAULT_GAME_COINS;
 
-    if (usersDb[resolvedId]) {
-      usersDb[resolvedId].balance = effectiveBalance;
+    const syncedUser: User = {
+      id: resolvedId,
+      name: resolvedName,
+      avatar: resolvedAvatar,
+      balance: effectiveBalance,
+      bonusBalance: current?.bonusBalance ?? 0,
+      role: current?.role || 'creator',
+      isCreator: current?.isCreator ?? true,
+    };
+
+    const nextTables = mapAllRoomTablesFromSnapshot(roomState, get().tables);
+
+    let updatedRecords = get().gameRecords;
+    for (const t of Object.values(nextTables)) {
+      updatedRecords = appendRoundRecordIfNew(updatedRecords, t, resolvedId);
     }
-    syncedUser.balance = effectiveBalance;
 
-    const currentTables = { ...get().tables };
-    // Ensure we never duplicate Table #1 under a second allocation.roomId key
-    if (latestOnlineRoomId && latestOnlineRoomId !== 'table_1') {
-      delete currentTables[latestOnlineRoomId];
-      delete tablesDb[latestOnlineRoomId];
+    const nextUnlocked = { ...get().unlockedTableIds };
+    const serverUnlocked: string[] = Array.isArray(roomState._privateState?.unlockedTableIds)
+      ? roomState._privateState.unlockedTableIds
+      : [];
+    for (const tid of serverUnlocked) {
+      nextUnlocked[tid] = true;
+    }
+    for (const t of Object.values(nextTables)) {
+      if (t.houseId === resolvedId) {
+        nextUnlocked[t.id] = true;
+      }
     }
 
-    const mappedPrimary = mapRoomStateToTable(
-      roomState,
-      'table_1',
-      currentTables['table_1'] || tablesDb['table_1']
+    const onlinePlayers = buildOnlinePlayersList(
+      nextTables,
+      syncedUser,
+      sdkPlayers,
+      roomState
     );
-    currentTables['table_1'] = mappedPrimary;
-    tablesDb['table_1'] = mappedPrimary;
 
-    const updatedRecords = appendRoundRecordIfNew(
-      get().gameRecords,
-      mappedPrimary,
-      resolvedId
-    );
+    const curActive = get().activeTableId;
+    const nextActiveId =
+      curActive && (!nextTables[curActive] || nextTables[curActive].status === 'closed')
+        ? null
+        : curActive;
 
     set({
       currentUser: syncedUser,
-      tables: currentTables,
+      tables: nextTables,
       gameRecords: updatedRecords,
+      onlinePlayers,
+      unlockedTableIds: nextUnlocked,
+      activeTableId: nextActiveId,
     });
   };
 
-  const isPrimaryOnlineRoomTable = (tableId: string): boolean => {
-    if (!isRandseedRoomConnected()) return false;
-    return tableId === 'table_1' || tableId === latestOnlineRoomId;
+  /**
+   * Sends an authoritative player action to the online room instance:
+   * 1. Primary path: @randseed/game-sdk RoomClient (WebSocket / HTTP room host)
+   * 2. Fallback path: /api/room/:roomId/input HTTP room gateway
+   */
+  const dispatchOnlineAction = async (actionData: Record<string, any>): Promise<boolean> => {
+    if (isRandseedRoomConnected()) {
+      const sent = await sendRandseedRoomAction(actionData);
+      if (sent) return true;
+    }
+
+    const userId = get().currentUser?.id || getOrPersistSessionUserId();
+    const roomId = latestOnlineRoomId || 'table_1';
+    const res = await postBackendJson<{ success: boolean; data?: any }>(
+      `/api/room/${encodeURIComponent(roomId)}/input`,
+      {
+        playerId: userId,
+        data: actionData,
+      }
+    );
+    if (res?.success) {
+      await get().syncStateFromServer();
+      return true;
+    }
+    return false;
   };
 
   return {
     currentUser: null,
-    tables: sanitizeTablesMapForClient(reconcileSystemTables()),
+    tables: { table_1: createInitialPlaceholderTable() },
     activeTableId: null,
     gameRecords: [],
+    onlinePlayers: [],
     unlockedTableIds: {},
 
     login: async (name: string, overrideUserId?: string, avatar?: string, isCreator?: boolean) => {
-      const effectiveName = name || 'Player';
-      const effectiveAvatar = avatar || undefined;
-      const urlCreatorFlag = Boolean(isCreator);
+      await initRandseedRuntime().catch(() => null);
+      const sdkProfile = getRandseedPlayerProfile();
+
+      const effectiveName =
+        sdkProfile?.displayName ||
+        (name && name !== 'Player' ? name : '') ||
+        'Player';
+      const effectiveAvatar =
+        sdkProfile?.avatarUrl ||
+        avatar ||
+        undefined;
+      const urlCreatorFlag = isCreator ?? true;
       const savedUserId = getOrPersistSessionUserId(overrideUserId);
 
-      // 1. Initialize against backend HTTP session if available
+      const initialUser: User = {
+        id: savedUserId,
+        name: effectiveName,
+        avatar: effectiveAvatar,
+        balance: DEFAULT_GAME_COINS,
+        bonusBalance: 0,
+        role: urlCreatorFlag ? 'creator' : 'player',
+        isCreator: urlCreatorFlag,
+      };
+
+      set((state) => ({
+        currentUser: state.currentUser || initialUser,
+      }));
+
+      onRandseedProfileUpdate((profile) => {
+        const cur = get().currentUser;
+        if (!cur) return;
+        const nextName = profile.displayName || cur.name;
+        const nextAvatar = profile.avatarUrl || cur.avatar;
+        if (nextName === cur.name && nextAvatar === cur.avatar) return;
+        const updatedUser: User = {
+          ...cur,
+          name: nextName,
+          avatar: nextAvatar,
+        };
+        postBackendJson('/api/game/session', {
+          userId: cur.id,
+          name: nextName,
+          avatar: nextAvatar,
+          isCreator: true,
+        }).catch(() => {});
+        sendRandseedRoomAction({
+          action: 'sync_profile',
+          name: nextName,
+          ...(nextAvatar ? { avatar: nextAvatar } : {}),
+        }).catch(() => {});
+        set((state) => ({
+          currentUser: updatedUser,
+          onlinePlayers: buildOnlinePlayersList(
+            state.tables,
+            updatedUser,
+            undefined,
+            latestOnlineRoomState
+          ),
+        }));
+      });
+
+      // 1. Register session cookie / player profile with backend HTTP session if present
       const sessionPayload = await postBackendJson<{
-        user: User;
-        tables: Record<string, Table>;
+        user?: User;
+        roomSnapshot?: Record<string, any>;
       }>('/api/game/session', {
         userId: savedUserId,
         name: effectiveName,
@@ -711,34 +1219,44 @@ export const useGameStore = create<GameStore>((set, get) => {
         isCreator: urlCreatorFlag,
       });
 
-      if (sessionPayload?.user && sessionPayload?.tables) {
-        for (const [id, t] of Object.entries(sessionPayload.tables)) {
-          tablesDb[id] = t;
-        }
-        usersDb[sessionPayload.user.id] = sessionPayload.user;
-        set({
-          currentUser: sessionPayload.user,
-          tables: sessionPayload.tables,
-        });
-      } else {
-        reconcileSystemTables();
-        const user = getOrCreateUser(savedUserId, effectiveName, urlCreatorFlag, effectiveAvatar);
-        set({
-          currentUser: user,
-          tables: sanitizeTablesMapForClient(tablesDb, user.id),
+      if (sessionPayload?.roomSnapshot) {
+        applyOnlineRoomSnapshot(sessionPayload.roomSnapshot, {
+          roomId: 'table_1',
+          playerId: sessionPayload.user?.id || savedUserId,
         });
       }
 
       // 2. Connect to authoritative RandSeed RoomClient (online multiplayer WebSocket/HTTP room)
-      matchRandseedRoom((roomState, allocation) => {
-        applyOnlineRoomSnapshot(roomState, allocation);
-      })
+      matchRandseedRoom(
+        (roomState, allocation, _snapshot, players) => {
+          applyOnlineRoomSnapshot(roomState, allocation, players);
+        },
+        (players) => {
+          set((state) => ({
+            onlinePlayers: buildOnlinePlayersList(
+              state.tables,
+              state.currentUser,
+              players,
+              latestOnlineRoomState
+            ),
+          }));
+        }
+      )
         .then((res) => {
           if (res?.allocation) {
+            const latestProfile = getRandseedPlayerProfile();
+            const syncName =
+              latestProfile?.displayName ||
+              get().currentUser?.name ||
+              effectiveName;
+            const syncAvatar =
+              latestProfile?.avatarUrl ||
+              get().currentUser?.avatar ||
+              effectiveAvatar;
             sendRandseedRoomAction({
               action: 'sync_profile',
-              name: get().currentUser?.name || effectiveName,
-              ...(effectiveAvatar ? { avatar: effectiveAvatar } : {}),
+              name: syncName,
+              ...(syncAvatar ? { avatar: syncAvatar } : {}),
             }).catch(() => {});
           }
         })
@@ -746,87 +1264,60 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     syncStateFromServer: async () => {
-      const userId = get().currentUser?.id;
+      const userId = get().currentUser?.id || getOrPersistSessionUserId();
+      const roomId = latestOnlineRoomId || 'table_1';
 
-      // Fetch multi-table state from backend server if available
-      if (typeof window !== 'undefined' && userId) {
+      if (typeof window !== 'undefined') {
         try {
-          const res = await fetch(`/api/game/state?userId=${encodeURIComponent(userId)}`, {
-            credentials: 'same-origin',
-            cache: 'no-store',
-          });
+          const res = await fetch(
+            `/api/room/${encodeURIComponent(roomId)}/state?playerId=${encodeURIComponent(userId)}`,
+            {
+              credentials: 'same-origin',
+              cache: 'no-store',
+            }
+          );
           if (res.ok) {
             const payload = await res.json();
-            if (payload?.tables && typeof payload.tables === 'object') {
-              const nextTables: Record<string, Table> = { ...payload.tables };
-              // Keep authoritative RoomClient snapshot on table_1 when RoomClient is connected
-              if (isRandseedRoomConnected() && latestOnlineRoomState) {
-                nextTables['table_1'] = mapRoomStateToTable(
-                  latestOnlineRoomState,
-                  'table_1',
-                  nextTables['table_1'] || get().tables['table_1']
-                );
-              }
-              for (const [id, t] of Object.entries(nextTables)) {
-                tablesDb[id] = t;
-              }
-              set((state) => {
-                let updatedRecords = state.gameRecords;
-                for (const t of Object.values(nextTables)) {
-                  updatedRecords = appendRoundRecordIfNew(updatedRecords, t, userId);
-                }
-                const nextUser =
-                  isRandseedRoomConnected() && state.currentUser
-                    ? state.currentUser
-                    : payload.user || state.currentUser;
-                return {
-                  currentUser: nextUser,
-                  tables: nextTables,
-                  gameRecords: updatedRecords,
-                };
-              });
+            const snap = payload?.data;
+            if (snap?.state) {
+              applyOnlineRoomSnapshot(
+                snap.state,
+                { roomId, playerId: userId },
+                Array.isArray(snap.players) ? snap.players : undefined
+              );
               return;
             }
           }
         } catch {
-          // Ignore network error when running purely on RandSeed RoomClient without /api/game/state
+          // Ignore network error when running purely on RandSeed RoomClient WebSocket
         }
       }
 
-      // If connected to RandSeed RoomClient without /api/game/state, re-apply authoritative room state
       if (isRandseedRoomConnected() && latestOnlineRoomState) {
         applyOnlineRoomSnapshot(latestOnlineRoomState, getRandseedRoomAllocation());
-        return;
       }
-
-      reconcileSystemTables();
-      const nextTables = sanitizeTablesMapForClient(tablesDb, userId);
-
-      set((state) => {
-        const user = userId ? getOrCreateUser(userId) : state.currentUser;
-        let updatedRecords = state.gameRecords;
-        if (user) {
-          for (const t of Object.values(nextTables)) {
-            updatedRecords = appendRoundRecordIfNew(updatedRecords, t, user.id);
-          }
-        }
-        return {
-          currentUser: user,
-          tables: nextTables,
-          gameRecords: updatedRecords,
-        };
-      });
     },
 
     setCreatorIdentity: async (isCreator: boolean, creatorName?: string) => {
       const current = get().currentUser;
-      const userId = current?.id || 'creator_user';
+      const userId = current?.id || getOrPersistSessionUserId();
       if (isCreator) {
         const nextName = creatorName || current?.name || 'Creator';
-        const user = getOrCreateUser(userId, nextName, true);
-        sendRandseedRoomAction({ action: 'sync_profile', name: nextName }).catch(() => {});
+        await dispatchOnlineAction({
+          action: 'sync_profile',
+          name: nextName,
+          ...(current?.avatar ? { avatar: current.avatar } : {}),
+        });
         set((state) => ({
-          currentUser: { ...user, balance: state.currentUser?.balance ?? user.balance, role: 'creator', isCreator: true },
+          currentUser: state.currentUser
+            ? { ...state.currentUser, name: nextName, role: 'creator', isCreator: true }
+            : {
+                id: userId,
+                name: nextName,
+                balance: DEFAULT_GAME_COINS,
+                role: 'creator',
+                isCreator: true,
+              },
         }));
       } else {
         get().exitPublisherMode();
@@ -854,214 +1345,114 @@ export const useGameStore = create<GameStore>((set, get) => {
       const user = get().currentUser;
       if (!user) return '';
 
-      const remote = await postBackendJson<{
-        user: User;
-        table: Table;
-        tables: Record<string, Table>;
-      }>('/api/game/tables', {
-        userId: user.id,
-        userName: user.name,
-        settings,
+      const newTableId = `table_${Math.random().toString(36).slice(2, 11)}`;
+      await dispatchOnlineAction({
+        action: 'create_table',
+        tableId: newTableId,
+        settings: JSON.parse(JSON.stringify(settings)),
         liquidity,
+        playerName: user.name,
+        ...(user.avatar ? { playerAvatar: user.avatar } : {}),
       });
 
-      if (remote?.table && remote?.tables) {
-        for (const [id, t] of Object.entries(remote.tables)) {
-          tablesDb[id] = t;
-        }
-        const nextUnlocked = { ...get().unlockedTableIds, [remote.table.id]: true };
-        set({
-          currentUser: remote.user || getOrCreateUser(user.id),
-          tables: remote.tables,
-          activeTableId: remote.table.id,
-          unlockedTableIds: nextUnlocked,
-        });
-        return remote.table.id;
+      // Wait briefly for the authoritative room snapshot containing the new online table
+      const waitStart = Date.now();
+      while (Date.now() - waitStart < 1200) {
+        if (get().tables[newTableId]) break;
+        await new Promise((r) => setTimeout(r, 50));
       }
 
-      const table = await hostTableApi.createTable(user.id, user.name, settings, liquidity);
-      reconcileSystemTables();
-      const nextUnlocked = { ...get().unlockedTableIds, [table.id]: true };
-
-      set({
-        currentUser: getOrCreateUser(user.id),
-        tables: sanitizeTablesMapForClient(tablesDb, user.id),
-        activeTableId: table.id,
-        unlockedTableIds: nextUnlocked,
-      });
-      return table.id;
+      set((state) => ({
+        activeTableId: newTableId,
+        unlockedTableIds: { ...state.unlockedTableIds, [newTableId]: true },
+      }));
+      return newTableId;
     },
 
     verifyTableCode: async (tableId, tableCode) => {
       const user = get().currentUser;
-      const remote = await postBackendJson<{ valid: boolean }>(
-        `/api/game/tables/${encodeURIComponent(tableId)}/verify-code`,
-        { userId: user?.id, tableCode }
-      );
-      if (remote && typeof remote.valid === 'boolean') {
-        if (remote.valid) {
-          set({ unlockedTableIds: { ...get().unlockedTableIds, [tableId]: true } });
-          return true;
-        }
+      const table = get().tables[tableId];
+      if (!table || table.status === 'closed') return false;
+
+      const submitted = tableCode.trim();
+      const expectedHash = table.settings.tableCodeHash;
+      const isOwner = Boolean(user && user.id === table.houseId);
+      const matchesHash = expectedHash
+        ? computeClientTableCodeHash(tableId, submitted) === expectedHash
+        : true;
+
+      if (!isOwner && !matchesHash) {
         return false;
       }
 
-      const table = tablesDb[tableId];
-      if (!table || table.status === 'closed') return false;
-      const expectedCode = table.settings?.tableCode;
-      const isValid =
-        !expectedCode ||
-        (user && user.id === table.houseId) ||
-        tableCode.trim() === String(expectedCode).trim();
-      if (isValid) {
-        const nextUnlocked = { ...get().unlockedTableIds, [tableId]: true };
-        set({ unlockedTableIds: nextUnlocked });
-        return true;
-      }
-      return false;
+      await dispatchOnlineAction({
+        action: 'verify_table_code',
+        tableId,
+        tableCode: submitted,
+      });
+
+      set((state) => ({
+        unlockedTableIds: { ...state.unlockedTableIds, [tableId]: true },
+      }));
+      return true;
     },
 
     updateTableSettings: async (tableId, settings) => {
-      const user = get().currentUser;
-      if (!user) return;
-      try {
-        const res = await fetch(`/api/game/tables/${encodeURIComponent(tableId)}/settings`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: user.id, settings }),
-        });
-        if (res.ok) {
-          const payload = await res.json();
-          if (payload?.tables) {
-            set({ currentUser: payload.user || user, tables: payload.tables });
-            return;
-          }
-        }
-      } catch {}
-
-      await hostTableApi.updateTableSettings(tableId, user.id, settings);
-      reconcileSystemTables();
-      set({
-        currentUser: getOrCreateUser(user.id),
-        tables: sanitizeTablesMapForClient(tablesDb, user.id),
+      await dispatchOnlineAction({
+        action: 'update_table_settings',
+        tableId,
+        settings: JSON.parse(JSON.stringify(settings)),
       });
     },
 
     depositLiquidity: async (tableId, amount) => {
-      const user = get().currentUser;
-      if (!user) return;
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/deposit`, {
-        userId: user.id,
+      await dispatchOnlineAction({
+        action: 'deposit_liquidity',
+        tableId,
         amount,
-      });
-      if (remote?.tables) {
-        set({ currentUser: remote.user || user, tables: remote.tables });
-        return;
-      }
-      await hostTableApi.depositLiquidity(tableId, user.id, amount);
-      reconcileSystemTables();
-      set({
-        currentUser: getOrCreateUser(user.id),
-        tables: sanitizeTablesMapForClient(tablesDb, user.id),
       });
     },
 
     pauseTable: async (tableId) => {
-      const user = get().currentUser;
-      if (!user) return;
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/pause`, {
-        userId: user.id,
-      });
-      if (remote?.tables) {
-        set({ currentUser: remote.user || user, tables: remote.tables });
-        return;
-      }
-      await hostTableApi.pauseTable(tableId, user.id);
-      reconcileSystemTables();
-      set({
-        currentUser: getOrCreateUser(user.id),
-        tables: sanitizeTablesMapForClient(tablesDb, user.id),
+      await dispatchOnlineAction({
+        action: 'pause_table',
+        tableId,
       });
     },
 
     resumeTable: async (tableId) => {
-      const user = get().currentUser;
-      if (!user) return;
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/resume`, {
-        userId: user.id,
-      });
-      if (remote?.tables) {
-        set({ currentUser: remote.user || user, tables: remote.tables });
-        return;
-      }
-      await hostTableApi.resumeTable(tableId, user.id);
-      reconcileSystemTables();
-      set({
-        currentUser: getOrCreateUser(user.id),
-        tables: sanitizeTablesMapForClient(tablesDb, user.id),
+      await dispatchOnlineAction({
+        action: 'resume_table',
+        tableId,
       });
     },
 
     withdrawLiquidity: async (tableId, amount) => {
-      const user = get().currentUser;
-      if (!user || amount <= 0) return;
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/withdraw`, {
-        userId: user.id,
+      if (amount <= 0) return;
+      await dispatchOnlineAction({
+        action: 'withdraw_liquidity',
+        tableId,
         amount,
-      });
-      if (remote?.tables) {
-        set({ currentUser: remote.user || user, tables: remote.tables });
-        return;
-      }
-      await hostTableApi.withdrawLiquidity(tableId, user.id, amount);
-      reconcileSystemTables();
-      set({
-        currentUser: getOrCreateUser(user.id),
-        tables: sanitizeTablesMapForClient(tablesDb, user.id),
       });
     },
 
-    joinTable: async (tableId, seatIndex, currency = 'Gcoin') => {
+    joinTable: async (tableId, seatIndex, _currency = 'Gcoin') => {
       const user = get().currentUser;
       if (!user) return;
 
       const currentActiveId = get().activeTableId;
-
-      if (isPrimaryOnlineRoomTable(tableId)) {
-        await sendRandseedRoomAction({
-          action: 'join_seat',
-          seatIndex,
-          playerName: user.name,
-          ...(user.avatar ? { playerAvatar: user.avatar } : {}),
-        });
-        set({ activeTableId: tableId });
-        return;
-      }
-
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/join`, {
-        userId: user.id,
+      await dispatchOnlineAction({
+        action: 'join_seat',
+        tableId,
         seatIndex,
-        currency,
+        playerName: user.name,
+        ...(user.avatar ? { playerAvatar: user.avatar } : {}),
       });
-      if (remote?.tables) {
-        set({
-          currentUser: remote.user || user,
-          tables: remote.tables,
-          activeTableId: tableId,
-        });
-        return;
-      }
 
-      await gameApi.joinTable(tableId, user.id, seatIndex, 0, currency);
       if (currentActiveId !== tableId) {
-        get().recordVisit(tableId);
+        get().recordVisit(tableId).catch(() => {});
       }
-
-      set({
-        currentUser: getOrCreateUser(user.id),
-        tables: sanitizeTablesMapForClient(tablesDb, user.id),
-        activeTableId: tableId,
-      });
+      set({ activeTableId: tableId });
     },
 
     observeTable: (tableId) => {
@@ -1069,424 +1460,126 @@ export const useGameStore = create<GameStore>((set, get) => {
       if (!user) return;
       const currentActiveId = get().activeTableId;
       if (currentActiveId !== tableId) {
-        get().recordVisit(tableId);
+        get().recordVisit(tableId).catch(() => {});
       }
       set({ activeTableId: tableId });
     },
 
     recordVisit: async (tableId) => {
-      const user = get().currentUser;
-      if (isPrimaryOnlineRoomTable(tableId)) return;
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/visit`, {
-        userId: user?.id,
+      await dispatchOnlineAction({
+        action: 'record_visit',
+        tableId,
       });
-      if (remote?.tables) {
-        set({ tables: remote.tables });
-        return;
-      }
-      await hostTableApi.recordVisit(tableId);
-      set((state) => ({
-        tables: sanitizeTablesMapForClient(tablesDb, user?.id) || state.tables,
-      }));
     },
 
-    leaveTable: async (tableId, seatIndex, isTimeout) => {
+    leaveTable: async (tableId, seatIndex) => {
       const user = get().currentUser;
       if (!user) return;
 
-      if (isPrimaryOnlineRoomTable(tableId)) {
-        if (seatIndex !== undefined) {
-          await sendRandseedRoomAction({ action: 'leave_seat', seatIndex });
-        } else {
-          const t = get().tables[tableId];
-          const myIdxs =
-            t?.seats
-              .map((s, idx) => (s.userId === user.id ? idx : -1))
-              .filter((idx) => idx >= 0) || [];
-          for (const idx of myIdxs) {
-            await sendRandseedRoomAction({ action: 'leave_seat', seatIndex: idx });
-          }
-          set({ activeTableId: null });
-        }
-        return;
-      }
-
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/leave`, {
-        userId: user.id,
-        seatIndex,
-        isTimeout,
-      });
-      if (remote?.tables) {
-        set((state) => ({
-          currentUser: remote.user || user,
-          tables: remote.tables,
-          activeTableId: seatIndex === undefined ? null : state.activeTableId,
-        }));
-        const updatedTable = remote.tables[tableId];
-        if (updatedTable && updatedTable.currentTurnIndex === -1 && updatedTable.status === 'playing') {
-          get().dealerPlay(tableId);
-        }
-        return;
-      }
-
-      const { table } = await gameApi.leaveTable(tableId, user.id, seatIndex, isTimeout);
-
-      set((state) => ({
-        currentUser: getOrCreateUser(user.id),
-        tables: sanitizeTablesMapForClient(tablesDb, user.id),
-        activeTableId: seatIndex === undefined ? null : state.activeTableId,
-      }));
-
-      if (table && table.currentTurnIndex === -1 && table.status === 'playing') {
-        get().dealerPlay(tableId);
+      if (seatIndex !== undefined) {
+        await dispatchOnlineAction({
+          action: 'leave_seat',
+          tableId,
+          seatIndex,
+        });
+      } else {
+        await dispatchOnlineAction({
+          action: 'leave_seat',
+          tableId,
+        });
+        set({ activeTableId: null });
       }
     },
 
     unlockTableBalance: async (tableId) => {
-      const user = get().currentUser;
-      if (!user) return;
-
-      if (isPrimaryOnlineRoomTable(tableId)) return;
-
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/unlock`, {
-        userId: user.id,
+      await dispatchOnlineAction({
+        action: 'unlock_table_balance',
+        tableId,
       });
-      if (remote?.tables) {
-        set({
-          currentUser: remote.user || user,
-          tables: remote.tables,
-        });
-        return;
-      }
-
-      const { table } = await gameApi.unlockTableBalance(tableId, user.id);
-
-      set({
-        currentUser: getOrCreateUser(user.id),
-        tables: sanitizeTablesMapForClient(tablesDb, user.id),
-      });
-
-      if (table && table.currentTurnIndex === -1 && table.status === 'playing') {
-        get().dealerPlay(tableId);
-      }
     },
 
     refillGameCoins: async (tableId) => {
-      const user = get().currentUser;
-      if (!user) return;
-
-      const targetTableId = tableId || get().activeTableId || undefined;
-
-      if (isRandseedRoomConnected()) {
-        await sendRandseedRoomAction({ action: 'claim_refill' });
-        return;
-      }
-
-      const remote = await postBackendJson('/api/game/refill', {
-        userId: user.id,
+      const targetTableId = tableId || get().activeTableId || 'table_1';
+      await dispatchOnlineAction({
+        action: 'claim_refill',
         tableId: targetTableId,
-      });
-      if (remote?.user && remote?.tables) {
-        set({
-          currentUser: remote.user,
-          tables: remote.tables,
-        });
-        return;
-      }
-
-      const { user: updatedUser } = claimServerRefill(user.id, targetTableId);
-      set({
-        currentUser: updatedUser,
-        tables: sanitizeTablesMapForClient(tablesDb, user.id),
       });
     },
 
     placeBet: async (tableId, seatIndex, amount, sideBets) => {
-      const user = get().currentUser;
-      if (!user) return;
-
-      if (isPrimaryOnlineRoomTable(tableId)) {
-        await sendRandseedRoomAction({
-          action: 'place_bet',
-          seatIndex,
-          amount,
-          sideBets: {
-            pair: sideBets?.pair || 0,
-            twentyOnePlusThree: sideBets?.twentyOnePlusThree || 0,
-          },
-          pairBet: sideBets?.pair || 0,
-          plus3Bet: sideBets?.twentyOnePlusThree || 0,
-        });
-        return;
-      }
-
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/bet`, {
-        userId: user.id,
+      await dispatchOnlineAction({
+        action: 'place_bet',
+        tableId,
         seatIndex,
         amount,
-        sideBets,
-      });
-      if (remote?.tables) {
-        set({
-          currentUser: remote.user || user,
-          tables: remote.tables,
-        });
-        return;
-      }
-
-      await gameApi.placeBet(tableId, seatIndex, user.id, amount, sideBets);
-      set({
-        currentUser: getOrCreateUser(user.id),
-        tables: sanitizeTablesMapForClient(tablesDb, user.id),
+        sideBets: {
+          pair: sideBets?.pair || 0,
+          twentyOnePlusThree: sideBets?.twentyOnePlusThree || 0,
+        },
+        pairBet: sideBets?.pair || 0,
+        plus3Bet: sideBets?.twentyOnePlusThree || 0,
       });
     },
 
     startGame: async (tableId) => {
-      const user = get().currentUser;
-
-      if (isPrimaryOnlineRoomTable(tableId)) {
-        await sendRandseedRoomAction({ action: 'start_game' });
-        return;
-      }
-
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/start`, {
-        userId: user?.id,
+      await dispatchOnlineAction({
+        action: 'start_game',
+        tableId,
       });
-      if (remote?.tables) {
-        set({
-          currentUser: remote.user || user,
-          tables: remote.tables,
-        });
-        const updatedTable = remote.tables[tableId];
-        if (updatedTable && updatedTable.currentTurnIndex === -1 && updatedTable.status === 'playing') {
-          const activeSeatsCount = updatedTable.seats.filter((s: PlayerSeat) => s.isReady).length;
-          setTimeout(() => {
-            get().dealerPlay(tableId);
-          }, (activeSeatsCount + 1) * 400 + 500);
-        }
-        return;
-      }
-
-      const table = await gameApi.startGame(tableId);
-
-      set((state) => ({
-        currentUser: user ? getOrCreateUser(user.id) : state.currentUser,
-        tables: sanitizeTablesMapForClient(tablesDb, user?.id),
-      }));
-
-      if (table.currentTurnIndex === -1 && table.status === 'playing') {
-        const activeSeatsCount = table.seats.filter((s) => s.isReady).length;
-        setTimeout(() => {
-          get().dealerPlay(tableId);
-        }, (activeSeatsCount + 1) * 400 + 500);
-      }
     },
 
     hit: async (tableId, seatIndex) => {
-      const user = get().currentUser;
-
-      if (isPrimaryOnlineRoomTable(tableId)) {
-        await sendRandseedRoomAction({ action: 'hit', seatIndex });
-        return;
-      }
-
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/hit`, {
-        userId: user?.id,
+      await dispatchOnlineAction({
+        action: 'hit',
+        tableId,
         seatIndex,
       });
-      if (remote?.tables) {
-        set({ currentUser: remote.user || user, tables: remote.tables });
-        const updatedTable = remote.tables[tableId];
-        if (updatedTable && updatedTable.currentTurnIndex === -1 && updatedTable.status === 'playing') {
-          get().dealerPlay(tableId);
-        }
-        return;
-      }
-
-      const table = await gameApi.hit(tableId, seatIndex);
-      set((state) => ({
-        currentUser: user ? getOrCreateUser(user.id) : state.currentUser,
-        tables: sanitizeTablesMapForClient(tablesDb, user?.id),
-      }));
-
-      if (table.currentTurnIndex === -1 && table.status === 'playing') {
-        get().dealerPlay(tableId);
-      }
     },
 
     stand: async (tableId, seatIndex) => {
-      const user = get().currentUser;
-
-      if (isPrimaryOnlineRoomTable(tableId)) {
-        await sendRandseedRoomAction({ action: 'stand', seatIndex });
-        return;
-      }
-
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/stand`, {
-        userId: user?.id,
+      await dispatchOnlineAction({
+        action: 'stand',
+        tableId,
         seatIndex,
       });
-      if (remote?.tables) {
-        set({ currentUser: remote.user || user, tables: remote.tables });
-        const updatedTable = remote.tables[tableId];
-        if (updatedTable && updatedTable.currentTurnIndex === -1 && updatedTable.status === 'playing') {
-          get().dealerPlay(tableId);
-        }
-        return;
-      }
-
-      const table = await gameApi.stand(tableId, seatIndex);
-      set((state) => ({
-        currentUser: user ? getOrCreateUser(user.id) : state.currentUser,
-        tables: sanitizeTablesMapForClient(tablesDb, user?.id),
-      }));
-
-      if (table.currentTurnIndex === -1 && table.status === 'playing') {
-        get().dealerPlay(tableId);
-      }
     },
 
     doubleDown: async (tableId, seatIndex) => {
-      const user = get().currentUser;
-
-      if (isPrimaryOnlineRoomTable(tableId)) {
-        await sendRandseedRoomAction({ action: 'double_down', seatIndex });
-        return;
-      }
-
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/double`, {
-        userId: user?.id,
+      await dispatchOnlineAction({
+        action: 'double_down',
+        tableId,
         seatIndex,
       });
-      if (remote?.tables) {
-        set({ currentUser: remote.user || user, tables: remote.tables });
-        const updatedTable = remote.tables[tableId];
-        if (updatedTable && updatedTable.currentTurnIndex === -1 && updatedTable.status === 'playing') {
-          get().dealerPlay(tableId);
-        }
-        return;
-      }
-
-      const table = await gameApi.doubleDown(tableId, seatIndex);
-      set((state) => ({
-        currentUser: user ? getOrCreateUser(user.id) : state.currentUser,
-        tables: sanitizeTablesMapForClient(tablesDb, user?.id),
-      }));
-
-      if (table.currentTurnIndex === -1 && table.status === 'playing') {
-        get().dealerPlay(tableId);
-      }
     },
 
     split: async (tableId, seatIndex) => {
-      const user = get().currentUser;
-
-      if (isPrimaryOnlineRoomTable(tableId)) {
-        await sendRandseedRoomAction({ action: 'split', seatIndex });
-        return;
-      }
-
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/split`, {
-        userId: user?.id,
+      await dispatchOnlineAction({
+        action: 'split',
+        tableId,
         seatIndex,
       });
-      if (remote?.tables) {
-        set({ currentUser: remote.user || user, tables: remote.tables });
-        const updatedTable = remote.tables[tableId];
-        if (updatedTable && updatedTable.currentTurnIndex === -1 && updatedTable.status === 'playing') {
-          get().dealerPlay(tableId);
-        }
-        return;
-      }
-
-      const table = await gameApi.split(tableId, seatIndex);
-      set((state) => ({
-        currentUser: user ? getOrCreateUser(user.id) : state.currentUser,
-        tables: sanitizeTablesMapForClient(tablesDb, user?.id),
-      }));
-
-      if (table.currentTurnIndex === -1 && table.status === 'playing') {
-        get().dealerPlay(tableId);
-      }
     },
 
     buyInsurance: async (tableId, seatIndex) => {
-      const user = get().currentUser;
-
-      if (isPrimaryOnlineRoomTable(tableId)) {
-        await sendRandseedRoomAction({ action: 'buy_insurance', seatIndex });
-        return;
-      }
-
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/insurance`, {
-        userId: user?.id,
+      await dispatchOnlineAction({
+        action: 'buy_insurance',
+        tableId,
         seatIndex,
       });
-      if (remote?.tables) {
-        set({ currentUser: remote.user || user, tables: remote.tables });
-        return;
-      }
-
-      await gameApi.buyInsurance(tableId, seatIndex);
-      set((state) => ({
-        currentUser: user ? getOrCreateUser(user.id) : state.currentUser,
-        tables: sanitizeTablesMapForClient(tablesDb, user?.id),
-      }));
     },
 
     dealerPlay: async (tableId) => {
-      const currentUser = get().currentUser;
-
-      if (isPrimaryOnlineRoomTable(tableId)) {
+      if (tableId === 'table_1') {
         readyRandseedRoom().catch(() => {});
-        return;
       }
-
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/dealer-play`, {
-        userId: currentUser?.id,
-      });
-      if (remote?.tables && remote?.table) {
-        set((state) => {
-          const updatedRecords = appendRoundRecordIfNew(
-            state.gameRecords,
-            remote.table,
-            currentUser?.id
-          );
-          return {
-            currentUser: remote.user || state.currentUser,
-            tables: remote.tables,
-            gameRecords: updatedRecords,
-            activeTableId:
-              state.activeTableId === tableId && remote.table.status === 'closed'
-                ? null
-                : state.activeTableId,
-          };
-        });
-        return;
-      }
-
-      const { table } = await gameApi.dealerPlayAndResolve(tableId);
-      const sanitizedTables = sanitizeTablesMapForClient(tablesDb, currentUser?.id);
-
-      set((state) => {
-        const user = currentUser ? getOrCreateUser(currentUser.id) : state.currentUser;
-        const updatedRecords = appendRoundRecordIfNew(
-          state.gameRecords,
-          table,
-          user?.id
-        );
-        return {
-          currentUser: user,
-          tables: sanitizedTables,
-          gameRecords: updatedRecords,
-          activeTableId:
-            state.activeTableId === tableId && table.status === 'closed' ? null : state.activeTableId,
-        };
+      await dispatchOnlineAction({
+        action: 'ready_next',
+        tableId,
       });
     },
 
     resolveGame: async (_tableId) => {
-      // Handled inside dealerPlay
+      // Handled authoritatively on the online room server
     },
 
     addGameRecord: (record) => {
@@ -1494,32 +1587,12 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     closeTable: async (tableId) => {
-      const user = get().currentUser;
-      if (!user) return;
-
-      const remote = await postBackendJson(`/api/game/tables/${encodeURIComponent(tableId)}/close`, {
-        userId: user.id,
+      await dispatchOnlineAction({
+        action: 'close_table',
+        tableId,
       });
-      if (remote?.tables) {
-        set((state) => ({
-          currentUser: remote.user || user,
-          tables: remote.tables,
-          activeTableId:
-            state.activeTableId === tableId && remote.table?.status === 'closed'
-              ? null
-              : state.activeTableId,
-        }));
-        return;
-      }
-
-      const { table } = await hostTableApi.closeTable(tableId, user.id);
-      reconcileSystemTables();
-
       set((state) => ({
-        currentUser: getOrCreateUser(user.id),
-        tables: sanitizeTablesMapForClient(tablesDb, user.id),
-        activeTableId:
-          state.activeTableId === tableId && table.status === 'closed' ? null : state.activeTableId,
+        activeTableId: state.activeTableId === tableId ? null : state.activeTableId,
       }));
     },
   };

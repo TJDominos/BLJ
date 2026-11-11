@@ -37,9 +37,41 @@ function GameLayout() {
   const [codeInput, setCodeInput] = useState('');
   const [codeError, setCodeError] = useState<string | null>(null);
   const [isVerifyingCode, setIsVerifyingCode] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     initRandseedRuntime();
+  }, []);
+
+  useEffect(() => {
+    const checkFullscreen = () => {
+      if (typeof window === 'undefined' || typeof document === 'undefined') return;
+      const docFs = Boolean(
+        document.fullscreenElement ||
+        (document as any).webkitFullscreenElement ||
+        (document as any).mozFullScreenElement ||
+        (document as any).msFullscreenElement
+      );
+      const mediaFs =
+        typeof window.matchMedia === 'function' &&
+        window.matchMedia('(display-mode: fullscreen)').matches;
+      const screenFs =
+        typeof window.screen !== 'undefined' &&
+        window.screen.height > 0 &&
+        window.innerHeight >= window.screen.height - 32 &&
+        window.innerWidth >= window.screen.width - 32;
+      setIsFullscreen(docFs || mediaFs || screenFs);
+    };
+
+    checkFullscreen();
+    window.addEventListener('resize', checkFullscreen);
+    document.addEventListener('fullscreenchange', checkFullscreen);
+    document.addEventListener('webkitfullscreenchange', checkFullscreen);
+    return () => {
+      window.removeEventListener('resize', checkFullscreen);
+      document.removeEventListener('fullscreenchange', checkFullscreen);
+      document.removeEventListener('webkitfullscreenchange', checkFullscreen);
+    };
   }, []);
 
   useEffect(() => {
@@ -250,7 +282,11 @@ function GameLayout() {
   };
 
   return (
-    <div className="w-full h-[100dvh] flex flex-col items-center justify-center relative overflow-hidden bg-gradient-to-br from-[#1a0f0a] via-[#0d0905] to-[#140b08] text-slate-200 font-sans selection:bg-[#c6a364]/30 selection:text-amber-200">
+    <div
+      className={`w-full h-[100dvh] flex flex-col items-center justify-center relative overflow-hidden bg-gradient-to-br from-[#1a0f0a] via-[#0d0905] to-[#140b08] text-slate-200 font-sans selection:bg-[#c6a364]/30 selection:text-amber-200 ${
+        isFullscreen ? 'p-0 sm:py-2' : 'p-0 sm:py-3 md:py-4'
+      }`}
+    >
       <div className="absolute inset-0 pointer-events-none opacity-15 bg-[radial-gradient(#c6a364_1px,transparent_1px)] [background-size:24px_24px] mix-blend-overlay z-0"></div>
       
       {/* Luxury Caesars Palace style background elements */}
@@ -268,7 +304,11 @@ function GameLayout() {
         ))}
       </div>
 
-      <div className="relative z-10 w-full h-full max-w-[1280px] max-h-[720px] mx-auto flex flex-col overflow-hidden">
+      <div
+        className={`relative z-10 w-full h-full max-w-[1280px] ${
+          isFullscreen ? 'max-h-[940px]' : 'max-h-[860px]'
+        } mx-auto my-auto flex flex-col overflow-hidden shadow-2xl`}
+      >
         {closedRedirectMessage && (
            <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm px-4">
              <div className="bg-[#1a1c23] border border-red-500/30 text-white p-6 rounded-2xl shadow-2xl max-w-md text-center">

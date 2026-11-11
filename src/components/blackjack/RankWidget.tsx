@@ -7,12 +7,35 @@ import { cn } from '@/lib/utils';
 import { CurrencyIcon } from '@/components/CurrencyIcon';
 import { getAvatarUrl } from '@/utils/avatar';
 
-export const RankWidget: React.FC = () => {
+interface RankWidgetProps {
+  externalOpen?: boolean;
+  onExternalClose?: () => void;
+  hideFloatingTrigger?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export const RankWidget: React.FC<RankWidgetProps> = ({
+  externalOpen,
+  onExternalClose,
+  hideFloatingTrigger = false,
+  onOpenChange,
+}) => {
   const { gameRecords, currentUser, tables } = useGameStore();
   const navigate = useNavigate();
-  const [isOpen, setIsOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [activeTab, setActiveTab] = useState<'all' | 'regular' | 'tournament'>('all');
+
+  const isOpen = externalOpen !== undefined ? externalOpen : internalOpen;
+  const handleOpen = () => {
+    setInternalOpen(true);
+    onOpenChange?.(true);
+  };
+  const handleClose = () => {
+    setInternalOpen(false);
+    onOpenChange?.(false);
+    onExternalClose?.();
+  };
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(max-width: 767px)');
@@ -46,12 +69,24 @@ export const RankWidget: React.FC = () => {
     let regularBlackjacks = 0;
     let regularDoubles = 0;
     let regularSplits = 0;
+    let regularSideBetHands = 0;
+    let regularSideBetWins = 0;
+    let regularSideBetNet = 0;
+    let regularSideBetGrossWin = 0;
+    let regularPairWins = 0;
+    let regularPlus3Wins = 0;
     let bestSingleWin = 0;
 
     let tournamentRounds = 0;
     let tournamentWins = 0;
     let tournamentNet = 0;
     let tournamentBlackjacks = 0;
+    let tournamentSideBetHands = 0;
+    let tournamentSideBetWins = 0;
+    let tournamentSideBetNet = 0;
+    let tournamentSideBetGrossWin = 0;
+    let tournamentPairWins = 0;
+    let tournamentPlus3Wins = 0;
 
     for (const record of playerRecords) {
       const targetTable = tables[record.tableId];
@@ -63,6 +98,12 @@ export const RankWidget: React.FC = () => {
         const isWin = seat.action.includes('won') || seat.action.includes('blackjack') || net > 0;
         const isBJ = seat.action.includes('blackjack');
 
+        const sbWager = Number(seat.sideBet || 0);
+        const sbWin = Number(seat.sideBetWin || 0);
+        const hasSb = sbWager > 0 || sbWin > 0;
+        const pWin = Number(seat.pairWin || 0);
+        const p3Win = Number(seat.plus3Win || 0);
+
         if (net > bestSingleWin) {
           bestSingleWin = net;
         }
@@ -72,6 +113,14 @@ export const RankWidget: React.FC = () => {
           if (isWin) tournamentWins += 1;
           if (isBJ) tournamentBlackjacks += 1;
           tournamentNet += net;
+          if (hasSb) {
+            tournamentSideBetHands += 1;
+            if (sbWin > 0) tournamentSideBetWins += 1;
+            tournamentSideBetGrossWin += sbWin;
+            tournamentSideBetNet += sbWin - sbWager;
+          }
+          if (pWin > 0) tournamentPairWins += 1;
+          if (p3Win > 0) tournamentPlus3Wins += 1;
         } else {
           regularRounds += 1;
           if (isWin) regularWins += 1;
@@ -79,6 +128,14 @@ export const RankWidget: React.FC = () => {
           if (seat.action.includes('double') || seat.bet > (targetTable?.settings.minBet || 10) * 1.5) regularDoubles += 1;
           if (seat.isSplit) regularSplits += 1;
           regularNet += net;
+          if (hasSb) {
+            regularSideBetHands += 1;
+            if (sbWin > 0) regularSideBetWins += 1;
+            regularSideBetGrossWin += sbWin;
+            regularSideBetNet += sbWin - sbWager;
+          }
+          if (pWin > 0) regularPairWins += 1;
+          if (p3Win > 0) regularPlus3Wins += 1;
         }
       }
     }
@@ -119,6 +176,14 @@ export const RankWidget: React.FC = () => {
       overallWinRate,
       totalNet,
       bestSingleWin,
+      sideBets: {
+        hands: regularSideBetHands + tournamentSideBetHands,
+        wins: regularSideBetWins + tournamentSideBetWins,
+        net: regularSideBetNet + tournamentSideBetNet,
+        grossWin: regularSideBetGrossWin + tournamentSideBetGrossWin,
+        pairWins: regularPairWins + tournamentPairWins,
+        plus3Wins: regularPlus3Wins + tournamentPlus3Wins,
+      },
       regular: {
         rounds: regularRounds,
         wins: regularWins,
@@ -127,6 +192,12 @@ export const RankWidget: React.FC = () => {
         blackjacks: regularBlackjacks,
         doubles: regularDoubles,
         splits: regularSplits,
+        sideBetHands: regularSideBetHands,
+        sideBetWins: regularSideBetWins,
+        sideBetNet: regularSideBetNet,
+        sideBetGrossWin: regularSideBetGrossWin,
+        pairWins: regularPairWins,
+        plus3Wins: regularPlus3Wins,
       },
       tournament: {
         entered: tournamentsEntered,
@@ -136,6 +207,12 @@ export const RankWidget: React.FC = () => {
         winRate: tournamentWinRate,
         net: tournamentNet + tournamentPrizeCoinsWon,
         blackjacks: tournamentBlackjacks,
+        sideBetHands: tournamentSideBetHands,
+        sideBetWins: tournamentSideBetWins,
+        sideBetNet: tournamentSideBetNet,
+        sideBetGrossWin: tournamentSideBetGrossWin,
+        pairWins: tournamentPairWins,
+        plus3Wins: tournamentPlus3Wins,
       }
     };
   }, [playerRecords, tables, currentUser]);
@@ -152,25 +229,27 @@ export const RankWidget: React.FC = () => {
 
   const handleJoinTable = (targetTableId: string) => {
     navigate(`/t/${targetTableId}`);
-    setIsOpen(false);
+    handleClose();
   };
 
   return (
     <>
       {/* Floating My Stats Trigger Button */}
-      <div className="fixed right-0 top-[calc(50%+2.5rem)] md:top-[calc(50%+3.5rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
-        <button
-          type="button"
-          onClick={() => setIsOpen(true)}
-          title="My Stats (Personal Data · 个人数据)"
-          className="bg-zinc-950 border-y-2 border-l-2 border-[#d4af37] rounded-l-2xl p-2.5 md:p-3 pr-3 md:pr-4 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:-translate-x-1 cursor-pointer flex flex-col items-center group relative"
-        >
-          <User className="w-5 h-5 md:w-6 md:h-6 text-[#ffd86b] group-hover:scale-110 transition-transform" />
-          <span className="text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">
-            Stats
-          </span>
-        </button>
-      </div>
+      {!hideFloatingTrigger && (
+        <div className="fixed right-0 top-1/2 -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
+          <button
+            type="button"
+            onClick={handleOpen}
+            title="My Stats"
+            className="bg-zinc-950 border-y-2 border-l-2 border-[#d4af37] rounded-l-2xl p-2.5 md:p-3 pr-3 md:pr-4 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:-translate-x-1 cursor-pointer flex flex-col items-center group relative"
+          >
+            <User className="w-5 h-5 md:w-6 md:h-6 text-[#ffd86b] group-hover:scale-110 transition-transform" />
+            <span className="text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">
+              Stats
+            </span>
+          </button>
+        </div>
+      )}
 
       {/* Personal Stats Slide-Over Panel */}
       <AnimatePresence>
@@ -181,8 +260,8 @@ export const RankWidget: React.FC = () => {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setIsOpen(false)}
-              className="fixed inset-0 z-[90] bg-black/60 backdrop-blur-sm pointer-events-auto"
+              onClick={handleClose}
+              className="fixed inset-0 z-[250] bg-black/60 backdrop-blur-sm pointer-events-auto"
             />
 
             {/* Panel */}
@@ -192,7 +271,7 @@ export const RankWidget: React.FC = () => {
               exit={isMobile ? { y: '100%' } : { x: '100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 220 }}
               className={cn(
-                'fixed z-[100] bg-[#101713] flex flex-col overflow-hidden shadow-2xl border-l border-[#d4af37]/30 pointer-events-auto',
+                'fixed z-[260] bg-[#101713] flex flex-col overflow-hidden shadow-2xl border-l border-[#d4af37]/30 pointer-events-auto',
                 isMobile
                   ? 'bottom-0 left-0 right-0 h-[88vh] rounded-t-2xl'
                   : 'top-0 right-0 bottom-0 w-[380px]'
@@ -202,7 +281,7 @@ export const RankWidget: React.FC = () => {
               <div className="p-4 border-b border-white/10 bg-[#0c120e] shrink-0 flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <button
-                    onClick={() => setIsOpen(false)}
+                    onClick={handleClose}
                     className="p-1 hover:bg-white/10 rounded-full transition-colors cursor-pointer text-slate-400 hover:text-white"
                   >
                     <X className="w-5 h-5" />
@@ -210,7 +289,7 @@ export const RankWidget: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <User className="w-5 h-5 text-[#ffd86b]" />
                     <h2 className="text-base font-bold text-white tracking-wide">
-                      My Stats <span className="text-xs text-slate-400 font-normal">(个人数据)</span>
+                      My Stats
                     </h2>
                   </div>
                 </div>
@@ -342,6 +421,30 @@ export const RankWidget: React.FC = () => {
                       </div>
                       <div className="text-[10px] text-slate-400 mt-0.5">Highest Hand Net</div>
                     </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Side Bets Won</div>
+                      <div className="text-xl font-mono font-bold text-sky-300 mt-1">
+                        {stats.sideBets.wins}
+                        <span className="text-xs text-slate-400 font-normal">/{stats.sideBets.hands}</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                        Pair: {stats.sideBets.pairWins} · 21+3: {stats.sideBets.plus3Wins}
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Side Bets Net</div>
+                      <div className={cn(
+                        'text-xl font-mono font-bold mt-1',
+                        stats.sideBets.net >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                      )}>
+                        {stats.sideBets.net >= 0 ? '+' : ''}{stats.sideBets.net.toLocaleString()}
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                        Paid: +{stats.sideBets.grossWin.toLocaleString()}
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -382,6 +485,30 @@ export const RankWidget: React.FC = () => {
                         {stats.regular.blackjacks}
                       </div>
                       <div className="text-[10px] text-slate-400 mt-0.5">Pays 3:2</div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Side Bets Won</div>
+                      <div className="text-xl font-mono font-bold text-sky-300 mt-1">
+                        {stats.regular.sideBetWins}
+                        <span className="text-xs text-slate-400 font-normal">/{stats.regular.sideBetHands}</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                        Pair: {stats.regular.pairWins} · 21+3: {stats.regular.plus3Wins}
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Side Bets Net</div>
+                      <div className={cn(
+                        'text-xl font-mono font-bold mt-1',
+                        stats.regular.sideBetNet >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                      )}>
+                        {stats.regular.sideBetNet >= 0 ? '+' : ''}{stats.regular.sideBetNet.toLocaleString()}
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                        Paid: +{stats.regular.sideBetGrossWin.toLocaleString()}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -426,6 +553,30 @@ export const RankWidget: React.FC = () => {
                       </div>
                       <div className="text-[10px] text-slate-400 mt-0.5">Per-hand win rate</div>
                     </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Side Bets Won</div>
+                      <div className="text-xl font-mono font-bold text-sky-300 mt-1">
+                        {stats.tournament.sideBetWins}
+                        <span className="text-xs text-slate-400 font-normal">/{stats.tournament.sideBetHands}</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                        Pair: {stats.tournament.pairWins} · 21+3: {stats.tournament.plus3Wins}
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/5">
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wider">Side Bets Net</div>
+                      <div className={cn(
+                        'text-xl font-mono font-bold mt-1',
+                        stats.tournament.sideBetNet >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                      )}>
+                        {stats.tournament.sideBetNet >= 0 ? '+' : ''}{stats.tournament.sideBetNet.toLocaleString()}
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                        Paid: +{stats.tournament.sideBetGrossWin.toLocaleString()}
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -451,11 +602,75 @@ export const RankWidget: React.FC = () => {
                       filteredRecords.slice(0, 30).map((record) => {
                         const targetTable = tables[record.tableId];
                         const isTournament = targetTable?.settings.mode === 'tournament';
-                        const mySeat = (record.seatResults || []).find(sr => sr.userId === currentUser?.id);
-                        const net = mySeat?.net ?? record.amountWon ?? 0;
-                        const isWin = record.result === 'win' || record.result === 'blackjack' || net > 0;
-                        const isBJ = record.result === 'blackjack' || (mySeat?.action || '').includes('blackjack');
-                        const isPush = record.result === 'push' || net === 0;
+                        const mySeats = (record.seatResults || []).filter(sr => sr.userId === currentUser?.id);
+                        const mySeat = mySeats[0];
+                        const net = mySeats.length > 0
+                          ? mySeats.reduce((sum, s) => sum + (s.net || 0), 0)
+                          : (record.amountWon ?? 0);
+                        const actionStr = (mySeat?.action || '').toLowerCase();
+                        const isBJ = record.result === 'blackjack' || actionStr.includes('blackjack');
+                        const isHandWon = actionStr.includes('won') || isBJ || (!mySeat && record.result === 'win');
+                        const isPush = actionStr.includes('push') || (!mySeat && record.result === 'push');
+
+                        // Build matched Side Bet badges across the player's seats in this round
+                        const sideBetBadges: { label: string; won: boolean }[] = [];
+                        let unmatchedSideLoss = 0;
+
+                        for (const s of mySeats) {
+                          const pBet = Number(s.pairBet || 0);
+                          const pWin = Number(s.pairWin || 0);
+                          const p3Bet = Number(s.plus3Bet || 0);
+                          const p3Win = Number(s.plus3Win || 0);
+                          const totalSb = Number(s.sideBet || 0);
+                          const totalSbWin = Number(s.sideBetWin || 0);
+
+                          if (pWin > 0) {
+                            const mult = pBet > 0 ? Math.round(pWin / pBet) - 1 : 0;
+                            const pairName =
+                              mult >= 25
+                                ? 'Perfect Pair 25:1'
+                                : mult >= 12
+                                ? 'Colored Pair 12:1'
+                                : mult > 0
+                                ? `Mixed Pair ${mult}:1`
+                                : 'Pair Hit';
+                            sideBetBadges.push({ label: `${pairName} (+${pWin})`, won: true });
+                          } else if (pBet > 0) {
+                            unmatchedSideLoss += pBet;
+                          }
+
+                          if (p3Win > 0) {
+                            const mult = p3Bet > 0 ? Math.round(p3Win / p3Bet) - 1 : 0;
+                            const plus3Name =
+                              mult >= 100
+                                ? '21+3 Suited Trips 100:1'
+                                : mult >= 40
+                                ? '21+3 Str. Flush 40:1'
+                                : mult >= 30
+                                ? '21+3 Trips 30:1'
+                                : mult >= 10
+                                ? '21+3 Straight 10:1'
+                                : mult > 0
+                                ? `21+3 Flush ${mult}:1`
+                                : '21+3 Hit';
+                            sideBetBadges.push({ label: `${plus3Name} (+${p3Win})`, won: true });
+                          } else if (p3Bet > 0) {
+                            unmatchedSideLoss += p3Bet;
+                          }
+
+                          // Fallback if legacy record only has aggregate sideBet / sideBetWin
+                          if (pBet === 0 && p3Bet === 0 && pWin === 0 && p3Win === 0 && totalSb > 0) {
+                            if (totalSbWin > 0) {
+                              sideBetBadges.push({ label: `Side Hit (+${totalSbWin})`, won: true });
+                            } else {
+                              unmatchedSideLoss += totalSb;
+                            }
+                          }
+                        }
+
+                        if (unmatchedSideLoss > 0) {
+                          sideBetBadges.push({ label: `Side -${unmatchedSideLoss}`, won: false });
+                        }
 
                         return (
                           <div
@@ -496,26 +711,39 @@ export const RankWidget: React.FC = () => {
                                 'px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shrink-0',
                                 isBJ
                                   ? 'bg-[#ffd86b]/20 text-[#ffd86b] border border-[#ffd86b]/40 font-extrabold'
-                                  : isWin
+                                  : isHandWon
                                   ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
                                   : isPush
                                   ? 'bg-slate-500/20 text-slate-300 border border-slate-500/40'
                                   : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
                               )}>
-                                {isBJ ? 'Blackjack 3:2' : isWin ? 'Won' : isPush ? 'Push' : 'Lost'}
+                                {isBJ ? 'Blackjack 3:2' : isHandWon ? 'Won' : isPush ? 'Push' : 'Lost'}
                               </span>
                             </div>
 
-                            <div className="flex items-center justify-between text-xs text-slate-300 pt-1 border-t border-white/5">
-                              <div className="flex items-center gap-2 text-[11px] font-mono text-slate-400">
+                            <div className="flex items-center justify-between text-xs text-slate-300 pt-1 border-t border-white/5 gap-2">
+                              <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-400 flex-wrap">
                                 <span>Score: {mySeat?.score ?? '-'}</span>
                                 {record.dealerScore !== undefined && (
                                   <span>vs Dealer {record.dealerScore}</span>
                                 )}
+                                {sideBetBadges.map((badge, bIdx) => (
+                                  <span
+                                    key={bIdx}
+                                    className={cn(
+                                      'px-1.5 py-0.5 rounded text-[10px] font-mono font-bold border',
+                                      badge.won
+                                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-400/40 shadow-[0_0_8px_rgba(16,185,129,0.2)]'
+                                        : 'bg-white/5 text-slate-400 border-white/10'
+                                    )}
+                                  >
+                                    {badge.label}
+                                  </span>
+                                ))}
                               </div>
 
                               <div className={cn(
-                                'font-mono font-bold text-xs',
+                                'font-mono font-bold text-xs shrink-0',
                                 net > 0 ? 'text-emerald-400' : net < 0 ? 'text-rose-400' : 'text-slate-400'
                               )}>
                                 {net > 0 ? '+' : ''}{net.toLocaleString()} Coins

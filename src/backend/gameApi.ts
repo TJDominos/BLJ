@@ -786,13 +786,20 @@ export const gameApi = {
       const net = wonAmount - totalBet;
 
       const seatIndexToRecord = seat.isSplitHand && seat.originalSeatIndex !== undefined ? seat.originalSeatIndex : table.seats.indexOf(seat);
+      const seatUser = seat.userId ? usersDb[seat.userId] : undefined;
       seatResults.push({
         seatIndex: seatIndexToRecord,
         isSplit: !!seat.isSplitHand,
         userId: seat.userId || undefined,
+        playerName: seat.name || seatUser?.name || seat.userId || undefined,
+        playerAvatar: seat.avatar || seatUser?.avatar || undefined,
         bet: seat.hand.bet,
         sideBet: sideBetTotal,
         sideBetWin: sideBetWon,
+        pairBet: seat.hand.sideBets?.pair || 0,
+        pairWin: seat.hand.sideBetPairWon || 0,
+        plus3Bet: seat.hand.sideBets?.twentyOnePlusThree || 0,
+        plus3Win: seat.hand.sideBetPlus3Won || 0,
         insuranceBet: seat.hand.insuranceBet || 0,
         insuranceWin: insuranceWon,
         win: wonAmount,
@@ -807,13 +814,18 @@ export const gameApi = {
     }
     
     table.roundsPlayed = (table.roundsPlayed || 0) + 1;
-    table.lastRoundSummary = {
+    const summaryObj = {
       roundId: `${table.id}_r${table.roundsPlayed}_${Date.now()}`,
       timestamp: Date.now(),
       winnings,
       seatResults,
       dealerScore
     };
+    table.lastRoundSummary = summaryObj;
+    if (!Array.isArray(table.roundHistory)) {
+      table.roundHistory = [];
+    }
+    table.roundHistory = [summaryObj, ...table.roundHistory].slice(0, 100);
 
     // Emit Universal Platform SettlementUnitEnvelope + LedgerReceipt (Event-driven, no cross-room SQLite)
     const endingBalances: Record<string, number> = {};

@@ -43,3 +43,44 @@ export const DelayedScore: React.FC<DelayedScoreProps> = ({ score, cardsLength, 
     <>{displayedScore !== "" && displayedScore !== 0 ? displayedScore : ""}</>
   );
 };
+
+export function useDealRevealedSeats(
+  tableStatus: string | undefined,
+  totalSeats: number
+): (seatIdx: number, originalSeatIndex?: number) => boolean {
+  const [revealedSeats, setRevealedSeats] = useState<Record<number, boolean>>({});
+  const prevStatusRef = React.useRef<string | undefined>(tableStatus);
+  const isJustStartingPlay = tableStatus === 'playing' && prevStatusRef.current !== 'playing';
+
+  useEffect(() => {
+    if (tableStatus === 'playing' && prevStatusRef.current !== 'playing') {
+      prevStatusRef.current = 'playing';
+      setRevealedSeats({});
+      const timers: ReturnType<typeof setTimeout>[] = [];
+      for (let sIdx = 0; sIdx < Math.max(totalSeats, 12); sIdx++) {
+        const effectiveSeats = Math.max(1, totalSeats);
+        const clampedIdx = Math.min(sIdx, effectiveSeats - 1);
+        const delay = ((effectiveSeats + 1) + (effectiveSeats - 1 - clampedIdx)) * 150 + 400;
+        const timer = setTimeout(() => {
+          setRevealedSeats((prev) => ({ ...prev, [sIdx]: true }));
+        }, delay);
+        timers.push(timer);
+      }
+      return () => {
+        timers.forEach(clearTimeout);
+      };
+    }
+
+    if (tableStatus !== 'playing') {
+      prevStatusRef.current = tableStatus;
+    }
+  }, [tableStatus, totalSeats]);
+
+  return (seatIdx: number, originalSeatIndex?: number) => {
+    if (tableStatus !== 'playing') return true;
+    if (isJustStartingPlay) return false;
+    const lookupIdx = originalSeatIndex !== undefined ? originalSeatIndex : seatIdx;
+    return Boolean(revealedSeats[lookupIdx]);
+  };
+}
+

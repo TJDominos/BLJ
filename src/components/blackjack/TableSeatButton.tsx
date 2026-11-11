@@ -11,6 +11,7 @@ interface TableSeatButtonProps {
   currentUser: User | null;
   isSelected: boolean;
   dealCountdown: number | null;
+  actionCountdown?: number | null;
   shakeSeats: boolean;
   onClick: () => void;
 }
@@ -22,6 +23,7 @@ export function TableSeatButton({
   currentUser,
   isSelected,
   dealCountdown,
+  actionCountdown = null,
   shakeSeats,
   onClick,
 }: TableSeatButtonProps) {
@@ -41,7 +43,7 @@ export function TableSeatButton({
       animate={shakeSeats && !isSelected && !isSeated ? { x: [-10, 10, -10, 10, 0] } : {}}
       transition={{ duration: 0.4 }}
       className={cn(
-        "absolute bottom-[5px] sm:bottom-[10px] left-1/2 -translate-x-1/2 w-[45px] h-[45px] sm:w-[50px] sm:h-[50px] md:w-[60px] md:h-[60px] text-[10px] sm:text-[12px] z-50 shadow-xl bg-black/60 rounded-full",
+        "absolute bottom-[8px] sm:bottom-[10px] [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-[2px] left-1/2 -translate-x-1/2 w-[45px] h-[45px] sm:w-[50px] sm:h-[50px] md:w-[60px] md:h-[60px] [@media(max-height:520px)_and_(orientation:landscape)]:!w-[38px] [@media(max-height:520px)_and_(orientation:landscape)]:!h-[38px] text-[10px] sm:text-[12px] [@media(max-height:520px)_and_(orientation:landscape)]:!text-[9px] z-50 shadow-xl bg-black/60 rounded-full",
         "flex flex-col items-center justify-center border transition-all cursor-pointer font-bold uppercase tracking-widest leading-none",
         seat.isReady
           ? "border-[#32d5a4] text-[#32d5a4] bg-[#32d5a4]/30 shadow-[0_0_15px_rgba(50,213,164,0.3)] backdrop-blur-[2px]"
@@ -91,6 +93,25 @@ export function TableSeatButton({
             </div>
           )}
 
+          {/* 50% Semi-Transparent Action Timer Overlay on Avatar */}
+          {actionCountdown !== null && actionCountdown !== undefined && (
+            <div
+              className={cn(
+                "absolute inset-[10%] flex items-center justify-center rounded-full bg-black/50 z-20 pointer-events-none transition-all",
+                actionCountdown <= 5 ? "ring-2 ring-amber-400 animate-pulse" : "ring-1 ring-amber-300/70"
+              )}
+            >
+              <span
+                className={cn(
+                  "font-mono font-black text-sm sm:text-base md:text-lg leading-none drop-shadow-[0_2px_4px_rgba(0,0,0,0.95)]",
+                  actionCountdown <= 5 ? "text-amber-300" : "text-white"
+                )}
+              >
+                {actionCountdown}
+              </span>
+            </div>
+          )}
+
           {seat.isReady && dealCountdown !== null && (
             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[70%] h-[70%] flex flex-col items-center justify-center bg-black/65 rounded-full z-20 shadow-[inset_0_0_10px_rgba(50,213,164,0.2)]">
               <span className="text-[6px] sm:text-[8px] font-black text-[#32d5a4] uppercase mt-0.5" style={{ WebkitTextStroke: '0.2px black' }}>
@@ -100,7 +121,7 @@ export function TableSeatButton({
           )}
 
           {/* Seat Player Name Tag */}
-          <div className="absolute -bottom-3 sm:-bottom-3.5 left-1/2 -translate-x-1/2 flex items-center justify-center z-30 pointer-events-none">
+          <div className="absolute -bottom-2.5 sm:-bottom-3 left-1/2 -translate-x-1/2 flex items-center justify-center z-30 pointer-events-none">
             <span
               className={cn(
                 "px-1.5 py-0.5 rounded-full text-[8px] sm:text-[9px] font-bold tracking-tight shadow-md border whitespace-nowrap truncate max-w-[62px] sm:max-w-[74px] text-center leading-tight",

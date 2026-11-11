@@ -7,17 +7,100 @@ import { getAvatarUrl } from '@/utils/avatar';
 
 import { DelayedScore } from './DelayedScore';
 
-const CloverAvatar = ({ className }: { className?: string }) => {
-  const heartPath = "M12 21.05C12 21.05 1.5 14.5 1.5 8.5C1.5 4.5 4.5 1.5 8 1.5C10 1.5 11.5 2.5 12 4C12.5 2.5 14 1.5 16 1.5C20.5 1.5 22.5 4.5 22.5 8.5C22.5 14.5 12 21.05 12 21.05Z";
+export const RoyalBlackjackLogo = ({ className }: { className?: string }) => {
   return (
-    <svg viewBox="0 0 100 100" className={className}>
-      <rect width="100" height="100" fill="white" />
-      <g transform="translate(50, 50)">
-        <g><path d={heartPath} fill="#f48232" transform="scale(1.5) translate(-12, -20.5)" /></g>
-        <g transform="rotate(90)"><path d={heartPath} fill="#3baba3" transform="scale(1.5) translate(-12, -20.5)" /></g>
-        <g transform="rotate(180)"><path d={heartPath} fill="#1d66bc" transform="scale(1.5) translate(-12, -20.5)" /></g>
-        <g transform="rotate(270)"><path d={heartPath} fill="#5d318e" transform="scale(1.5) translate(-12, -20.5)" /></g>
-        <circle cx="0" cy="0" r="8" fill="black" />
+    <svg viewBox="0 0 100 100" className={className} xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <radialGradient id="rbjBgGrad" cx="50%" cy="35%" r="70%">
+          <stop offset="0%" stopColor="#1b5e3a" />
+          <stop offset="65%" stopColor="#0d311e" />
+          <stop offset="100%" stopColor="#05140c" />
+        </radialGradient>
+        <linearGradient id="rbjGoldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#fff1a8" />
+          <stop offset="35%" stopColor="#e5c158" />
+          <stop offset="70%" stopColor="#b88928" />
+          <stop offset="100%" stopColor="#f5d97e" />
+        </linearGradient>
+        <linearGradient id="rbjCardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor="#ffffff" />
+          <stop offset="100%" stopColor="#e2e8f0" />
+        </linearGradient>
+      </defs>
+
+      {/* Outer Luxury Gold Coin Rim & Deep Emerald Felt Center */}
+      <circle cx="50" cy="50" r="49" fill="url(#rbjGoldGrad)" />
+      <circle cx="50" cy="50" r="45.5" fill="url(#rbjBgGrad)" stroke="#091910" strokeWidth="1.5" />
+      <circle
+        cx="50"
+        cy="50"
+        r="41.5"
+        fill="none"
+        stroke="url(#rbjGoldGrad)"
+        strokeWidth="1"
+        strokeDasharray="3 2.5"
+        opacity="0.75"
+      />
+
+      {/* Overlapping Playing Cards Emblem (Left Card + Right Ace of Spades) */}
+      <g transform="translate(36, 56) rotate(-14)">
+        <rect
+          x="-12"
+          y="-16"
+          width="24"
+          height="32"
+          rx="3.5"
+          fill="#132a1e"
+          stroke="url(#rbjGoldGrad)"
+          strokeWidth="1.8"
+        />
+        <text
+          x="-7"
+          y="-6"
+          fill="#f5d97e"
+          fontSize="8"
+          fontWeight="900"
+          fontFamily="serif"
+        >
+          K
+        </text>
+        <path d="M0 -3 L4 3 L0 9 L-4 3 Z" fill="#e11d48" />
+      </g>
+
+      <g transform="translate(57, 56) rotate(10)">
+        <rect
+          x="-13"
+          y="-17"
+          width="26"
+          height="34"
+          rx="3.5"
+          fill="url(#rbjCardGrad)"
+          stroke="url(#rbjGoldGrad)"
+          strokeWidth="1.8"
+        />
+        {/* Spade Pip Center */}
+        <path
+          d="M0 -8 C-5 -2 -8 1 -8 4.5 C-8 7 -6 8.5 -3.8 8.5 C-2.2 8.5 -1 7.6 -0.5 6.8 L-2 11.5 L2 11.5 L0.5 6.8 C1 7.6 2.2 8.5 3.8 8.5 C6 8.5 8 7 8 4.5 C8 1 5 -2 0 -8 Z"
+          fill="#0f172a"
+        />
+      </g>
+
+      {/* Royal Crown Resting Above the Cards */}
+      <g transform="translate(50, 24)">
+        <path
+          d="M-18 8 L-21 -5 L-9 2 L0 -9 L9 2 L21 -5 L18 8 Z"
+          fill="url(#rbjGoldGrad)"
+          stroke="#422c06"
+          strokeWidth="1.2"
+          strokeLinejoin="round"
+        />
+        <rect x="-18" y="8" width="36" height="4" rx="1.5" fill="url(#rbjGoldGrad)" stroke="#422c06" strokeWidth="1" />
+        <circle cx="-21" cy="-6.5" r="2" fill="#fff1a8" />
+        <circle cx="0" cy="-11" r="2.4" fill="#fff1a8" />
+        <circle cx="21" cy="-6.5" r="2" fill="#fff1a8" />
+        <circle cx="-9" cy="10" r="1.2" fill="#dc2626" />
+        <circle cx="0" cy="10" r="1.4" fill="#10b981" />
+        <circle cx="9" cy="10" r="1.2" fill="#dc2626" />
       </g>
     </svg>
   );
@@ -26,6 +109,8 @@ const CloverAvatar = ({ className }: { className?: string }) => {
 export function DealerArea({
   houseId,
   name,
+  houseName,
+  houseAvatar,
   dealerHand,
   totalSeats,
   recentWinAmount,
@@ -34,29 +119,42 @@ export function DealerArea({
 }: {
   houseId: string;
   name: string;
+  houseName?: string;
+  houseAvatar?: string;
   dealerHand: Hand | null;
   totalSeats: number;
   recentWinAmount?: any;
   mode?: 'regular' | 'tournament';
   liquidity?: number;
 }) {
+  const [imgError, setImgError] = React.useState(false);
+  const resolvedHostName = houseName?.trim() || name.replace("'s Table", "").trim() || 'Host';
+  const displayDealerName = houseId === 'system' ? 'Royal BlackJack' : resolvedHostName;
+
   return (
-    <div className="w-full flex-[4] flex flex-col items-center justify-start min-h-[160px] sm:min-h-[200px] lg:min-h-[220px] z-10 pt-0 shadow-none">
+    <div className="w-full flex-[3] flex flex-col items-center justify-start min-h-[120px] sm:min-h-[150px] lg:min-h-[175px] [@media(max-height:520px)_and_(orientation:landscape)]:min-h-[70px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.72] [@media(max-height:520px)_and_(orientation:landscape)]:origin-top z-10 pt-0 shadow-none">
       {/* Dealer Avatar & Name */}
-      <div className="relative flex items-center justify-center gap-2 z-20 px-3 mt-3 ml-0 py-1">
-        <div id="dealer-avatar" className="w-8 h-8 sm:w-10 sm:h-10 lg:w-12 lg:h-12 rounded-full overflow-hidden border-2 border-[#1e2025] shadow-lg bg-[#2a2d36] flex flex-shrink-0 items-center justify-center relative">
+      <div className="relative flex items-center justify-center gap-2 z-20 px-3 mt-1 sm:mt-2 ml-0 py-0.5">
+        <div id="dealer-avatar" className="w-8 h-8 sm:w-10 sm:h-10 lg:w-12 lg:h-12 rounded-full overflow-hidden border-2 border-[#d4af37]/70 shadow-lg bg-[#14241b] flex flex-shrink-0 items-center justify-center relative">
           {houseId === 'system' ? (
-            <CloverAvatar className="w-full h-full object-cover z-10" />
+            <RoyalBlackjackLogo className="w-full h-full object-cover z-10" />
+          ) : houseAvatar && !imgError ? (
+            <img
+              src={houseAvatar}
+              alt={displayDealerName}
+              onError={() => setImgError(true)}
+              className="w-full h-full object-cover z-10"
+            />
           ) : (
             <div className="w-full h-full rounded-full bg-gradient-to-br from-[#3b4252] to-[#1e222b] flex items-center justify-center text-white font-bold text-sm select-none">
-              {(name || 'D').charAt(0).toUpperCase()}
+              {(displayDealerName || 'D').charAt(0).toUpperCase()}
             </div>
           )}
         </div>
         <div className="flex flex-col">
-          <span className="text-white/80 font-bold text-xs sm:text-sm tracking-wide flex items-center gap-1">
+          <span className="text-white/90 font-bold text-xs sm:text-sm tracking-wide flex items-center gap-1">
             {mode === 'tournament' && <Trophy className="w-3.5 h-3.5 text-yellow-500" />}
-            {houseId === 'system' ? 'Randseed' : name.replace("'s Table", "")}
+            {displayDealerName}
           </span>
           {mode === 'tournament' && (
              <span className="text-[10px] text-yellow-400 font-bold tracking-wider uppercase flex items-center gap-1">
@@ -76,7 +174,13 @@ export function DealerArea({
           <div className="flex relative">
             <AnimatePresence>
               {dealerHand.cards.map((c, i) => (
-                <PlayingCard key={i} card={c} index={i} globalDelayIndex={i < 2 ? i * (totalSeats + 1) + totalSeats : 0} />
+                <PlayingCard
+                  key={i}
+                  card={c}
+                  index={i}
+                  size="lg"
+                  globalDelayIndex={i < 2 ? i * (totalSeats + 1) + totalSeats : 0}
+                />
               ))}
             </AnimatePresence>
 
@@ -101,7 +205,7 @@ export function DealerArea({
           </div>
         </div>
       ) : (
-        <div className="w-[42px] h-[62px] sm:w-[56px] sm:h-[80px] md:w-[72px] md:h-[104px] lg:w-[92px] lg:h-[130px] border border-dashed border-white/10 rounded-lg opacity-20 flex items-center justify-center mt-3">
+        <div className="w-[60px] h-[88px] sm:w-[68px] sm:h-[100px] md:w-[74px] md:h-[110px] lg:w-[92px] lg:h-[130px] border border-dashed border-white/10 rounded-lg opacity-20 flex items-center justify-center mt-2.5 sm:mt-3">
         </div>
       )}
     </div>
