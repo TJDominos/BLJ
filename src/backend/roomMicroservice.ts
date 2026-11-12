@@ -20,15 +20,15 @@ import { royalBlackjackGameServer } from "./royalBlackjackRoomServer";
  */
 const port = Number(process.env.PORT) || 8080;
 const host = process.env.HOST || "0.0.0.0";
-const gameId = process.env.RANDSEED_GAME_ID || process.env.GAME_ID;
-if (!gameId) {
-  console.error("[RandSeed Wire Protocol] Missing required environment variable RANDSEED_GAME_ID or GAME_ID.");
-  process.exit(1);
-}
+const gameId =
+  process.env.RANDSEED_GAME_ID ||
+  process.env.GAME_ID ||
+  process.env.VITE_RANDSEED_GAME_ID ||
+  undefined;
 
 createGameServer(royalBlackjackGameServer, port, {
-  gameId,
+  ...(gameId ? { gameId } : {}),
   host,
 });
 
-console.log(`[RandSeed Wire Protocol] Royal BlackJack Room Server (gameId: ${gameId}) listening on http://${host}:${port}`);
+console.log(`[RandSeed Wire Protocol] Royal BlackJack Room Server (gameId: ${gameId || "dynamic"}) listening on http://${host}:${port}`);

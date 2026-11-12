@@ -5,8 +5,8 @@
     "buildDir": "dist"
   },
   "backend": {
-    "dockerfile": "Dockerfile",
-    "context": ".",
+    "runtime": "node",
+    "entrypoint": "room-server.mjs",
     "port": 8080
   },
   "runtime": {
