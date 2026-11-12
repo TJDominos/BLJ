@@ -18,7 +18,9 @@ import {
   KeyRound,
   LogOut,
   User,
-  Zap
+  Zap,
+  Loader2,
+  AlertCircle
 } from 'lucide-react';
 import { useGameStore, getRuntimeGameStats, TableSettings, TournamentSettings } from '@/store/gameStore';
 import { useUIStore, selectIsMuted } from '@/store/uiStore';
@@ -48,7 +50,10 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     setCreatorIdentity,
     verifyPublisher,
     exitPublisherMode,
-    refillGameCoins
+    refillGameCoins,
+    roomStatus,
+    roomError,
+    reconnectRoom
   } = useGameStore();
   const isMuted = useUIStore(selectIsMuted);
   const setIsMuted = useUIStore(state => state.setIsMuted);
@@ -848,7 +853,8 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
 
                 <button
                   onClick={() => setShowCreateModal(true)}
-                  className="px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-bold text-[#04120b] bg-gradient-to-b from-emerald-400 to-emerald-600 hover:from-emerald-300 hover:to-emerald-500 border border-emerald-300/40 shadow-[0_4px_14px_rgba(16,185,129,0.28)] transition-all flex items-center gap-1 sm:gap-1.5 whitespace-nowrap cursor-pointer shrink-0"
+                  disabled={roomStatus !== 'connected'}
+                  className="px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-bold text-[#04120b] bg-gradient-to-b from-emerald-400 to-emerald-600 hover:from-emerald-300 hover:to-emerald-500 disabled:opacity-45 disabled:pointer-events-none border border-emerald-300/40 shadow-[0_4px_14px_rgba(16,185,129,0.28)] transition-all flex items-center gap-1 sm:gap-1.5 whitespace-nowrap cursor-pointer shrink-0"
                 >
                   <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5]" />
                   <span>Custom Table</span>
@@ -868,7 +874,51 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
 
             {/* Tables List (Scrollbars hidden) */}
             <div className="lg:flex-1 lg:min-h-0 lg:overflow-y-auto space-y-3 sm:space-y-4 hide-scrollbar-custom">
-              {filteredRooms.map((room) => {
+              {roomStatus === 'error' || roomStatus === 'closed' ? (
+                <div className="rounded-2xl p-6 sm:p-8 border border-rose-500/35 bg-[#141b17] text-center space-y-4">
+                  <div className="w-11 h-11 rounded-full bg-rose-500/15 border border-rose-500/30 flex items-center justify-center mx-auto">
+                    <AlertCircle className="w-5 h-5 text-rose-400" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-base sm:text-lg font-bold text-white">Room Connection Failed</h3>
+                    <p className="text-xs sm:text-sm text-slate-300 max-w-md mx-auto">
+                      {roomError || 'Disconnected from the online multiplayer room server.'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => reconnectRoom()}
+                    className="px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold text-[#090d0b] bg-[#e5c158] hover:bg-[#f5d97e] transition-colors inline-flex items-center gap-2 cursor-pointer"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    <span>Retry Room Connection</span>
+                  </button>
+                </div>
+              ) : roomStatus !== 'connected' || Object.keys(tables).length === 0 ? (
+                <div className="rounded-2xl p-6 sm:p-8 border border-[#c6a364]/30 bg-[#141b17] text-center space-y-3">
+                  <Loader2 className="w-7 h-7 animate-spin text-emerald-400 mx-auto" />
+                  <h3 className="text-base sm:text-lg font-bold text-white">
+                    {roomStatus === 'reconnecting'
+                      ? 'Reconnecting to Online Room...'
+                      : roomStatus === 'matching'
+                      ? 'Matching Online Room...'
+                      : 'Connecting to Online Room...'}
+                  </h3>
+                  <p className="text-xs sm:text-sm text-slate-400">
+                    Waiting for authoritative RoomClient match & snapshot...
+                  </p>
+                </div>
+              ) : filteredRooms.length === 0 ? (
+                <div className="rounded-2xl p-6 sm:p-8 border border-white/10 bg-[#141b17] text-center space-y-2">
+                  <h3 className="text-base font-bold text-white">
+                    No Active {roomFilter === 'tournament' ? 'Tournament' : 'Regular'} Tables
+                  </h3>
+                  <p className="text-xs sm:text-sm text-slate-400">
+                    Click &ldquo;+ Custom Table&rdquo; above to host a new online table.
+                  </p>
+                </div>
+              ) : (
+                filteredRooms.map((room) => {
                 const isTournament = room.settings.mode === 'tournament';
                 const isSystemTable = room.houseId === 'system';
                 const occupiedSeats = room.seats.filter(s => s.userId !== null).length;
@@ -996,7 +1046,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                     </button>
                   </div>
                 );
-              })}
+              }))}
             </div>
           </div>
         </main>

@@ -6,12 +6,17 @@ import {
   initRandseedRuntime,
   getRandseedPlayerProfile,
   onRandseedProfileUpdate,
+  onRandseedRoomStatusChange,
   getRandseedOnlinePlayers,
   isRandseedRoomConnected,
+  getRandseedRoomStatus,
+  getRandseedRoomError,
   getRandseedRoomAllocation,
+  getRandseedRoomSnapshot,
   matchRandseedRoom,
   sendRandseedRoomAction,
   readyRandseedRoom,
+  type RoomConnectionStatus,
   type RoomPlayer,
 } from '../lib/randseedRuntime';
 
@@ -214,7 +219,9 @@ const MASKED_CARD: PlayingCard = { suit: 'spades', value: 'A', isHidden: true };
 
 // Authoritative online room state cache from RandSeed RoomClient
 let latestOnlineRoomState: Record<string, any> | null = null;
-let latestOnlineRoomId: string = 'table_1';
+let latestOnlineRoomId: string | null = null;
+let roomListenersRegistered = false;
+let loginInFlight: Promise<void> | null = null;
 
 function computeClientTableCodeHash(tableId: string, code: string): string {
   const input = `${tableId}:${code.trim()}:royal_bj_pin`;
@@ -224,48 +231,6 @@ function computeClientTableCodeHash(tableId: string, code: string): string {
     h = Math.imul(h, 16777619);
   }
   return (h >>> 0).toString(16).padStart(8, '0');
-}
-
-function createInitialPlaceholderTable(): Table {
-  return {
-    id: 'table_1',
-    name: 'Table #1',
-    description: '',
-    houseId: 'system',
-    createdAt: sessionStartedAtMs,
-    visits: 1,
-    roundsPlayed: 0,
-    liquidity: 100000,
-    initialLiquidity: 100000,
-    safeAccountAddress: '',
-    settings: {
-      name: 'Table #1',
-      description: '',
-      mode: 'regular',
-      minBet: 10,
-      maxBet: 500,
-      minBuyIn: 50,
-      secretBets: false,
-      actionTimeLimit: 20,
-      isPublic: true,
-      maxSeats: 7,
-      winningRule: 'standard',
-      order: 'seat',
-    },
-    seats: Array.from({ length: 7 }, () => ({
-      userId: null,
-      isReady: false,
-      hand: null,
-    })),
-    userBalances: {},
-    inviteLink: '/t/table_1',
-    status: 'waiting',
-    dealerHand: null,
-    deck: Array.from({ length: 312 }, () => ({ ...MASKED_CARD })),
-    discardCount: 0,
-    discardedCards: [],
-    currentTurnIndex: -1,
-  };
 }
 
 /**
@@ -631,6 +596,10 @@ function mapAllRoomTablesFromSnapshot(
   roomState: Record<string, any>,
   existingTables: Record<string, Table>
 ): Record<string, Table> {
+  if (!roomState || !Array.isArray(roomState.seats)) {
+    return {};
+  }
+
   const ownedTableCodes: Record<string, string> =
     roomState._privateState?.ownedTableCodes &&
     typeof roomState._privateState.ownedTableCodes === 'object'
@@ -872,22 +841,6 @@ function buildOnlinePlayersList(
   return Array.from(map.values());
 }
 
-async function postBackendJson<T = any>(url: string, body: Record<string, any>): Promise<T | null> {
-  if (typeof window === 'undefined') return null;
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
-}
-
 export function getRuntimeGameStats() {
   const storeState = useGameStore.getState();
   const allTables = Object.values(storeState.tables);
@@ -899,7 +852,7 @@ export function getRuntimeGameStats() {
     0
   );
 
-  const onlinePlayersCount = Math.max(1, storeState.onlinePlayers.length);
+  const onlinePlayersCount = storeState.onlinePlayers.length;
   const tokensIssued =
     Number(latestOnlineRoomState?.totalTokensIssued) || onlinePlayersCount * DEFAULT_GAME_COINS;
   const tokensPaidOut = Number(latestOnlineRoomState?.totalTokensPaidOut) || 0;
@@ -941,8 +894,11 @@ interface GameStore {
   gameRecords: GameRecord[];
   onlinePlayers: OnlinePlayerEntry[];
   unlockedTableIds: Record<string, boolean>;
+  roomStatus: RoomConnectionStatus;
+  roomError: string | null;
 
   login: (name: string, overrideUserId?: string, avatar?: string, isCreator?: boolean) => Promise<void>;
+  reconnectRoom: () => Promise<void>;
   syncStateFromServer: () => Promise<void>;
   setCreatorIdentity: (isCreator: boolean, creatorName?: string) => Promise<void>;
   verifyPublisher: () => Promise<boolean>;
@@ -974,24 +930,6 @@ interface GameStore {
   addGameRecord: (record: GameRecord) => void;
 }
 
-const SESSION_STORAGE_USER_KEY = 'royal_blackjack_player_id';
-
-function getOrPersistSessionUserId(overrideUserId?: string): string {
-  if (overrideUserId && overrideUserId.trim()) return overrideUserId.trim();
-  if (typeof window !== 'undefined') {
-    try {
-      const existing = window.sessionStorage.getItem(SESSION_STORAGE_USER_KEY);
-      if (existing && existing.trim()) return existing.trim();
-      const generated = `user_${Math.random().toString(36).slice(2, 11)}`;
-      window.sessionStorage.setItem(SESSION_STORAGE_USER_KEY, generated);
-      return generated;
-    } catch {
-      // Ignore storage access errors in restricted iframes
-    }
-  }
-  return `user_${Math.random().toString(36).slice(2, 11)}`;
-}
-
 export const useGameStore = create<GameStore>((set, get) => {
   const applyOnlineRoomSnapshot = (
     rawRoomState: Record<string, any>,
@@ -999,6 +937,10 @@ export const useGameStore = create<GameStore>((set, get) => {
     roomPlayers?: RoomPlayer[]
   ) => {
     const roomState = unwrapOnlineRoomState(rawRoomState);
+    if (!roomState || !Array.isArray(roomState.seats)) {
+      return;
+    }
+
     const sdkProfile = getRandseedPlayerProfile();
     const sdkPlayers = roomPlayers ?? getRandseedOnlinePlayers();
 
@@ -1024,7 +966,16 @@ export const useGameStore = create<GameStore>((set, get) => {
     }
 
     const current = get().currentUser;
-    const resolvedId = allocation?.playerId || current?.id || getOrPersistSessionUserId();
+    const resolvedId =
+      allocation?.playerId ||
+      (typeof roomState._privateState?.playerId === 'string' && roomState._privateState.playerId) ||
+      current?.id ||
+      '';
+
+    if (!resolvedId) {
+      return;
+    }
+
     const myRoomPlayer = sdkPlayers.find((p) => p.playerId === resolvedId);
 
     const resolvedName =
@@ -1108,216 +1059,182 @@ export const useGameStore = create<GameStore>((set, get) => {
       onlinePlayers,
       unlockedTableIds: nextUnlocked,
       activeTableId: nextActiveId,
+      roomStatus: 'connected',
+      roomError: null,
     });
   };
 
   /**
-   * Sends an authoritative player action to the online room instance:
-   * 1. Primary path: @randseed/game-sdk RoomClient (WebSocket / HTTP room host)
-   * 2. Fallback path: /api/room/:roomId/input HTTP room gateway
+   * Sends an authoritative player action exclusively through @randseed/game-sdk RoomClient.
    */
   const dispatchOnlineAction = async (actionData: Record<string, any>): Promise<boolean> => {
-    if (isRandseedRoomConnected()) {
-      const sent = await sendRandseedRoomAction(actionData);
-      if (sent) return true;
+    if (!isRandseedRoomConnected()) {
+      return false;
     }
+    return sendRandseedRoomAction(actionData);
+  };
 
-    const userId = get().currentUser?.id || getOrPersistSessionUserId();
-    const roomId = latestOnlineRoomId || 'table_1';
-    const res = await postBackendJson<{ success: boolean; data?: any }>(
-      `/api/room/${encodeURIComponent(roomId)}/input`,
-      {
-        playerId: userId,
-        data: actionData,
+  const connectAndSyncRoom = async (fallbackName = 'Player', fallbackAvatar?: string) => {
+    const res = await matchRandseedRoom(
+      (roomState, allocation, _snapshot, players) => {
+        applyOnlineRoomSnapshot(roomState, allocation, players);
+      },
+      (players) => {
+        set((state) => ({
+          onlinePlayers: buildOnlinePlayersList(
+            state.tables,
+            state.currentUser,
+            players,
+            latestOnlineRoomState
+          ),
+        }));
       }
     );
-    if (res?.success) {
-      await get().syncStateFromServer();
-      return true;
+
+    if (res?.allocation) {
+      const latestProfile = getRandseedPlayerProfile();
+      const syncName =
+        latestProfile?.displayName ||
+        get().currentUser?.name ||
+        fallbackName;
+      const syncAvatar =
+        latestProfile?.avatarUrl ||
+        get().currentUser?.avatar ||
+        fallbackAvatar;
+      if (syncName && syncName !== 'Player') {
+        sendRandseedRoomAction({
+          action: 'sync_profile',
+          name: syncName,
+          ...(syncAvatar ? { avatar: syncAvatar } : {}),
+        }).catch(() => {});
+      }
     }
-    return false;
   };
 
   return {
     currentUser: null,
-    tables: { table_1: createInitialPlaceholderTable() },
+    tables: {},
     activeTableId: null,
     gameRecords: [],
     onlinePlayers: [],
     unlockedTableIds: {},
+    roomStatus: getRandseedRoomStatus(),
+    roomError: getRandseedRoomError(),
 
-    login: async (name: string, overrideUserId?: string, avatar?: string, isCreator?: boolean) => {
-      await initRandseedRuntime().catch(() => null);
-      const sdkProfile = getRandseedPlayerProfile();
-
-      const effectiveName =
-        sdkProfile?.displayName ||
-        (name && name !== 'Player' ? name : '') ||
-        'Player';
-      const effectiveAvatar =
-        sdkProfile?.avatarUrl ||
-        avatar ||
-        undefined;
-      const urlCreatorFlag = isCreator ?? true;
-      const savedUserId = getOrPersistSessionUserId(overrideUserId);
-
-      const initialUser: User = {
-        id: savedUserId,
-        name: effectiveName,
-        avatar: effectiveAvatar,
-        balance: DEFAULT_GAME_COINS,
-        bonusBalance: 0,
-        role: urlCreatorFlag ? 'creator' : 'player',
-        isCreator: urlCreatorFlag,
-      };
-
-      set((state) => ({
-        currentUser: state.currentUser || initialUser,
-      }));
-
-      onRandseedProfileUpdate((profile) => {
-        const cur = get().currentUser;
-        if (!cur) return;
-        const nextName = profile.displayName || cur.name;
-        const nextAvatar = profile.avatarUrl || cur.avatar;
-        if (nextName === cur.name && nextAvatar === cur.avatar) return;
-        const updatedUser: User = {
-          ...cur,
-          name: nextName,
-          avatar: nextAvatar,
-        };
-        postBackendJson('/api/game/session', {
-          userId: cur.id,
-          name: nextName,
-          avatar: nextAvatar,
-          isCreator: true,
-        }).catch(() => {});
-        sendRandseedRoomAction({
-          action: 'sync_profile',
-          name: nextName,
-          ...(nextAvatar ? { avatar: nextAvatar } : {}),
-        }).catch(() => {});
-        set((state) => ({
-          currentUser: updatedUser,
-          onlinePlayers: buildOnlinePlayersList(
-            state.tables,
-            updatedUser,
-            undefined,
-            latestOnlineRoomState
-          ),
-        }));
-      });
-
-      // 1. Register session cookie / player profile with backend HTTP session if present
-      const sessionPayload = await postBackendJson<{
-        user?: User;
-        roomSnapshot?: Record<string, any>;
-      }>('/api/game/session', {
-        userId: savedUserId,
-        name: effectiveName,
-        avatar: effectiveAvatar,
-        isCreator: urlCreatorFlag,
-      });
-
-      if (sessionPayload?.roomSnapshot) {
-        applyOnlineRoomSnapshot(sessionPayload.roomSnapshot, {
-          roomId: 'table_1',
-          playerId: sessionPayload.user?.id || savedUserId,
-        });
+    login: async (name: string, _overrideUserId?: string, avatar?: string, _isCreator?: boolean) => {
+      if (loginInFlight) {
+        return loginInFlight;
       }
 
-      // 2. Connect to authoritative RandSeed RoomClient (online multiplayer WebSocket/HTTP room)
-      matchRandseedRoom(
-        (roomState, allocation, _snapshot, players) => {
-          applyOnlineRoomSnapshot(roomState, allocation, players);
-        },
-        (players) => {
-          set((state) => ({
-            onlinePlayers: buildOnlinePlayersList(
-              state.tables,
-              state.currentUser,
-              players,
-              latestOnlineRoomState
-            ),
-          }));
+      loginInFlight = (async () => {
+        if (!roomListenersRegistered) {
+          roomListenersRegistered = true;
+
+          onRandseedRoomStatusChange((status, error) => {
+            set({ roomStatus: status, roomError: error });
+          });
+
+          onRandseedProfileUpdate((profile) => {
+            const cur = get().currentUser;
+            const nextName = profile.displayName || cur?.name || 'Player';
+            const nextAvatar = profile.avatarUrl || cur?.avatar;
+            if (isRandseedRoomConnected()) {
+              sendRandseedRoomAction({
+                action: 'sync_profile',
+                name: nextName,
+                ...(nextAvatar ? { avatar: nextAvatar } : {}),
+              }).catch(() => {});
+            }
+            if (!cur) return;
+            if (nextName === cur.name && nextAvatar === cur.avatar) return;
+            const updatedUser: User = {
+              ...cur,
+              name: nextName,
+              avatar: nextAvatar,
+            };
+            set((state) => ({
+              currentUser: updatedUser,
+              onlinePlayers: buildOnlinePlayersList(
+                state.tables,
+                updatedUser,
+                undefined,
+                latestOnlineRoomState
+              ),
+            }));
+          });
         }
-      )
-        .then((res) => {
-          if (res?.allocation) {
-            const latestProfile = getRandseedPlayerProfile();
-            const syncName =
-              latestProfile?.displayName ||
-              get().currentUser?.name ||
-              effectiveName;
-            const syncAvatar =
-              latestProfile?.avatarUrl ||
-              get().currentUser?.avatar ||
-              effectiveAvatar;
-            sendRandseedRoomAction({
-              action: 'sync_profile',
-              name: syncName,
-              ...(syncAvatar ? { avatar: syncAvatar } : {}),
-            }).catch(() => {});
-          }
-        })
-        .catch(() => {});
+
+        await initRandseedRuntime().catch(() => null);
+        const sdkProfile = getRandseedPlayerProfile();
+        const effectiveName =
+          sdkProfile?.displayName ||
+          (name && name !== 'Player' ? name : '') ||
+          'Player';
+        const effectiveAvatar =
+          sdkProfile?.avatarUrl ||
+          avatar ||
+          undefined;
+
+        await connectAndSyncRoom(effectiveName, effectiveAvatar);
+      })().finally(() => {
+        loginInFlight = null;
+      });
+
+      return loginInFlight;
+    },
+
+    reconnectRoom: async () => {
+      const sdkProfile = getRandseedPlayerProfile();
+      const cur = get().currentUser;
+      await connectAndSyncRoom(
+        sdkProfile?.displayName || cur?.name || 'Player',
+        sdkProfile?.avatarUrl || cur?.avatar
+      );
     },
 
     syncStateFromServer: async () => {
-      const userId = get().currentUser?.id || getOrPersistSessionUserId();
-      const roomId = latestOnlineRoomId || 'table_1';
+      const status = getRandseedRoomStatus();
+      const error = getRandseedRoomError();
+      const allocation = getRandseedRoomAllocation();
+      const snapshot = getRandseedRoomSnapshot();
 
-      if (typeof window !== 'undefined') {
-        try {
-          const res = await fetch(
-            `/api/room/${encodeURIComponent(roomId)}/state?playerId=${encodeURIComponent(userId)}`,
-            {
-              credentials: 'same-origin',
-              cache: 'no-store',
-            }
-          );
-          if (res.ok) {
-            const payload = await res.json();
-            const snap = payload?.data;
-            if (snap?.state) {
-              applyOnlineRoomSnapshot(
-                snap.state,
-                { roomId, playerId: userId },
-                Array.isArray(snap.players) ? snap.players : undefined
-              );
-              return;
-            }
-          }
-        } catch {
-          // Ignore network error when running purely on RandSeed RoomClient WebSocket
-        }
+      if (status !== get().roomStatus || error !== get().roomError) {
+        set({ roomStatus: status, roomError: error });
       }
 
-      if (isRandseedRoomConnected() && latestOnlineRoomState) {
-        applyOnlineRoomSnapshot(latestOnlineRoomState, getRandseedRoomAllocation());
+      if (
+        !isRandseedRoomConnected() ||
+        !allocation?.roomId ||
+        !allocation?.playerId ||
+        !snapshot?.state ||
+        typeof snapshot.state !== 'object' ||
+        Array.isArray(snapshot.state)
+      ) {
+        return;
       }
+
+      const players = getRandseedOnlinePlayers();
+      applyOnlineRoomSnapshot(
+        snapshot.state as Record<string, any>,
+        allocation,
+        players
+      );
     },
 
     setCreatorIdentity: async (isCreator: boolean, creatorName?: string) => {
       const current = get().currentUser;
-      const userId = current?.id || getOrPersistSessionUserId();
+      if (!current) return;
       if (isCreator) {
-        const nextName = creatorName || current?.name || 'Creator';
+        const nextName = creatorName || current.name || 'Creator';
         await dispatchOnlineAction({
           action: 'sync_profile',
           name: nextName,
-          ...(current?.avatar ? { avatar: current.avatar } : {}),
+          ...(current.avatar ? { avatar: current.avatar } : {}),
         });
         set((state) => ({
           currentUser: state.currentUser
             ? { ...state.currentUser, name: nextName, role: 'creator', isCreator: true }
-            : {
-                id: userId,
-                name: nextName,
-                balance: DEFAULT_GAME_COINS,
-                role: 'creator',
-                isCreator: true,
-              },
+            : null,
         }));
       } else {
         get().exitPublisherMode();
@@ -1499,10 +1416,10 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     refillGameCoins: async (tableId) => {
-      const targetTableId = tableId || get().activeTableId || 'table_1';
+      const targetTableId = tableId || get().activeTableId || Object.keys(get().tables)[0];
       await dispatchOnlineAction({
         action: 'claim_refill',
-        tableId: targetTableId,
+        ...(targetTableId ? { tableId: targetTableId } : {}),
       });
     },
 

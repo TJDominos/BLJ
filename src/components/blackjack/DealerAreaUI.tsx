@@ -132,10 +132,10 @@ export function DealerArea({
   const displayDealerName = houseId === 'system' ? 'Royal BlackJack' : resolvedHostName;
 
   return (
-    <div className="w-full flex-[3] flex flex-col items-center justify-start min-h-[120px] sm:min-h-[150px] lg:min-h-[175px] [@media(max-height:520px)_and_(orientation:landscape)]:min-h-[70px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.72] [@media(max-height:520px)_and_(orientation:landscape)]:origin-top z-10 pt-0 shadow-none">
+    <div className="w-full flex-[3] flex flex-col items-center justify-start min-h-[108px] sm:min-h-[128px] lg:min-h-[145px] [@media(max-height:740px)]:min-h-[100px] [@media(max-height:740px)]:scale-[0.86] [@media(max-height:740px)]:origin-top [@media(max-height:520px)_and_(orientation:landscape)]:min-h-[68px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.72] [@media(max-height:520px)_and_(orientation:landscape)]:origin-top z-10 pt-0 shadow-none">
       {/* Dealer Avatar & Name */}
-      <div className="relative flex items-center justify-center gap-2 z-20 px-3 mt-1 sm:mt-2 ml-0 py-0.5">
-        <div id="dealer-avatar" className="w-8 h-8 sm:w-10 sm:h-10 lg:w-12 lg:h-12 rounded-full overflow-hidden border-2 border-[#d4af37]/70 shadow-lg bg-[#14241b] flex flex-shrink-0 items-center justify-center relative">
+      <div className="relative flex items-center justify-center gap-2 z-20 px-3 mt-1 sm:mt-1.5 ml-0 py-0.5">
+        <div id="dealer-avatar" className="w-8 h-8 sm:w-9 sm:h-9 lg:w-10 lg:h-10 rounded-full overflow-hidden border-2 border-[#d4af37]/70 shadow-lg bg-[#14241b] flex flex-shrink-0 items-center justify-center relative">
           {houseId === 'system' ? (
             <RoyalBlackjackLogo className="w-full h-full object-cover z-10" />
           ) : houseAvatar && !imgError ? (
@@ -170,7 +170,7 @@ export function DealerArea({
       </div>
 
       {dealerHand ? (
-        <div className="flex flex-col items-center gap-2 mt-2 sm:mt-3 relative z-30">
+        <div className="flex flex-col items-center gap-2 mt-1.5 sm:mt-2 relative z-30">
           <div className="flex relative">
             <AnimatePresence>
               {dealerHand.cards.map((c, i) => (
@@ -205,7 +205,7 @@ export function DealerArea({
           </div>
         </div>
       ) : (
-        <div className="w-[60px] h-[88px] sm:w-[68px] sm:h-[100px] md:w-[74px] md:h-[110px] lg:w-[92px] lg:h-[130px] border border-dashed border-white/10 rounded-lg opacity-20 flex items-center justify-center mt-2.5 sm:mt-3">
+        <div className="w-[56px] h-[82px] sm:w-[64px] sm:h-[94px] md:w-[70px] md:h-[102px] lg:w-[80px] lg:h-[116px] border border-dashed border-white/10 rounded-lg opacity-20 flex items-center justify-center mt-2">
         </div>
       )}
     </div>

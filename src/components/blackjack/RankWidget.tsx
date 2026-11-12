@@ -236,14 +236,14 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
     <>
       {/* Floating My Stats Trigger Button */}
       {!hideFloatingTrigger && (
-        <div className="fixed right-0 top-1/2 -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
+        <div className="fixed right-0 top-[56%] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
           <button
             type="button"
             onClick={handleOpen}
             title="My Stats"
-            className="bg-zinc-950 border-y-2 border-l-2 border-[#d4af37] rounded-l-2xl p-2.5 md:p-3 pr-3 md:pr-4 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:-translate-x-1 cursor-pointer flex flex-col items-center group relative"
+            className="bg-zinc-950 border-y-2 border-l-2 border-[#d4af37] rounded-l-2xl p-2 md:p-2.5 pr-2.5 md:pr-3.5 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:-translate-x-1 cursor-pointer flex flex-col items-center group relative"
           >
-            <User className="w-5 h-5 md:w-6 md:h-6 text-[#ffd86b] group-hover:scale-110 transition-transform" />
+            <User className="w-4 h-4 md:w-5 md:h-5 text-[#ffd86b] group-hover:scale-110 transition-transform" />
             <span className="text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">
               Stats
             </span>

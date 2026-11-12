@@ -706,14 +706,14 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
       <RankWidget onOpenChange={setIsStatsOpen} />
 
       {/* Floating Play Board Trigger Button & Sidebar (Left Side - Top) */}
-      <div className="fixed left-0 top-[calc(50%-2.5rem)] md:top-[calc(50%-3.5rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
+      <div className="fixed left-0 top-[calc(52%-2rem)] md:top-[calc(52%-2.4rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
         <button
           type="button"
           onClick={() => setIsTablePlayersOpen(true)}
           title="Play Board (Table Record & My Record)"
-          className="bg-zinc-950 border-y-2 border-r-2 border-[#d4af37] rounded-r-2xl p-2.5 md:p-3 pl-3 md:pl-4 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:translate-x-1 cursor-pointer flex flex-col items-center group relative"
+          className="bg-zinc-950 border-y-2 border-r-2 border-[#d4af37] rounded-r-2xl p-2 md:p-2.5 pl-2.5 md:pl-3.5 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:translate-x-1 cursor-pointer flex flex-col items-center group relative"
         >
-          <Crown className="w-5 h-5 md:w-6 md:h-6 text-[#ffd86b] group-hover:scale-110 transition-transform" />
+          <Crown className="w-4 h-4 md:w-5 md:h-5 text-[#ffd86b] group-hover:scale-110 transition-transform" />
           <span className="text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">
             Board
           </span>
@@ -727,15 +727,15 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
       />
 
       {/* Floating Table List (Lobby Sidebar) Trigger Button (Left Side - Bottom) */}
-      <div className="fixed left-0 top-[calc(50%+2.5rem)] md:top-[calc(50%+3.5rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
+      <div className="fixed left-0 top-[calc(52%+2.2rem)] md:top-[calc(52%+2.6rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
         <button
           type="button"
           onClick={() => onToggleSidebar && onToggleSidebar()}
           title="Tables Lobby"
-          className="bg-zinc-950 border-y-2 border-r-2 border-[#d4af37] rounded-r-2xl p-2.5 md:p-3 pl-3 md:pl-4 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:translate-x-1 cursor-pointer flex flex-col items-center group relative"
+          className="bg-zinc-950 border-y-2 border-r-2 border-[#d4af37] rounded-r-2xl p-2 md:p-2.5 pl-2.5 md:pl-3.5 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:translate-x-1 cursor-pointer flex flex-col items-center group relative"
         >
           <div className="relative">
-            <Menu className="w-5 h-5 md:w-6 md:h-6 text-[#ffd86b] group-hover:scale-110 transition-transform" />
+            <Menu className="w-4 h-4 md:w-5 md:h-5 text-[#ffd86b] group-hover:scale-110 transition-transform" />
           </div>
           <span className="text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">
             Tables
@@ -744,7 +744,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
       </div>
 
       {/* Top Header Bar: Exit button on left, centered Balance & Host Tables pill in middle, spacer on right */}
-      <div className="w-full max-w-[1024px] flex items-center justify-between gap-1.5 sm:gap-3 z-40 px-2 sm:px-4 pt-2.5 sm:pt-3 md:pt-4 pb-0.5 relative pointer-events-none shrink-0">
+      <div className="w-full max-w-[1200px] flex items-center justify-between gap-1.5 sm:gap-3 z-40 px-2 sm:px-4 pt-2 sm:pt-2.5 md:pt-3 [@media(max-height:740px)]:pt-1.5 pb-0.5 relative pointer-events-none shrink-0">
         <button
           onClick={() => onNavigate('lobby')}
           className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 flex items-center justify-center text-white/80 hover:text-white rounded-full bg-black/50 hover:bg-black/70 border border-white/20 backdrop-blur-md transition-all cursor-pointer pointer-events-auto shadow-lg shrink-0"
@@ -1018,7 +1018,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
              )}
            </AnimatePresence>
 
-      <div className="flex-1 w-full max-w-[1024px] flex flex-col items-center justify-between pb-0 pt-0 mt-0 ml-0 relative min-h-0 overflow-hidden origin-center">
+      <div className="flex-1 w-full max-w-[1200px] flex flex-col items-center justify-between pb-0 pt-0 mt-0 ml-0 relative min-h-0 overflow-hidden origin-center">
 
 <AnimatePresence>
              {isShuffling && (
@@ -1093,7 +1093,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            />
 
            {/* Base curved lines decoration */}
-           <div className="absolute top-[29%] sm:top-[32%] [@media(max-height:520px)_and_(orientation:landscape)]:top-[26%] left-0 right-0 bottom-0 w-full overflow-hidden pointer-events-none flex justify-center items-start z-0 mt-[14px] sm:mt-[20px] md:mt-[24px] [@media(max-height:520px)_and_(orientation:landscape)]:mt-[6px]">
+           <div className="absolute top-[27%] sm:top-[29%] [@media(max-height:740px)]:top-[25%] [@media(max-height:520px)_and_(orientation:landscape)]:top-[24%] left-0 right-0 bottom-0 w-full overflow-hidden pointer-events-none flex justify-center items-start z-0 mt-[10px] sm:mt-[14px] md:mt-[18px] [@media(max-height:740px)]:mt-[8px] [@media(max-height:520px)_and_(orientation:landscape)]:mt-[4px]">
              {/* Outer golden line */}
              <div className="w-[240%] sm:w-[140%] md:w-[110%] aspect-[2/1] border-t-[8px] sm:border-t-[10px] border-[#c6a364] opacity-70 rounded-[100%] absolute top-0 shadow-[0_-2px_4px_rgba(0,0,0,0.8),inset_0_2px_2px_rgba(255,255,255,0.3)]"></div>
              {/* Inner thin golden line */}
@@ -1103,7 +1103,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            </div>
 
            {/* Game Rules Center Area */}
-           <div className="absolute top-[38%] sm:top-[40%] [@media(max-height:520px)_and_(orientation:landscape)]:top-[34%] mt-4 [@media(max-height:520px)_and_(orientation:landscape)]:mt-1 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 px-2 sm:px-4 whitespace-nowrap scale-[0.6] sm:scale-[0.8] md:scale-100 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.55] flex flex-col items-center gap-1 sm:gap-1.5 pointer-events-none">
+           <div className="absolute top-[35%] sm:top-[37%] [@media(max-height:740px)]:top-[33%] [@media(max-height:520px)_and_(orientation:landscape)]:top-[31%] mt-2 [@media(max-height:520px)_and_(orientation:landscape)]:mt-0.5 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 px-2 sm:px-4 whitespace-nowrap scale-[0.6] sm:scale-[0.8] md:scale-95 [@media(max-height:740px)]:scale-[0.82] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.55] flex flex-col items-center gap-1 sm:gap-1.5 pointer-events-none">
               <span className="text-[#c6a364] text-[11px] md:text-[16px] font-black tracking-[0.3em] uppercase opacity-90" style={{ textShadow: '0px 1px 1px rgba(0,0,0,1), 0px -1px 1px rgba(0,0,0,0.8), 0px 0px 3px rgba(176,142,85,0.4)' }}>
                 Blackjack Pays 3 to 2
               </span>
@@ -1164,8 +1164,8 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            </div>
 
            {/* Discard Pile (Left Top) */}
-           <div className="absolute top-[52px] left-2 sm:top-[58px] sm:left-8 lg:top-14 lg:left-16 [@media(max-height:520px)_and_(orientation:landscape)]:top-[36px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.65] [@media(max-height:520px)_and_(orientation:landscape)]:origin-top flex flex-col items-center pointer-events-auto cursor-pointer group" onClick={() => setShowDiscardStats(!showDiscardStats)}>
-             <div className="relative w-[40px] h-[60px] sm:w-[56px] sm:h-[80px] md:w-[72px] md:h-[104px] lg:w-[92px] lg:h-[130px] group-hover:scale-105 transition-transform duration-200 z-30">
+           <div className="absolute top-[42px] left-2 sm:top-[44px] sm:left-12 lg:top-8 lg:left-16 [@media(max-height:740px)]:top-4 [@media(max-height:740px)]:scale-[0.78] [@media(max-height:740px)]:origin-top [@media(max-height:520px)_and_(orientation:landscape)]:top-[28px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.65] [@media(max-height:520px)_and_(orientation:landscape)]:origin-top flex flex-col items-center pointer-events-auto cursor-pointer group" onClick={() => setShowDiscardStats(!showDiscardStats)}>
+             <div className="relative w-[40px] h-[60px] sm:w-[52px] sm:h-[76px] md:w-[64px] md:h-[92px] lg:w-[76px] lg:h-[110px] group-hover:scale-105 transition-transform duration-200 z-30">
                {table.discardCount > 0 ? (
                  <div className="absolute inset-0 rounded-[6px] md:rounded-[8px] flex items-center justify-center overflow-hidden shadow-lg bg-[url('/discard.png')] bg-contain bg-center bg-no-repeat bg-[#2c2b2a]/80">
                    <span className="text-white/80 text-xl font-mono leading-none z-10">{table.discardCount}</span>
@@ -1231,8 +1231,8 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            </div>
 
            {/* Shoe / Deck (Right Top) */}
-           <div className="absolute top-[52px] right-2 sm:top-[58px] sm:right-8 lg:top-14 lg:right-16 [@media(max-height:520px)_and_(orientation:landscape)]:top-[36px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.65] [@media(max-height:520px)_and_(orientation:landscape)]:origin-top z-10 flex flex-col items-center gap-2 pointer-events-none">
-             <div className="relative w-[40px] h-[60px] sm:w-[56px] sm:h-[80px] md:w-[72px] md:h-[104px] lg:w-[92px] lg:h-[130px]">
+           <div className="absolute top-[42px] right-2 sm:top-[44px] sm:right-12 lg:top-8 lg:right-16 [@media(max-height:740px)]:top-4 [@media(max-height:740px)]:scale-[0.78] [@media(max-height:740px)]:origin-top [@media(max-height:520px)_and_(orientation:landscape)]:top-[28px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.65] [@media(max-height:520px)_and_(orientation:landscape)]:origin-top z-10 flex flex-col items-center gap-1.5 pointer-events-none">
+             <div className="relative w-[40px] h-[60px] sm:w-[52px] sm:h-[76px] md:w-[64px] md:h-[92px] lg:w-[76px] lg:h-[110px]">
                {Array.from({ length: 12 }).map((_, i) => (
                  <div key={i} className={cn("absolute inset-0 rounded-lg shadow-sm border", i === 3 ? "bg-red-600 border-red-700" : "bg-white border-gray-300")} style={{ transform: `translate(${-i * 1.5}px, ${-i * 1.5}px)` }}>
                      {i === 11 && (
@@ -1247,14 +1247,23 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                  </div>
                ))}
              </div>
-             <span className="bg-black/40 text-[#ffc53d] text-[10px] uppercase font-black tracking-widest px-2 py-0.5 rounded shadow-sm border border-[#ffc53d]/20 mt-2">6 Decks</span>
+             <span className="bg-black/40 text-[#ffc53d] text-[10px] uppercase font-black tracking-widest px-2 py-0.5 rounded shadow-sm border border-[#ffc53d]/20 mt-1">6 Decks</span>
            </div>
 
            {/* Player Area */}
-           <div className="w-full flex-[7] flex flex-col items-center justify-end relative z-20 mt-0 mb-0">
+           <div className="w-full flex-[7] min-h-0 flex flex-col items-center justify-end relative z-20 mt-0 mb-0">
              
-             <div className="relative w-full z-10 flex items-end justify-center group/seats h-full max-h-full">
-               <div ref={seatsContainerRef} className={cn("flex w-full md:w-[94%] max-w-[964px] mx-auto h-full md:h-[480px] max-h-full pt-[10px] sm:pt-[18px] md:pt-[32px] mt-auto mb-[6px] sm:mb-[10px] md:mb-[16px] pb-[124px] sm:pb-[144px] md:pb-[152px] [@media(max-height:520px)_and_(orientation:landscape)]:!h-auto [@media(max-height:520px)_and_(orientation:landscape)]:!pt-[4px] [@media(max-height:520px)_and_(orientation:landscape)]:!pb-[58px] [@media(max-height:520px)_and_(orientation:landscape)]:!mb-0 justify-start gap-[2%] sm:gap-[1%] items-end px-[4%] md:px-0 z-10 transition-transform duration-300 overflow-x-auto md:overflow-visible snap-x snap-mandatory md:snap-none hide-scrollbar-custom")}>
+             <div className="relative w-full z-10 flex items-end justify-center group/seats h-full max-h-full min-h-0">
+               <div
+                 ref={seatsContainerRef}
+                 className={cn(
+                   "flex w-full md:w-[94%] max-w-[1040px] mx-auto h-full max-h-[420px] min-h-0 pt-[8px] sm:pt-[14px] md:pt-[20px] mt-auto mb-0",
+                   sideBetsEnabled
+                     ? "pb-[118px] sm:pb-[130px] md:pb-[136px] [@media(max-height:740px)]:pb-[112px]"
+                     : "pb-[66px] sm:pb-[74px] md:pb-[78px] [@media(max-height:740px)]:pb-[62px]",
+                   "[@media(max-height:520px)_and_(orientation:landscape)]:!h-auto [@media(max-height:520px)_and_(orientation:landscape)]:!pt-[4px] [@media(max-height:520px)_and_(orientation:landscape)]:!pb-[54px] [@media(max-height:520px)_and_(orientation:landscape)]:!mb-0 justify-start gap-[2%] sm:gap-[1%] items-end px-[4%] md:px-0 z-10 transition-all duration-300 overflow-x-auto md:overflow-visible snap-x snap-mandatory md:snap-none hide-scrollbar-custom"
+                 )}
+               >
                  <style>{`.hide-scrollbar-custom::-webkit-scrollbar { display: none; }`}</style>
                  {table.seats.map((seat, seatIdx) => {
                      const isThisSeatTurn = table.status === 'playing' && table.currentTurnIndex === seatIdx;
@@ -1290,7 +1299,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                    // if (isEmptyInPlaying) return null;
   
                    return (
-                     <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-[8px] sm:pt-[14px] md:pt-[20px] pb-[74px] sm:pb-[86px] md:pb-[96px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[215px] sm:h-[250px] md:h-[285px] [@media(max-height:520px)_and_(orientation:landscape)]:!h-[155px] [@media(max-height:520px)_and_(orientation:landscape)]:!pt-[4px] [@media(max-height:520px)_and_(orientation:landscape)]:!pb-[52px] rounded-[16px] sm:rounded-[24px] min-w-[31%] max-w-[31%] md:min-w-[13.5%] md:max-w-[13.5%] shrink-0 snap-center mx-auto", isThisSeatTurn ? "scale-105 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent"))}>
+                     <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-[6px] sm:pt-[10px] md:pt-[14px] pb-[64px] sm:pb-[74px] md:pb-[82px] [@media(max-height:740px)]:!pb-[64px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[200px] sm:h-[230px] md:h-[255px] [@media(max-height:740px)]:!h-[195px] [@media(max-height:520px)_and_(orientation:landscape)]:!h-[150px] [@media(max-height:520px)_and_(orientation:landscape)]:!pt-[4px] [@media(max-height:520px)_and_(orientation:landscape)]:!pb-[50px] rounded-[16px] sm:rounded-[24px] min-w-[31%] max-w-[31%] md:min-w-[13.5%] md:max-w-[13.5%] shrink-0 snap-center mx-auto", isThisSeatTurn ? "scale-105 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent"))}>
                      
                      {/* YOU indicator label for played cards */}
 
@@ -1449,8 +1458,8 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                  );
                })}
              </div>
-             {/* Left/Right seat scroll indicators (visible on mobile/tablet or when seats scroll) */}
-             <div className="absolute left-1.5 right-1.5 sm:left-3 sm:right-3 bottom-[134px] sm:bottom-[154px] md:bottom-[168px] [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-[42px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-75 flex justify-between pointer-events-none z-30">
+             {/* Left/Right seat scroll indicators (mobile only where seats overflow horizontally) */}
+             <div className="md:hidden absolute left-1.5 right-1.5 sm:left-3 sm:right-3 bottom-[84px] sm:bottom-[94px] [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-[42px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-75 flex justify-between pointer-events-none z-30">
                 <button
                   type="button"
                   onClick={() => scrollSeats('left')}
@@ -1498,12 +1507,12 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
               onSideBetsToggle={() => setSideBetsEnabled(!sideBetsEnabled)}
               autoDeal={autoDeal}
               onAutoDealToggle={() => setAutoDeal(!autoDeal)}
-              className="absolute bottom-2 [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-0.5 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.78] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom w-full flex flex-col items-center z-[80] px-4 pointer-events-none"
+              className="absolute bottom-2 [@media(max-height:740px)]:bottom-1.5 [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-0.5 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.78] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom w-full flex flex-col items-center z-[80] px-4 pointer-events-none"
             />
          )}
 
          {table.status === 'playing' && isMyTurn && isActiveTurnDealRevealed && !isSidebarOpen && !isTablePlayersOpen && !isStatsOpen && (
-           <div className="absolute bottom-2 [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-0.5 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.78] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom w-full flex flex-col items-center z-[80] px-4 pointer-events-none">
+           <div className="absolute bottom-2 [@media(max-height:740px)]:bottom-1.5 [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-0.5 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.78] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom w-full flex flex-col items-center z-[80] px-4 pointer-events-none">
              <ActiveTurnHUD 
                tableId={table.id}
                activeSeatIndex={activeSeatIndex}
@@ -1513,24 +1522,17 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
              />
            </div>
          )}
-       </div>
 
-           {/* Bottom Bar: RTP */}
-           <div className="w-full max-w-[1024px] flex justify-center text-[10px] sm:text-[11px] font-bold tracking-wide pt-1 pb-[calc(env(safe-area-inset-bottom)+0.25rem)] z-20 relative bg-black shrink-0 border-t border-white/10">
-             <div className="flex items-center gap-4 sm:gap-6 px-4 pb-0.5">
-               <button onClick={() => setShowRules(true)} className="hover:text-white text-[#ffc53d] transition-colors uppercase cursor-pointer border-b border-[#ffc53d]/50 hover:border-[#ffc53d] pb-0.5 flex items-center gap-1.5 px-2 bg-[#ffc53d]/10 rounded-sm">
-                  <span className="drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">RTP {calculateBaseRTP(table.settings.winningRule)}</span>
-               </button>
-               <div className="w-1.5 h-1.5 rounded-full bg-white/40"></div>
-               <div className="flex items-center gap-2 text-white/90 drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)] pointer-events-none">
-                 <span className="relative flex h-2 w-2">
-                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500 shadow-[0_0_5px_rgba(52,211,153,0.8)]"></span>
-                 </span>
-                 <span className="text-white drop-shadow-sm font-semibold">On-Chain Randomness</span>
-               </div>
-             </div>
-           </div>
+         {/* Bottom-Right Payout Rate / Rules Trigger */}
+         <button
+           type="button"
+           onClick={() => setShowRules(true)}
+           title="View Payout Rate & Table Rules"
+           className="absolute bottom-2.5 right-2.5 sm:bottom-3 sm:right-4 z-[85] pointer-events-auto flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-black/55 hover:bg-black/80 border border-[#ffc53d]/35 hover:border-[#ffc53d] text-[#ffc53d] hover:text-white text-[10px] sm:text-[11px] font-bold tracking-wider uppercase backdrop-blur-md shadow-[0_2px_10px_rgba(0,0,0,0.6)] transition-all cursor-pointer"
+         >
+           <span className="drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">RTP {calculateBaseRTP(table.settings.winningRule)}</span>
+         </button>
+       </div>
 
     </div>
   );

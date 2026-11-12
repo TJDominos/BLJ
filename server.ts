@@ -434,11 +434,39 @@ async function startServer() {
     });
   });
 
+  // Background tick loop for active rooms with connected WebSocket clients in local dev
+  setInterval(async () => {
+    for (const inst of hostedRoomInstances.values()) {
+      if (inst.sockets.size === 0) continue;
+      try {
+        inst.tick += 1;
+        const tickRes = await royalBlackjackGameServer.tick(
+          {
+            tick: inst.tick,
+            elapsedSeconds: inst.tick / 5,
+            inputs: [],
+          },
+          inst.state
+        );
+        inst.state = tickRes.state;
+        inst.broadcasts = tickRes.broadcasts || [];
+        inst.gameResult = await royalBlackjackGameServer.isGameOver(inst.state);
+        broadcastRoomSnapshot(inst);
+      } catch {
+        // Ignore background tick error
+      }
+    }
+  }, 1000);
+
   app.post("/api/match", async (req, res) => {
     try {
       const resolved = resolveAuthenticatedPlatformPlayer(req);
       const playerId = resolved.playerId;
-      const roomId = typeof req.body?.roomId === "string" && req.body.roomId ? req.body.roomId : "table_1";
+      const roomId = typeof req.body?.roomId === "string" && req.body.roomId ? req.body.roomId : "room_main";
+      res.setHeader(
+        "Set-Cookie",
+        `rs_player_id=${encodeURIComponent(playerId)}; Path=/; SameSite=Lax`
+      );
       getOrCreateUser(playerId, resolved.name || "Player", Boolean(resolved.isCreator), resolved.avatar);
       await getOrCreateHostedRoom(roomId, playerId);
       res.json({

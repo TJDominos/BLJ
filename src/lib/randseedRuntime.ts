@@ -14,7 +14,7 @@ import {
 import { useUIStore } from "@/store/uiStore";
 import { soundManager } from "@/lib/sounds";
 
-export type { RoomPlayer, RuntimePlayerProfile };
+export type { RoomConnectionStatus, RoomMatch, RoomPlayer, RoomSnapshot, RuntimePlayerProfile };
 
 export const DESIGN_VIEWPORT_WIDTH = MAX_RUNTIME_FRAME_WIDTH; // 1280
 export const DESIGN_VIEWPORT_HEIGHT = 720;
@@ -26,6 +26,7 @@ export const GAME_SLUG = "royal-blackjack";
 let runtimeClientInstance: RuntimeClient | null = null;
 let roomClientInstance: RoomClient | null = null;
 let roomConnectionStatus: RoomConnectionStatus = "idle";
+let roomConnectionError: string | null = null;
 let cachedPlayerProfile: RuntimePlayerProfile | null = null;
 let cachedRoomPlayers: RoomPlayer[] = [];
 
@@ -40,6 +41,29 @@ let snapshotListener:
 
 let playersChangedListener: ((players: RoomPlayer[]) => void) | null = null;
 let profileListeners: Array<(profile: RuntimePlayerProfile) => void> = [];
+let statusListeners: Array<(status: RoomConnectionStatus, error: string | null) => void> = [];
+
+function notifyRoomStatusChange(nextStatus: RoomConnectionStatus, errorMessage: string | null = null) {
+  roomConnectionStatus = nextStatus;
+  if (nextStatus === "connected" || nextStatus === "matching" || nextStatus === "connecting") {
+    roomConnectionError = null;
+  } else if (errorMessage !== null) {
+    roomConnectionError = errorMessage;
+  }
+  for (const listener of statusListeners) {
+    listener(roomConnectionStatus, roomConnectionError);
+  }
+}
+
+export function onRandseedRoomStatusChange(
+  listener: (status: RoomConnectionStatus, error: string | null) => void
+): () => void {
+  statusListeners.push(listener);
+  listener(getRandseedRoomStatus(), roomConnectionError);
+  return () => {
+    statusListeners = statusListeners.filter((l) => l !== listener);
+  };
+}
 
 function readSafeRoomPlayers(room: RoomClient | null, snapshot?: RoomSnapshot): RoomPlayer[] {
   if (room) {
@@ -142,6 +166,10 @@ export function getRandseedRoomStatus(): RoomConnectionStatus {
   return roomClientInstance?.status ?? roomConnectionStatus;
 }
 
+export function getRandseedRoomError(): string | null {
+  return roomConnectionError;
+}
+
 export function getRandseedRoomAllocation(): RoomMatch | undefined {
   return roomClientInstance?.allocation;
 }
@@ -181,10 +209,10 @@ export async function matchRandseedRoom(
       roomClientInstance = new RoomClient({
         baseUrl,
         onStatusChange: (nextStatus) => {
-          roomConnectionStatus = nextStatus;
+          notifyRoomStatusChange(nextStatus);
         },
-        onError: () => {
-          roomConnectionStatus = "error";
+        onError: (err) => {
+          notifyRoomStatusChange("error", err?.message || "Failed to connect to the online room.");
         },
         onPlayersChanged: (players) => {
           if (Array.isArray(players)) {
@@ -219,6 +247,7 @@ export async function matchRandseedRoom(
     roomClientInstance.warm().catch(() => {});
 
     const snapshot = await roomClientInstance.connect();
+    notifyRoomStatusChange("connected", null);
     const players = readSafeRoomPlayers(roomClientInstance, snapshot);
     if (playersChangedListener && Array.isArray(players)) {
       playersChangedListener(players);
@@ -236,8 +265,11 @@ export async function matchRandseedRoom(
       snapshot,
       players,
     };
-  } catch {
-    // Fallback when running outside of WebSocket Room gateway
+  } catch (err: any) {
+    notifyRoomStatusChange(
+      roomClientInstance?.status === "closed" ? "closed" : "error",
+      err?.message || "Unable to connect to the online room."
+    );
     return null;
   }
 }

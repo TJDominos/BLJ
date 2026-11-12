@@ -75,21 +75,24 @@ function GameLayout() {
   }, []);
 
   useEffect(() => {
-    if (!currentUser) {
-      login('Player');
-    }
-  }, [currentUser, login]);
+    login('Player');
+  }, [login]);
 
-  // Real-time table state synchronization across multiple players/tabs
+  // Re-sync from existing RoomClient snapshot when tab regains focus/visibility
   useEffect(() => {
-    if (!currentUser?.id) return;
-    const interval = setInterval(() => {
-      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+    if (typeof document === 'undefined' || typeof window === 'undefined') return;
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
         syncStateFromServer();
       }
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [currentUser?.id, syncStateFromServer]);
+    };
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+    };
+  }, [syncStateFromServer]);
 
   const isTableLockedForUser = (tableId: string): boolean => {
     const t = tables[tableId];
@@ -142,14 +145,14 @@ function GameLayout() {
   }, [routeState.routePath, tables, observeTable, activeTableId, currentUser?.id, unlockedTableIds]);
 
   useEffect(() => {
-    if (activeTableId && tables[activeTableId]?.status === 'closed' && activeTableId !== 'table_1' && routeState.routePath.startsWith('/t/')) {
-        if (!closedRedirectMessage) {
-            setClosedRedirectMessage('This table is closed. You will be directed to the default official table in a few seconds.');
-            setTimeout(() => {
-               setClosedRedirectMessage(null);
-               navigate('/t/table_1');
-            }, 3000);
-        }
+    if (activeTableId && tables[activeTableId]?.status === 'closed' && routeState.routePath.startsWith('/t/')) {
+      if (!closedRedirectMessage) {
+        setClosedRedirectMessage('This table is closed. You will be directed to the lobby in a few seconds.');
+        setTimeout(() => {
+          setClosedRedirectMessage(null);
+          navigate('/');
+        }, 3000);
+      }
     }
   }, [activeTableId, tables, closedRedirectMessage, navigate, routeState.routePath]);
 
@@ -157,7 +160,8 @@ function GameLayout() {
     if (view === 'lobby') {
        navigate('/');
     } else if (view === 'table') {
-       navigate(`/t/${tableId || activeTableId || 'table_1'}`);
+       const fallbackTableId = tableId || activeTableId || Object.keys(tables)[0];
+       navigate(fallbackTableId ? `/t/${fallbackTableId}` : '/');
     } else if (view === 'host_table') {
        navigate(tableId ? `/host/${tableId}` : `/host`);
     } else if (view === 'manage_tables') {
@@ -284,7 +288,7 @@ function GameLayout() {
   return (
     <div
       className={`w-full h-[100dvh] flex flex-col items-center justify-center relative overflow-hidden bg-gradient-to-br from-[#1a0f0a] via-[#0d0905] to-[#140b08] text-slate-200 font-sans selection:bg-[#c6a364]/30 selection:text-amber-200 ${
-        isFullscreen ? 'p-0 sm:py-2' : 'p-0 sm:py-3 md:py-4'
+        isFullscreen ? 'p-0' : 'p-0 [@media(min-height:860px)]:py-3'
       }`}
     >
       <div className="absolute inset-0 pointer-events-none opacity-15 bg-[radial-gradient(#c6a364_1px,transparent_1px)] [background-size:24px_24px] mix-blend-overlay z-0"></div>
@@ -306,7 +310,7 @@ function GameLayout() {
 
       <div
         className={`relative z-10 w-full h-full max-w-[1280px] ${
-          isFullscreen ? 'max-h-[940px]' : 'max-h-[860px]'
+          isFullscreen ? 'max-h-[960px]' : 'max-h-[900px]'
         } mx-auto my-auto flex flex-col overflow-hidden shadow-2xl`}
       >
         {closedRedirectMessage && (
