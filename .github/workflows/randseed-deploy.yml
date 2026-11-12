@@ -1,4 +1,4 @@
-# randseed-workflow-version: 16
+# randseed-workflow-version: 17
 name: Deploy to RandSeed Sandbox
 
 on:
@@ -93,7 +93,7 @@ jobs:
             process.exit(0);
           }
 
-          console.log('randseed.fullstack.json contract found; using the full-stack private container archive build path');
+          console.log('randseed.fullstack.json contract found; using the fixed-runtime code package build path');
           let config;
           try {
             config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -103,11 +103,9 @@ jobs:
           }
 
           const frontendBuildDir = (config.frontend && (config.frontend.assetsPath || config.frontend.output_dir || config.frontend.buildDir)) || 'dist';
-          const backendRuntime = (config.backend && typeof config.backend.runtime === 'string' && config.backend.runtime.trim()) || '';
+          const backendRuntime = (config.backend && typeof config.backend.runtime === 'string' && config.backend.runtime.trim().toLowerCase()) || '';
           const backendEntrypoint = (config.backend && typeof config.backend.entrypoint === 'string' && config.backend.entrypoint.trim()) || '';
-          const backendDockerfile = (config.backend && config.backend.dockerfile) || (backendRuntime ? '' : 'Dockerfile');
-          const backendContext = (config.backend && config.backend.context) || '.';
-          const backendPort = (config.backend && config.backend.port) || 8080;
+          const backendPort = config.backend?.port ?? 8080;
           const runtimeTier = (config.runtime && (config.runtime.spec || config.runtime.tier)) || 'lite';
           const inactivityTimeout = (config.runtime && (config.runtime.inactivityTimeoutSeconds || (config.runtime.inactivity_timeout_ms ? Math.round(config.runtime.inactivity_timeout_ms / 1000) : 300))) || 300;
           const enableInternet = Boolean(config.runtime && (config.runtime.enableInternet || config.runtime.enable_internet));
@@ -117,26 +115,33 @@ jobs:
             console.error('Frontend build directory must be repository-relative; path traversal is not allowed');
             process.exit(1);
           }
-          if (backendEntrypoint && (backendEntrypoint.includes('..') || path.isAbsolute(backendEntrypoint))) {
-            console.error('Backend entrypoint path must be repository-relative; path traversal is not allowed');
+          const supportedRuntimes = ['rust', 'go', 'golang', 'cpp', 'c++', 'c', 'zig', 'native', 'nodejs', 'node', 'nodejs-22', 'node-22', 'node22', 'nodejs-24', 'node-24', 'node24', 'dotnet', 'dotnet-8', 'dotnet8', 'csharp', 'c#'];
+          if (!supportedRuntimes.includes(backendRuntime) || config.backend?.dockerfile) {
+            console.error('Full-stack backends must declare a supported fixed runtime; Dockerfile deployments are no longer supported. See the Creator Portal fixed-runtime migration guide.');
             process.exit(1);
           }
-          if (backendDockerfile && (backendDockerfile.includes('..') || path.isAbsolute(backendDockerfile))) {
-            console.error('Dockerfile path must be repository-relative; path traversal is not allowed');
+          if (!backendEntrypoint || backendEntrypoint.includes('..') || backendEntrypoint.includes('\\') || backendEntrypoint.includes(':') || /[\x00-\x1f\x7f]/.test(backendEntrypoint) || backendEntrypoint.split('/').some(part => !part || part === '.') || backendEntrypoint === 'manifest.json') {
+            console.error('Backend entrypoint must be a repository-relative file path');
             process.exit(1);
           }
-          if (backendContext.includes('..') || path.isAbsolute(backendContext)) {
-            console.error('Docker build context must be repository-relative; path traversal is not allowed');
+          if (!Number.isInteger(backendPort) || backendPort !== 8080) {
+            console.error('Fixed runtime backends must listen on port 8080');
+            process.exit(1);
+          }
+          if (enableInternet) {
+            console.error('Fixed runtime backends run without Internet access; remove enableInternet from randseed.fullstack.json');
+            process.exit(1);
+          }
+          if (!['lite', 'basic', 'standard', 'standard-1', 'standard-2', 'standard-3', 'standard-4'].includes(runtimeTier)
+            || !Number.isInteger(inactivityTimeout) || inactivityTimeout < 1 || inactivityTimeout > 21600) {
+            console.error('Runtime tier or inactivity timeout is invalid; see the fixed-runtime deployment guide');
             process.exit(1);
           }
 
           fs.appendFileSync(process.env.GITHUB_OUTPUT, 'is_fullstack=true\n');
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `is_runtime_package=${Boolean(backendRuntime)}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `frontend_build_dir=${frontendBuildDir}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `backend_runtime=${backendRuntime}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `backend_entrypoint=${backendEntrypoint}\n`);
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `backend_dockerfile=${backendDockerfile}\n`);
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `backend_context=${backendContext}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `backend_port=${backendPort}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `runtime_tier=${runtimeTier}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `inactivity_timeout=${inactivityTimeout}\n`);
@@ -151,6 +156,7 @@ jobs:
 
       # Step 5: Install dependencies and build or stage static assets
       - name: Install dependencies and build or stage static files
+        id: install_build
         shell: bash
         env:
           BUILD_DIR: ${{ steps.detect_mode.outputs.frontend_build_dir }}
@@ -160,17 +166,42 @@ jobs:
           if [ -f package.json ]; then
             if [ -f pnpm-lock.yaml ]; then
               corepack enable
-              pnpm install --frozen-lockfile
+              pnpm install --frozen-lockfile || { echo "failure_class=DEPENDENCY_INSTALL_FAILED" >> "$GITHUB_OUTPUT"; exit 1; } || { echo "failure_class=DEPENDENCY_INSTALL_FAILED" >> "$GITHUB_OUTPUT"; exit 1; }
               pnpm run build
             elif [ -f yarn.lock ]; then
               corepack enable
-              yarn install --frozen-lockfile
+              yarn install --frozen-lockfile || { echo "failure_class=DEPENDENCY_INSTALL_FAILED" >> "$GITHUB_OUTPUT"; exit 1; } || { echo "failure_class=DEPENDENCY_INSTALL_FAILED" >> "$GITHUB_OUTPUT"; exit 1; }
               yarn build
             elif [ -f package-lock.json ]; then
-              npm ci
+              NPM_INSTALL_LOG="$RUNNER_TEMP/randseed-npm-install.log"
+              if npm ci 2>&1 | tee "$NPM_INSTALL_LOG"; then
+                :
+              else
+                node --input-type=module <<'NODE'
+                import { appendFileSync, readFileSync } from 'node:fs';
+
+                const log = readFileSync(`${process.env.RUNNER_TEMP}/randseed-npm-install.log`, 'utf8');
+                const output = process.env.GITHUB_OUTPUT;
+                let failureClass = 'DEPENDENCY_INSTALL_FAILED';
+                const sdkVersionSpec = '(?:[~^=]?[0-9][0-9A-Za-z.+-]{0,62}|[0-9][0-9A-Za-z.+-]{0,63})';
+                const sdkMismatch = log.match(new RegExp(
+                  `Invalid:\\s*lock file['’]s\\s+@randseed/game-sdk@(${sdkVersionSpec})\\s+does not satisfy\\s+@randseed/game-sdk@(${sdkVersionSpec})`,
+                  'i',
+                ));
+                if (sdkMismatch) {
+                  failureClass = 'NPM_SDK_VERSION_MISMATCH';
+                  appendFileSync(output, `sdk_locked_version=${sdkMismatch[1]}\n`);
+                  appendFileSync(output, `sdk_requested_version=${sdkMismatch[2]}\n`);
+                } else if (/(?:`npm ci`|npm ci) can only install packages when your package\.json and package-lock\.json/i.test(log)) {
+                  failureClass = 'NPM_LOCKFILE_OUT_OF_SYNC';
+                }
+                appendFileSync(output, `failure_class=${failureClass}\n`);
+          NODE
+                exit 1
+              fi
               npm run build
             else
-              npm install
+              npm install || { echo "failure_class=DEPENDENCY_INSTALL_FAILED" >> "$GITHUB_OUTPUT"; exit 1; } || { echo "failure_class=DEPENDENCY_INSTALL_FAILED" >> "$GITHUB_OUTPUT"; exit 1; }
               npm run build
             fi
           elif [ -f "$BUILD_DIR/index.html" ]; then
@@ -268,31 +299,10 @@ jobs:
           console.log('Injected the canonical RandSeed Game ID into the browser build');
           NODE
 
-      # Step 6: Set up Docker Buildx (full-stack legacy OCI archive only)
-      - name: Set up Docker Buildx
-        if: steps.detect_mode.outputs.is_fullstack == 'true' && steps.detect_mode.outputs.is_runtime_package != 'true'
-        uses: docker/setup-buildx-action@v3
-
-      # Step 7: Build a linux/amd64 container image archive (full-stack legacy OCI archive only)
-      - name: Build backend OCI container image archive
-        id: build_docker
-        if: steps.detect_mode.outputs.is_fullstack == 'true' && steps.detect_mode.outputs.is_runtime_package != 'true'
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ steps.detect_mode.outputs.backend_context }}
-          file: ${{ steps.detect_mode.outputs.backend_dockerfile }}
-          platforms: linux/amd64
-          tags: randseed-backend:${{ inputs.deployment_environment }}-${{ inputs.deployment_id }}
-          build-args: |
-            RANDSEED_GAME_ID=${{ inputs.game_id }}
-          outputs: type=docker,dest=/tmp/randseed-backend-image.tar
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # Step 7b: Build fixed-runtime R2 code package (full-stack fixed runtime only)
+      # Step 6: Build the fixed-runtime R2 code package
       - name: Build backend runtime code package
         id: build_package
-        if: steps.detect_mode.outputs.is_runtime_package == 'true'
+        if: steps.detect_mode.outputs.is_fullstack == 'true'
         shell: bash
         env:
           BACKEND_RUNTIME: ${{ steps.detect_mode.outputs.backend_runtime }}
@@ -303,12 +313,12 @@ jobs:
           if [ -f package.json ] && node -e "const p=require('./package.json');process.exit(p.scripts&&p.scripts['build:backend-bundle']?0:1)"; then
             npm run build:backend-bundle
           elif [ -f Cargo.toml ] && [[ "$BACKEND_RUNTIME" == "rust" || "$BACKEND_RUNTIME" == "native" ]]; then
-            cargo build --release --bin "$BACKEND_ENTRYPOINT"
+            cargo build --release --bin "$(basename "$BACKEND_ENTRYPOINT")"
           fi
           if [ ! -f /tmp/randseed-backend-package.tar.gz ]; then
             STAGE_DIR="/tmp/randseed-pkg-stage"
             rm -rf "$STAGE_DIR" && mkdir -p "$STAGE_DIR"
-            for candidate in "$BACKEND_ENTRYPOINT" "build/$BACKEND_ENTRYPOINT" "dist/$BACKEND_ENTRYPOINT" "target/release/$BACKEND_ENTRYPOINT"; do
+            for candidate in "$BACKEND_ENTRYPOINT" "build/$BACKEND_ENTRYPOINT" "dist/$BACKEND_ENTRYPOINT" "target/release/$BACKEND_ENTRYPOINT" "target/release/$(basename "$BACKEND_ENTRYPOINT")"; do
               if [ -f "$candidate" ]; then
                 mkdir -p "$STAGE_DIR/$(dirname "$BACKEND_ENTRYPOINT")"
                 cp "$candidate" "$STAGE_DIR/$BACKEND_ENTRYPOINT"
@@ -320,16 +330,315 @@ jobs:
             tar -czf /tmp/randseed-backend-package.tar.gz -C "$STAGE_DIR" .
           fi
 
-      # Step 8: Calculate the container archive/package SHA-256 and R2 addressing metadata (full-stack only)
-      - name: Prepare OCI image metadata
+      - name: Set up Python for package validation
+        id: package_validator_python
+        if: steps.detect_mode.outputs.is_fullstack == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Validate backend runtime code package
+        id: validate_package
+        if: steps.detect_mode.outputs.is_fullstack == 'true'
+        shell: bash
+        env:
+          BACKEND_RUNTIME: ${{ steps.detect_mode.outputs.backend_runtime }}
+          BACKEND_ENTRYPOINT: ${{ steps.detect_mode.outputs.backend_entrypoint }}
+          BACKEND_PORT: ${{ steps.detect_mode.outputs.backend_port }}
+          ARCHIVE_PATH: /tmp/randseed-backend-package.tar.gz
+        run: |
+          set -Eeuo pipefail
+          python3 - "$ARCHIVE_PATH" "$BACKEND_RUNTIME" "$BACKEND_ENTRYPOINT" "$BACKEND_PORT" <<'PY'
+          #!/usr/bin/env python3
+          import argparse
+          import gzip
+          import json
+          import os
+          import re
+          import stat
+          import sys
+          import tarfile
+          import tempfile
+          from pathlib import Path
+          
+          MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
+          MAX_TAR_BYTES = 1024 * 1024 * 1024
+          MAX_PACKAGE_BYTES = 512 * 1024 * 1024
+          MAX_MEMBERS = 20_000
+          MAX_MANIFEST_BYTES = 1024 * 1024
+          RUNTIMES = {
+              "native": {"native", "rust", "go", "golang", "cpp", "c++", "c", "zig"},
+              "nodejs-22": {"node", "nodejs", "nodejs-22", "node-22", "node22"},
+              "nodejs-24": {"nodejs-24", "node-24", "node24"},
+              "dotnet-8": {"dotnet", "dotnet-8", "dotnet8", "csharp", "c#"},
+          }
+          ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+          
+          
+          class PackageError(Exception):
+              pass
+          
+          
+          def canonical_runtime(value):
+              if not isinstance(value, str):
+                  return None
+              normalized = value.strip().lower()
+              return next((runtime for runtime, aliases in RUNTIMES.items() if normalized in aliases), None)
+          
+          
+          def normalize_member_path(name, is_directory):
+              if not isinstance(name, str) or not name or name.startswith("/") or "\\" in name:
+                  raise PackageError("Package contains an absolute or invalid archive path")
+              if any(ord(char) < 32 or ord(char) == 127 for char in name):
+                  raise PackageError("Package contains a control character in an archive path")
+              while name.startswith("./"):
+                  name = name[2:]
+              if name in ("", "."):
+                  if is_directory:
+                      return ""
+                  raise PackageError("Package contains an empty file path")
+              if is_directory and name.endswith("/"):
+                  name = name[:-1]
+              parts = name.split("/")
+              if any(part in ("", ".", "..") or ":" in part for part in parts):
+                  raise PackageError("Package contains an unsafe archive path")
+              return "/".join(parts)
+          
+          
+          def json_without_duplicate_keys(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise PackageError("Package manifest contains a duplicate JSON key")
+                  result[key] = value
+              return result
+          
+          
+          def validate_manifest(raw, files, expected_runtime, expected_entrypoint, expected_port):
+              try:
+                  manifest = json.loads(raw.decode("utf-8"), object_pairs_hook=json_without_duplicate_keys)
+              except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                  raise PackageError("Package root manifest.json must contain valid UTF-8 JSON") from error
+              if not isinstance(manifest, dict):
+                  raise PackageError("Package root manifest.json must contain a JSON object")
+              runtime = canonical_runtime(manifest.get("runtime"))
+              if runtime is None or runtime != canonical_runtime(expected_runtime):
+                  raise PackageError("Package manifest runtime must match randseed.fullstack.json")
+              entrypoint = manifest.get("entrypoint")
+              if not isinstance(entrypoint, str):
+                  raise PackageError("Package manifest entrypoint must be a relative file path")
+              if normalize_member_path(entrypoint, False) != entrypoint or entrypoint == "manifest.json":
+                  raise PackageError("Package manifest entrypoint must be a safe relative file path")
+              if expected_entrypoint not in (None, "-") and entrypoint != expected_entrypoint:
+                  raise PackageError("Package manifest entrypoint must match randseed.fullstack.json")
+              port = manifest.get("port")
+              if type(port) is not int or port != expected_port or port != 8080:
+                  raise PackageError("Package manifest port must match randseed.fullstack.json and use port 8080")
+              health_path = manifest.get("healthCheckPath", "/health")
+              if health_path != "/health":
+                  raise PackageError("Package manifest healthCheckPath must be /health")
+              args = manifest.get("args", [])
+              if not isinstance(args, list) or any(not isinstance(value, str) for value in args):
+                  raise PackageError("Package manifest args must be an array of strings")
+              env = manifest.get("env", {})
+              if not isinstance(env, dict) or any(
+                  not isinstance(key, str) or ENV_KEY.fullmatch(key) is None or not isinstance(value, str)
+                  for key, value in env.items()
+              ):
+                  raise PackageError("Package manifest env must contain valid string values")
+              if files.get("manifest.json") != "file" or files.get(entrypoint) != "file":
+                  raise PackageError("Package manifest and configured entrypoint must be regular files")
+              return manifest
+          
+          
+          def validate_and_extract(archive_path, expected_runtime, expected_entrypoint, expected_port, destination=None):
+              archive_path = Path(archive_path)
+              try:
+                  archive_stat = archive_path.lstat()
+              except OSError as error:
+                  raise PackageError("Backend code package is unavailable") from error
+              if not stat.S_ISREG(archive_stat.st_mode) or archive_stat.st_size <= 0 or archive_stat.st_size > MAX_ARCHIVE_BYTES:
+                  raise PackageError("Backend code package size or file type is invalid")
+          
+              with tempfile.TemporaryFile() as tar_stream:
+                  expanded_size = 0
+                  try:
+                      with gzip.open(archive_path, "rb") as source:
+                          while True:
+                              chunk = source.read(1024 * 1024)
+                              if not chunk:
+                                  break
+                              expanded_size += len(chunk)
+                              if expanded_size > MAX_TAR_BYTES:
+                                  raise PackageError("Expanded backend code package exceeds the size limit")
+                              tar_stream.write(chunk)
+                  except (OSError, EOFError) as error:
+                      raise PackageError("Backend code package is not a valid gzip archive") from error
+          
+                  tar_stream.seek(0)
+                  try:
+                      with tarfile.open(fileobj=tar_stream, mode="r:") as package:
+                          members = []
+                          seen = {}
+                          required_directories = set()
+                          total_size = 0
+                          manifest_member = None
+                          for member in package:
+                              if len(members) >= MAX_MEMBERS:
+                                  raise PackageError("Backend code package contains too many files")
+                              is_directory = member.type == tarfile.DIRTYPE
+                              if member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE):
+                                  raise PackageError("Backend code packages cannot contain symbolic links, hard links, or special files")
+                              name = normalize_member_path(member.name, is_directory)
+                              if name == "":
+                                  continue
+                              if name in seen:
+                                  raise PackageError("Backend code package contains duplicate archive paths")
+                              parts = name.split("/")
+                              for index in range(1, len(parts)):
+                                  parent = "/".join(parts[:index])
+                                  required_directories.add(parent)
+                                  if seen.get(parent) == "file":
+                                      raise PackageError("Backend code package places a file inside another file")
+                              kind = "directory" if is_directory else "file"
+                              if not is_directory and name in required_directories:
+                                  raise PackageError("Backend code package file conflicts with a directory")
+                              if member.size < 0 or (is_directory and member.size != 0):
+                                  raise PackageError("Backend code package contains invalid member sizes")
+                              if not is_directory:
+                                  total_size += member.size
+                                  if total_size > MAX_PACKAGE_BYTES:
+                                      raise PackageError("Expanded backend code package exceeds the size limit")
+                                  if name == "manifest.json":
+                                      if member.size > MAX_MANIFEST_BYTES:
+                                          raise PackageError("Package manifest.json exceeds the size limit")
+                                      manifest_member = member
+                              seen[name] = kind
+                              members.append((member, name, kind))
+                          if manifest_member is None:
+                              raise PackageError("Backend code package must contain a root manifest.json")
+                          manifest_stream = package.extractfile(manifest_member)
+                          if manifest_stream is None:
+                              raise PackageError("Backend code package manifest.json is unreadable")
+                          manifest = validate_manifest(
+                              manifest_stream.read(MAX_MANIFEST_BYTES + 1),
+                              seen,
+                              expected_runtime,
+                              expected_entrypoint,
+                              expected_port,
+                          )
+                          if manifest_member.size > MAX_MANIFEST_BYTES:
+                              raise PackageError("Package manifest.json exceeds the size limit")
+                          if destination is not None:
+                              extract_members(package, members, destination)
+                          return manifest
+                  except (tarfile.TarError, OSError) as error:
+                      if isinstance(error, PackageError):
+                          raise
+                      raise PackageError("Backend code package is not a valid tar archive") from error
+          
+          
+          def extract_members(package, members, destination):
+              destination = Path(destination)
+              try:
+                  destination_stat = destination.lstat()
+              except FileNotFoundError:
+                  destination.mkdir(mode=0o755, parents=True)
+                  destination_stat = destination.lstat()
+              if not stat.S_ISDIR(destination_stat.st_mode):
+                  raise PackageError("Package extraction destination must be a real directory")
+              if next(destination.iterdir(), None) is not None:
+                  raise PackageError("Package extraction destination must be empty")
+          
+              root_fd = os.open(destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+              try:
+                  for member, name, kind in members:
+                      parts = name.split("/")
+                      parent_fd = os.dup(root_fd)
+                      try:
+                          for component in parts[:-1]:
+                              try:
+                                  os.mkdir(component, 0o755, dir_fd=parent_fd)
+                              except FileExistsError:
+                                  pass
+                              next_fd = os.open(
+                                  component,
+                                  os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                  dir_fd=parent_fd,
+                              )
+                              os.close(parent_fd)
+                              parent_fd = next_fd
+                          leaf = parts[-1]
+                          if kind == "directory":
+                              try:
+                                  os.mkdir(leaf, 0o755, dir_fd=parent_fd)
+                              except FileExistsError:
+                                  directory_fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                                  os.close(directory_fd)
+                              continue
+                          output_fd = os.open(
+                              leaf,
+                              os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                              0o600,
+                              dir_fd=parent_fd,
+                          )
+                          source = package.extractfile(member)
+                          if source is None:
+                              os.close(output_fd)
+                              raise PackageError("Backend code package contains an unreadable file")
+                          written = 0
+                          try:
+                              with os.fdopen(output_fd, "wb", closefd=True) as output:
+                                  while True:
+                                      chunk = source.read(1024 * 1024)
+                                      if not chunk:
+                                          break
+                                      written += len(chunk)
+                                      if written > member.size:
+                                          raise PackageError("Backend code package member exceeded its declared size")
+                                      output.write(chunk)
+                                  if written != member.size:
+                                      raise PackageError("Backend code package member did not match its declared size")
+                                  output.flush()
+                                  os.fchmod(output.fileno(), 0o755 if member.mode & 0o111 else 0o644)
+                          finally:
+                              source.close()
+                      finally:
+                          os.close(parent_fd)
+              finally:
+                  os.close(root_fd)
+          
+          
+          def main(argv=None):
+              parser = argparse.ArgumentParser(description="Validate and safely extract a RandSeed fixed-runtime code package.")
+              parser.add_argument("archive")
+              parser.add_argument("runtime")
+              parser.add_argument("entrypoint")
+              parser.add_argument("port", type=int)
+              parser.add_argument("--destination")
+              args = parser.parse_args(argv)
+              try:
+                  validate_and_extract(args.archive, args.runtime, args.entrypoint, args.port, args.destination)
+              except (PackageError, OSError) as error:
+                  print(f"Fixed-runtime package rejected: {error}", file=sys.stderr)
+                  return 1
+              return 0
+          
+          
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          
+          PY
+
+      # Step 8: Calculate code package SHA-256 and R2 addressing metadata
+      - name: Prepare fixed-runtime package metadata
         id: prep_image
         if: steps.detect_mode.outputs.is_fullstack == 'true'
         shell: bash
         env:
           GAME_ID: ${{ inputs.game_id }}
           DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment_environment }}
-          BACKEND_RUNTIME: ${{ steps.detect_mode.outputs.backend_runtime }}
-          ARCHIVE_PATH: ${{ steps.detect_mode.outputs.is_runtime_package == 'true' && '/tmp/randseed-backend-package.tar.gz' || '/tmp/randseed-backend-image.tar' }}
+          ARCHIVE_PATH: /tmp/randseed-backend-package.tar.gz
         run: |
           set -Eeuo pipefail
           node --input-type=module <<'NODE'
@@ -339,7 +648,6 @@ jobs:
           const archivePath = process.env.ARCHIVE_PATH;
           const gameId = process.env.GAME_ID;
           const deploymentEnvironment = process.env.DEPLOYMENT_ENVIRONMENT;
-          const isPackage = Boolean(process.env.BACKEND_RUNTIME) || (archivePath && archivePath.endsWith('.tar.gz'));
           if (!/^[A-Za-z0-9_-]{1,64}$/.test(gameId || '')) {
             console.error('Invalid RandSeed game identifier');
             process.exit(1);
@@ -350,7 +658,7 @@ jobs:
           }
           const stat = statSync(archivePath);
           if (!stat.isFile() || stat.size <= 0 || stat.size > 512 * 1024 * 1024) {
-            console.error(`Backend image archive size (${stat.size} bytes) is out of allowed bounds`);
+            console.error(`Backend code package size (${stat.size} bytes) is out of allowed bounds`);
             process.exit(1);
           }
           const hash = createHash('sha256');
@@ -358,26 +666,30 @@ jobs:
             hash.update(chunk);
           }
           const sha256 = hash.digest('hex');
-          const archiveKind = isPackage ? 'package' : 'image';
-          const imageUri = isPackage
-            ? `r2://runtime-packages/${gameId}/sha256-${sha256}.tar.gz`
-            : `r2://runtime-images/${gameId}/sha256-${sha256}.tar`;
+          const imageUri = `r2://runtime-packages/${gameId}/sha256-${sha256}.tar.gz`;
           appendFileSync(process.env.GITHUB_OUTPUT, `archive_path=${archivePath}\n`);
           appendFileSync(process.env.GITHUB_OUTPUT, `archive_sha256=${sha256}\n`);
           appendFileSync(process.env.GITHUB_OUTPUT, `archive_size=${stat.size}\n`);
-          appendFileSync(process.env.GITHUB_OUTPUT, `archive_kind=${archiveKind}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, 'archive_kind=package\n');
           appendFileSync(process.env.GITHUB_OUTPUT, `image_uri=${imageUri}\n`);
           appendFileSync(process.env.GITHUB_OUTPUT, `image_digest=sha256:${sha256}\n`);
-          console.log(`Prepared backend ${archiveKind} archive: ${imageUri} (${stat.size} bytes)`);
+          console.log(`Prepared backend code package: ${imageUri} (${stat.size} bytes)`);
           NODE
 
-      # Step 9: Report build failures (frontend build and backend Docker build)
+      # Step 9: Report build failures
       - name: Report build failure
         if: failure()
         env:
           RANDSEED_API_URL: ${{ steps.target_environment.outputs.api_url }}
           OIDC_AUDIENCE: ${{ steps.target_environment.outputs.oidc_audience }}
           DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          DETECT_MODE_OUTCOME: ${{ steps.detect_mode.outcome }}
+          PACKAGE_BUILD_OUTCOME: ${{ steps.build_package.outcome }}
+          PACKAGE_VALIDATION_OUTCOME: ${{ steps.validate_package.outcome }}
+          PACKAGE_VALIDATOR_SETUP_OUTCOME: ${{ steps.package_validator_python.outcome }}
+          INSTALL_FAILURE_CLASS: ${{ steps.install_build.outputs.failure_class || '' }}
+          SDK_LOCKED_VERSION: ${{ steps.install_build.outputs.sdk_locked_version || '' }}
+          SDK_REQUESTED_VERSION: ${{ steps.install_build.outputs.sdk_requested_version || '' }}
           FAILURE_CODE: ${{ steps.inject_game_id.outputs.failure_code }}
         run: |
           set -Eeuo pipefail
@@ -398,11 +710,36 @@ jobs:
           NODE
           )
           echo "::add-mask::$OIDC_TOKEN"
-          case "${FAILURE_CODE:-}" in
-            INDEX_HTML_HEAD_REQUIRED) ERROR_CODE="INDEX_HTML_HEAD_REQUIRED" ;;
-            *) ERROR_CODE="BUILD_FAILED" ;;
-          esac
-          HTTP_STATUS=$(curl -sS -o /tmp/randseed-build-failure-response -w '%{http_code}' -X POST "$RANDSEED_API_URL/api/deployments/$DEPLOYMENT_ID/build-failed" -H "Authorization: Bearer $OIDC_TOKEN" -H 'Content-Type: application/json' --data "{\"error_code\":\"$ERROR_CODE\"}")
+          ERROR_CODE=BUILD_FAILED
+          if [[ "$DETECT_MODE_OUTCOME" == failure ]]; then
+            ERROR_CODE=BACKEND_RUNTIME_CONFIG_INVALID
+          elif [[ "$PACKAGE_BUILD_OUTCOME" == failure ]]; then
+            ERROR_CODE=BACKEND_PACKAGE_BUILD_FAILED
+          elif [[ "$PACKAGE_VALIDATION_OUTCOME" == failure || "$PACKAGE_VALIDATOR_SETUP_OUTCOME" == failure ]]; then
+            ERROR_CODE=BACKEND_PACKAGE_VALIDATION_FAILED
+          elif [[ "$INSTALL_FAILURE_CLASS" == NPM_SDK_VERSION_MISMATCH ]]; then
+            ERROR_CODE=NPM_SDK_VERSION_MISMATCH
+          elif [[ "$INSTALL_FAILURE_CLASS" == NPM_LOCKFILE_OUT_OF_SYNC ]]; then
+            ERROR_CODE=NPM_LOCKFILE_OUT_OF_SYNC
+          elif [[ "$INSTALL_FAILURE_CLASS" == DEPENDENCY_INSTALL_FAILED ]]; then
+            ERROR_CODE=DEPENDENCY_INSTALL_FAILED
+          elif [[ -n "$FAILURE_CODE" ]]; then
+            ERROR_CODE="$FAILURE_CODE"
+          fi
+          ERROR_CODE="$ERROR_CODE" SDK_LOCKED_VERSION="$SDK_LOCKED_VERSION" SDK_REQUESTED_VERSION="$SDK_REQUESTED_VERSION" node <<'NODE'
+          const fs = require('node:fs');
+          const payload = { error_code: process.env.ERROR_CODE };
+          const safeVersion = value => /^(?:[~^=]?[0-9][0-9A-Za-z.+-]{0,62}|[0-9][0-9A-Za-z.+-]{0,63})$/.test(value || '');
+          if (payload.error_code === 'NPM_SDK_VERSION_MISMATCH'
+            && safeVersion(process.env.SDK_LOCKED_VERSION)
+            && safeVersion(process.env.SDK_REQUESTED_VERSION)) {
+            payload.sdk_locked_version = process.env.SDK_LOCKED_VERSION;
+            payload.sdk_requested_version = process.env.SDK_REQUESTED_VERSION;
+          }
+          fs.writeFileSync('/tmp/randseed-build-failure-request.json', JSON.stringify(payload));
+          NODE
+
+          HTTP_STATUS=$(curl -sS -o /tmp/randseed-build-failure-response -w '%{http_code}' -X POST "$RANDSEED_API_URL/api/deployments/$DEPLOYMENT_ID/build-failed" -H "Authorization: Bearer $OIDC_TOKEN" -H 'Content-Type: application/json' --data-binary @/tmp/randseed-build-failure-request.json)
           if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
             echo "RandSeed build failure callback failed ($HTTP_STATUS)" >&2
             exit 1
@@ -697,8 +1034,8 @@ jobs:
             fi
           done
 
-      # Step 14: Stream the full-stack container image archive to the platform's private R2 in chunks (full-stack only)
-      - name: Upload backend container image archive
+      # Step 14: Stream the fixed-runtime code package to the platform's private R2 in chunks (full-stack only)
+      - name: Upload fixed-runtime backend code package
         if: steps.detect_mode.outputs.is_fullstack == 'true'
         shell: bash
         env:
@@ -707,7 +1044,7 @@ jobs:
           ARCHIVE_PATH: ${{ steps.prep_image.outputs.archive_path }}
           ARCHIVE_SHA256: ${{ steps.prep_image.outputs.archive_sha256 }}
           ARCHIVE_SIZE: ${{ steps.prep_image.outputs.archive_size }}
-          ARCHIVE_KIND: ${{ steps.prep_image.outputs.archive_kind || 'image' }}
+          ARCHIVE_KIND: ${{ steps.prep_image.outputs.archive_kind }}
           DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment_environment }}
         run: |
           set -Eeuo pipefail
@@ -722,7 +1059,8 @@ jobs:
           const archivePath = process.env.ARCHIVE_PATH;
           const sha256 = process.env.ARCHIVE_SHA256;
           const size = Number(process.env.ARCHIVE_SIZE);
-          const kind = process.env.ARCHIVE_KIND || 'image';
+          const kind = process.env.ARCHIVE_KIND;
+          if (kind !== 'package') throw new Error('Backend upload must be a fixed-runtime package');
           const deploymentEnvironment = process.env.DEPLOYMENT_ENVIRONMENT;
           if (!['dev', 'test', 'production'].includes(deploymentEnvironment || '')) {
             throw new Error('Invalid RandSeed deployment environment');
@@ -762,7 +1100,7 @@ jobs:
             throw new Error('Backend image upload Worker environment does not match the selected deployment environment');
           }
           if (session.already_uploaded) {
-            console.log(`Backend image archive already exists in R2 (${session.object_key})`);
+            console.log(`Backend code package already exists in R2 (${session.object_key})`);
             process.exit(0);
           }
 
@@ -778,7 +1116,7 @@ jobs:
               let readOffset = 0;
               while (readOffset < length) {
                 const bytesRead = readSync(fd, buffer, readOffset, length - readOffset, offset + readOffset);
-                if (bytesRead <= 0) throw new Error('Unexpected EOF reading backend image archive');
+                if (bytesRead <= 0) throw new Error('Unexpected EOF reading backend code package');
                 readOffset += bytesRead;
               }
               const query = new URLSearchParams({ sha256, part_number: String(partNumber), kind });
@@ -808,7 +1146,7 @@ jobs:
               body: JSON.stringify({ upload_id: session.upload_id, sha256, size, kind, parts }),
             });
           }
-          console.log(`Completed backend image archive upload: ${session.image_uri}`);
+          console.log(`Completed backend code package upload: ${session.image_uri}`);
           NODE
           rm -f "$ARCHIVE_PATH"
 
@@ -825,7 +1163,6 @@ jobs:
           BACKEND_IMAGE_DIGEST: ${{ steps.prep_image.outputs.image_digest || '' }}
           BACKEND_RUNTIME: ${{ steps.detect_mode.outputs.backend_runtime || '' }}
           BACKEND_ENTRYPOINT: ${{ steps.detect_mode.outputs.backend_entrypoint || '' }}
-          BACKEND_DOCKERFILE: ${{ steps.detect_mode.outputs.backend_dockerfile || '' }}
           BACKEND_PORT: ${{ steps.detect_mode.outputs.backend_port || 8080 }}
           RUNTIME_TIER: ${{ steps.detect_mode.outputs.runtime_tier || 'lite' }}
           INACTIVITY_TIMEOUT: ${{ steps.detect_mode.outputs.inactivity_timeout || 300 }}
@@ -860,7 +1197,6 @@ jobs:
             const backendConfig = { port: Number(process.env.BACKEND_PORT) };
             if (process.env.BACKEND_RUNTIME) backendConfig.runtime = process.env.BACKEND_RUNTIME;
             if (process.env.BACKEND_ENTRYPOINT) backendConfig.entrypoint = process.env.BACKEND_ENTRYPOINT;
-            if (process.env.BACKEND_DOCKERFILE) backendConfig.dockerfile = process.env.BACKEND_DOCKERFILE;
             payload.backend = {
               image_uri: process.env.BACKEND_IMAGE_URI,
               image_digest: process.env.BACKEND_IMAGE_DIGEST,
@@ -987,7 +1323,7 @@ jobs:
           SDK_RELEASE_SOURCE: ${{ github.event.client_payload.source }}
           SDK_RELEASE_PACKAGE: ${{ github.event.client_payload.package }}
           SDK_RELEASE_VERSION: ${{ github.event.client_payload.version }}
-          SDK_RELEASE_WORKFLOW_CONTENT: ${{ github.event.client_payload.workflow_content }}
+          SDK_RELEASE_WORKFLOW_CONTENT_GZIP_BASE64: ${{ github.event.client_payload.workflow_content_gzip_base64 }}
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -1131,17 +1467,36 @@ jobs:
             const source = process.env.SDK_RELEASE_SOURCE;
             const packageName = process.env.SDK_RELEASE_PACKAGE;
             const eventVersion = process.env.SDK_RELEASE_VERSION;
-            const workflowContent = process.env.SDK_RELEASE_WORKFLOW_CONTENT;
+            const compressedWorkflowContent = process.env.SDK_RELEASE_WORKFLOW_CONTENT_GZIP_BASE64;
             const expectedPackages = {
               npm: '@randseed/game-sdk',
               randseedsdk: 'randseed-game-sdk',
             };
             if (expectedPackages[source] !== packageName
               || !parseStableVersion(eventVersion)
-              || !workflowContent
-              || workflowContent.length > 65000
-              || !/^# randseed-workflow-version: (?:1[1-9]|[2-9]\d+)\s*$/m.test(workflowContent)) {
+              || typeof compressedWorkflowContent !== 'string'
+              || compressedWorkflowContent.length === 0
+              || compressedWorkflowContent.length % 4 !== 0
+              || !/^[A-Za-z0-9+/]+={0,2}$/.test(compressedWorkflowContent)) {
               fail('The SDK release dispatch payload is invalid.');
+            }
+            const compressedWorkflow = Buffer.from(compressedWorkflowContent, 'base64');
+            if (compressedWorkflow.toString('base64') !== compressedWorkflowContent) {
+              fail('The SDK release dispatch workflow bundle is invalid.');
+            }
+            let workflowContent;
+            try {
+              const { gunzipSync } = require('node:zlib');
+              const workflowBytes = gunzipSync(compressedWorkflow, { maxOutputLength: 100000 });
+              workflowContent = new TextDecoder('utf-8', { fatal: true }).decode(workflowBytes);
+            } catch {
+              fail('The SDK release dispatch workflow bundle is invalid.');
+            }
+            if (Buffer.byteLength(workflowContent, 'utf8') > 100000
+              || !/^# randseed-workflow-version: (?:1[1-9]|[2-9]\d+)\s*$/m.test(workflowContent)
+              || workflowContent.includes(['__RANDSEED', 'SAFE_PACKAGE_VALIDATOR__'].join('_'))
+              || !workflowContent.includes('def validate_and_extract(')) {
+              fail('The SDK release dispatch workflow is unsupported.');
             }
 
             if (source === 'npm') {
