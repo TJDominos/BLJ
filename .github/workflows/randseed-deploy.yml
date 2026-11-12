@@ -1,4 +1,4 @@
-# randseed-workflow-version: 15
+# randseed-workflow-version: 16
 name: Deploy to RandSeed Sandbox
 
 on:
@@ -103,7 +103,9 @@ jobs:
           }
 
           const frontendBuildDir = (config.frontend && (config.frontend.assetsPath || config.frontend.output_dir || config.frontend.buildDir)) || 'dist';
-          const backendDockerfile = (config.backend && config.backend.dockerfile) || 'Dockerfile';
+          const backendRuntime = (config.backend && typeof config.backend.runtime === 'string' && config.backend.runtime.trim()) || '';
+          const backendEntrypoint = (config.backend && typeof config.backend.entrypoint === 'string' && config.backend.entrypoint.trim()) || '';
+          const backendDockerfile = (config.backend && config.backend.dockerfile) || (backendRuntime ? '' : 'Dockerfile');
           const backendContext = (config.backend && config.backend.context) || '.';
           const backendPort = (config.backend && config.backend.port) || 8080;
           const runtimeTier = (config.runtime && (config.runtime.spec || config.runtime.tier)) || 'lite';
@@ -115,7 +117,11 @@ jobs:
             console.error('Frontend build directory must be repository-relative; path traversal is not allowed');
             process.exit(1);
           }
-          if (backendDockerfile.includes('..') || path.isAbsolute(backendDockerfile)) {
+          if (backendEntrypoint && (backendEntrypoint.includes('..') || path.isAbsolute(backendEntrypoint))) {
+            console.error('Backend entrypoint path must be repository-relative; path traversal is not allowed');
+            process.exit(1);
+          }
+          if (backendDockerfile && (backendDockerfile.includes('..') || path.isAbsolute(backendDockerfile))) {
             console.error('Dockerfile path must be repository-relative; path traversal is not allowed');
             process.exit(1);
           }
@@ -125,7 +131,10 @@ jobs:
           }
 
           fs.appendFileSync(process.env.GITHUB_OUTPUT, 'is_fullstack=true\n');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `is_runtime_package=${Boolean(backendRuntime)}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `frontend_build_dir=${frontendBuildDir}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `backend_runtime=${backendRuntime}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `backend_entrypoint=${backendEntrypoint}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `backend_dockerfile=${backendDockerfile}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `backend_context=${backendContext}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `backend_port=${backendPort}\n`);
@@ -228,7 +237,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           node --input-type=module <<'NODE'
-          import { readFileSync, writeFileSync } from 'node:fs';
+          import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
           import { resolve, relative, sep, isAbsolute, join } from 'node:path';
 
           const gameId = process.env.GAME_ID ?? '';
@@ -242,26 +251,32 @@ jobs:
             throw new Error('Frontend build directory must be a repository subdirectory');
           }
           const indexPath = join(buildDirectory, 'index.html');
+          const metadata = `\n    <meta name="randseed-game-id" content="${gameId}">`;
           const html = readFileSync(indexPath, 'utf8');
           if (/<meta\s+name=["']randseed-game-id["']/i.test(html)) {
             throw new Error('The reserved randseed-game-id metadata must not be supplied by game source');
           }
           const head = html.match(/<head\b[^>]*>/i)?.[0];
-          if (!head) throw new Error('Frontend index.html must contain a head element');
-          const metadata = `\n    <meta name="randseed-game-id" content="${gameId}">`;
-          writeFileSync(indexPath, html.replace(head, `${head}${metadata}`));
+          if (!head) {
+            appendFileSync(process.env.GITHUB_OUTPUT, 'failure_code=INDEX_HTML_HEAD_REQUIRED\n');
+            console.error('::error::The built index.html must contain a <head> element so RandSeed can add SEO metadata. Add a <head> section to the root index.html and deploy again.');
+            process.exit(1);
+          }
+          let updatedHtml;
+          updatedHtml = html.replace(head, `${head}${metadata}`);
+          writeFileSync(indexPath, updatedHtml);
           console.log('Injected the canonical RandSeed Game ID into the browser build');
           NODE
 
-      # Step 6: Set up Docker Buildx (full-stack only; finish building before opening an upload session to avoid session expiry)
+      # Step 6: Set up Docker Buildx (full-stack legacy OCI archive only)
       - name: Set up Docker Buildx
-        if: steps.detect_mode.outputs.is_fullstack == 'true'
+        if: steps.detect_mode.outputs.is_fullstack == 'true' && steps.detect_mode.outputs.is_runtime_package != 'true'
         uses: docker/setup-buildx-action@v3
 
-      # Step 7: Build a linux/amd64 container image archive (full-stack only; no external image registry required)
+      # Step 7: Build a linux/amd64 container image archive (full-stack legacy OCI archive only)
       - name: Build backend OCI container image archive
         id: build_docker
-        if: steps.detect_mode.outputs.is_fullstack == 'true'
+        if: steps.detect_mode.outputs.is_fullstack == 'true' && steps.detect_mode.outputs.is_runtime_package != 'true'
         uses: docker/build-push-action@v6
         with:
           context: ${{ steps.detect_mode.outputs.backend_context }}
@@ -274,43 +289,38 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Step 7b: Validate backend container startup and health check (full-stack only)
-      - name: Verify room container health check
-        if: steps.detect_mode.outputs.is_fullstack == 'true'
+      # Step 7b: Build fixed-runtime R2 code package (full-stack fixed runtime only)
+      - name: Build backend runtime code package
+        id: build_package
+        if: steps.detect_mode.outputs.is_runtime_package == 'true'
         shell: bash
         env:
-          PORT: ${{ steps.detect_mode.outputs.backend_port || 8080 }}
+          BACKEND_RUNTIME: ${{ steps.detect_mode.outputs.backend_runtime }}
+          BACKEND_ENTRYPOINT: ${{ steps.detect_mode.outputs.backend_entrypoint }}
+          BACKEND_PORT: ${{ steps.detect_mode.outputs.backend_port }}
         run: |
           set -Eeuo pipefail
-          echo "Loading built container image into local Docker..."
-          docker load -i /tmp/randseed-backend-image.tar
-          CONTAINER_ID=$(docker run -d -p "$PORT:$PORT" -e PORT="$PORT" "randseed-backend:${{ inputs.deployment_environment }}-${{ inputs.deployment_id }}")
-          echo "Started test container $CONTAINER_ID on port $PORT"
-
-          HEALTHY=0
-          for i in $(seq 1 15); do
-            sleep 1
-            if curl -sSf "http://127.0.0.1:$PORT/health" > /tmp/health.json; then
-              echo "Container health check passed on attempt $i:"
-              cat /tmp/health.json
-              echo ""
-              HEALTHY=1
-              break
-            fi
-            echo "Waiting for container /health (attempt $i/15)..."
-          done
-
-          if [ "$HEALTHY" -ne 1 ]; then
-            echo "::error::Room container failed /health check. Container logs:"
-            docker logs "$CONTAINER_ID"
-            docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true
-            exit 1
+          if [ -f package.json ] && node -e "const p=require('./package.json');process.exit(p.scripts&&p.scripts['build:backend-bundle']?0:1)"; then
+            npm run build:backend-bundle
+          elif [ -f Cargo.toml ] && [[ "$BACKEND_RUNTIME" == "rust" || "$BACKEND_RUNTIME" == "native" ]]; then
+            cargo build --release --bin "$BACKEND_ENTRYPOINT"
+          fi
+          if [ ! -f /tmp/randseed-backend-package.tar.gz ]; then
+            STAGE_DIR="/tmp/randseed-pkg-stage"
+            rm -rf "$STAGE_DIR" && mkdir -p "$STAGE_DIR"
+            for candidate in "$BACKEND_ENTRYPOINT" "build/$BACKEND_ENTRYPOINT" "dist/$BACKEND_ENTRYPOINT" "target/release/$BACKEND_ENTRYPOINT"; do
+              if [ -f "$candidate" ]; then
+                mkdir -p "$STAGE_DIR/$(dirname "$BACKEND_ENTRYPOINT")"
+                cp "$candidate" "$STAGE_DIR/$BACKEND_ENTRYPOINT"
+                break
+              fi
+            done
+            test -f "$STAGE_DIR/$BACKEND_ENTRYPOINT"
+            node -e "require('fs').writeFileSync('$STAGE_DIR/manifest.json',JSON.stringify({runtime:process.env.BACKEND_RUNTIME,entrypoint:process.env.BACKEND_ENTRYPOINT,port:Number(process.env.BACKEND_PORT||8080),healthCheckPath:'/health'}))"
+            tar -czf /tmp/randseed-backend-package.tar.gz -C "$STAGE_DIR" .
           fi
 
-          docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true
-          echo "Room container successfully passed startup and health check verification."
-
-      # Step 8: Calculate the container image archive SHA-256 and R2 addressing metadata (full-stack only)
+      # Step 8: Calculate the container archive/package SHA-256 and R2 addressing metadata (full-stack only)
       - name: Prepare OCI image metadata
         id: prep_image
         if: steps.detect_mode.outputs.is_fullstack == 'true'
@@ -318,7 +328,8 @@ jobs:
         env:
           GAME_ID: ${{ inputs.game_id }}
           DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment_environment }}
-          ARCHIVE_PATH: /tmp/randseed-backend-image.tar
+          BACKEND_RUNTIME: ${{ steps.detect_mode.outputs.backend_runtime }}
+          ARCHIVE_PATH: ${{ steps.detect_mode.outputs.is_runtime_package == 'true' && '/tmp/randseed-backend-package.tar.gz' || '/tmp/randseed-backend-image.tar' }}
         run: |
           set -Eeuo pipefail
           node --input-type=module <<'NODE'
@@ -328,6 +339,7 @@ jobs:
           const archivePath = process.env.ARCHIVE_PATH;
           const gameId = process.env.GAME_ID;
           const deploymentEnvironment = process.env.DEPLOYMENT_ENVIRONMENT;
+          const isPackage = Boolean(process.env.BACKEND_RUNTIME) || (archivePath && archivePath.endsWith('.tar.gz'));
           if (!/^[A-Za-z0-9_-]{1,64}$/.test(gameId || '')) {
             console.error('Invalid RandSeed game identifier');
             process.exit(1);
@@ -346,13 +358,17 @@ jobs:
             hash.update(chunk);
           }
           const sha256 = hash.digest('hex');
-          const imageUri = `r2://runtime-images/${gameId}/sha256-${sha256}.tar`;
+          const archiveKind = isPackage ? 'package' : 'image';
+          const imageUri = isPackage
+            ? `r2://runtime-packages/${gameId}/sha256-${sha256}.tar.gz`
+            : `r2://runtime-images/${gameId}/sha256-${sha256}.tar`;
           appendFileSync(process.env.GITHUB_OUTPUT, `archive_path=${archivePath}\n`);
           appendFileSync(process.env.GITHUB_OUTPUT, `archive_sha256=${sha256}\n`);
           appendFileSync(process.env.GITHUB_OUTPUT, `archive_size=${stat.size}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `archive_kind=${archiveKind}\n`);
           appendFileSync(process.env.GITHUB_OUTPUT, `image_uri=${imageUri}\n`);
           appendFileSync(process.env.GITHUB_OUTPUT, `image_digest=sha256:${sha256}\n`);
-          console.log(`Prepared backend image archive: ${imageUri} (${stat.size} bytes)`);
+          console.log(`Prepared backend ${archiveKind} archive: ${imageUri} (${stat.size} bytes)`);
           NODE
 
       # Step 9: Report build failures (frontend build and backend Docker build)
@@ -362,6 +378,7 @@ jobs:
           RANDSEED_API_URL: ${{ steps.target_environment.outputs.api_url }}
           OIDC_AUDIENCE: ${{ steps.target_environment.outputs.oidc_audience }}
           DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          FAILURE_CODE: ${{ steps.inject_game_id.outputs.failure_code }}
         run: |
           set -Eeuo pipefail
           OIDC_TOKEN=$(node --input-type=module <<'NODE'
@@ -381,7 +398,11 @@ jobs:
           NODE
           )
           echo "::add-mask::$OIDC_TOKEN"
-          HTTP_STATUS=$(curl -sS -o /tmp/randseed-build-failure-response -w '%{http_code}' -X POST "$RANDSEED_API_URL/api/deployments/$DEPLOYMENT_ID/build-failed" -H "Authorization: Bearer $OIDC_TOKEN" -H 'Content-Type: application/json' --data '{"error_code":"BUILD_FAILED"}')
+          case "${FAILURE_CODE:-}" in
+            INDEX_HTML_HEAD_REQUIRED) ERROR_CODE="INDEX_HTML_HEAD_REQUIRED" ;;
+            *) ERROR_CODE="BUILD_FAILED" ;;
+          esac
+          HTTP_STATUS=$(curl -sS -o /tmp/randseed-build-failure-response -w '%{http_code}' -X POST "$RANDSEED_API_URL/api/deployments/$DEPLOYMENT_ID/build-failed" -H "Authorization: Bearer $OIDC_TOKEN" -H 'Content-Type: application/json' --data "{\"error_code\":\"$ERROR_CODE\"}")
           if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
             echo "RandSeed build failure callback failed ($HTTP_STATUS)" >&2
             exit 1
@@ -686,6 +707,7 @@ jobs:
           ARCHIVE_PATH: ${{ steps.prep_image.outputs.archive_path }}
           ARCHIVE_SHA256: ${{ steps.prep_image.outputs.archive_sha256 }}
           ARCHIVE_SIZE: ${{ steps.prep_image.outputs.archive_size }}
+          ARCHIVE_KIND: ${{ steps.prep_image.outputs.archive_kind || 'image' }}
           DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment_environment }}
         run: |
           set -Eeuo pipefail
@@ -700,6 +722,7 @@ jobs:
           const archivePath = process.env.ARCHIVE_PATH;
           const sha256 = process.env.ARCHIVE_SHA256;
           const size = Number(process.env.ARCHIVE_SIZE);
+          const kind = process.env.ARCHIVE_KIND || 'image';
           const deploymentEnvironment = process.env.DEPLOYMENT_ENVIRONMENT;
           if (!['dev', 'test', 'production'].includes(deploymentEnvironment || '')) {
             throw new Error('Invalid RandSeed deployment environment');
@@ -732,7 +755,7 @@ jobs:
           const session = await requestJson(`${baseUrl}/session`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sha256, size, deployment_environment: deploymentEnvironment }),
+            body: JSON.stringify({ sha256, size, kind, deployment_environment: deploymentEnvironment }),
           });
 
           if (session.environment !== deploymentEnvironment) {
@@ -758,7 +781,7 @@ jobs:
                 if (bytesRead <= 0) throw new Error('Unexpected EOF reading backend image archive');
                 readOffset += bytesRead;
               }
-              const query = new URLSearchParams({ sha256, part_number: String(partNumber) });
+              const query = new URLSearchParams({ sha256, part_number: String(partNumber), kind });
               if (session.mode === 'multipart' && session.upload_id) {
                 query.set('upload_id', session.upload_id);
               }
@@ -782,7 +805,7 @@ jobs:
             await requestJson(`${baseUrl}/complete`, {
               method: 'POST',
               headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ upload_id: session.upload_id, sha256, size, parts }),
+              body: JSON.stringify({ upload_id: session.upload_id, sha256, size, kind, parts }),
             });
           }
           console.log(`Completed backend image archive upload: ${session.image_uri}`);
@@ -800,6 +823,8 @@ jobs:
           FRONTEND_CAS_HASH: ${{ steps.create_manifest.outputs.cas_hash || '' }}
           BACKEND_IMAGE_URI: ${{ steps.prep_image.outputs.image_uri || '' }}
           BACKEND_IMAGE_DIGEST: ${{ steps.prep_image.outputs.image_digest || '' }}
+          BACKEND_RUNTIME: ${{ steps.detect_mode.outputs.backend_runtime || '' }}
+          BACKEND_ENTRYPOINT: ${{ steps.detect_mode.outputs.backend_entrypoint || '' }}
           BACKEND_DOCKERFILE: ${{ steps.detect_mode.outputs.backend_dockerfile || '' }}
           BACKEND_PORT: ${{ steps.detect_mode.outputs.backend_port || 8080 }}
           RUNTIME_TIER: ${{ steps.detect_mode.outputs.runtime_tier || 'lite' }}
@@ -832,12 +857,15 @@ jobs:
           }
 
           if (isFullstack) {
+            const backendConfig = { port: Number(process.env.BACKEND_PORT) };
+            if (process.env.BACKEND_RUNTIME) backendConfig.runtime = process.env.BACKEND_RUNTIME;
+            if (process.env.BACKEND_ENTRYPOINT) backendConfig.entrypoint = process.env.BACKEND_ENTRYPOINT;
+            if (process.env.BACKEND_DOCKERFILE) backendConfig.dockerfile = process.env.BACKEND_DOCKERFILE;
             payload.backend = {
               image_uri: process.env.BACKEND_IMAGE_URI,
               image_digest: process.env.BACKEND_IMAGE_DIGEST,
               platforms: ['linux/amd64'],
-              dockerfile: process.env.BACKEND_DOCKERFILE,
-              port: Number(process.env.BACKEND_PORT),
+              ...backendConfig,
               health_check: '/health',
               wire_protocol_version: '1.0',
             };
@@ -846,10 +874,7 @@ jobs:
               image_ref: process.env.BACKEND_IMAGE_URI,
               image_digest: process.env.BACKEND_IMAGE_DIGEST,
               config: {
-                backend: {
-                  port: Number(process.env.BACKEND_PORT),
-                  dockerfile: process.env.BACKEND_DOCKERFILE,
-                },
+                backend: backendConfig,
                 runtime: {
                   tier: process.env.RUNTIME_TIER,
                   inactivity_timeout_seconds: Number(process.env.INACTIVITY_TIMEOUT),
