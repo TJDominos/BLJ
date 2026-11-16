@@ -1,4 +1,4 @@
-# randseed-workflow-version: 17
+# randseed-workflow-version: 18
 name: Deploy to RandSeed Sandbox
 
 on:
@@ -848,6 +848,7 @@ jobs:
           GAME_ID: ${{ inputs.game_id }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
           IS_FULLSTACK: ${{ steps.detect_mode.outputs.is_fullstack }}
+          BUILD_DIR: ${{ steps.detect_mode.outputs.frontend_build_dir }}
           SDK_REPORT_PATH: /tmp/randseed-sdk-adoption-report.json
         run: |
           set -Eeuo pipefail
@@ -882,6 +883,7 @@ jobs:
             { id: 'browser.room_actions', label: 'Room input and lifecycle', scope: 'room', pattern: /\.sendInput\s*\(|\.sendSocketInput\s*\(|\.readyForNextMatch\s*\(/ },
             { id: 'server.lifecycle', label: 'Server SDK manifest and lifecycle', scope: 'server', pattern: /\bGameServer\b|\bcreateGameServer\s*\(|\brun_game_server\s*\(|\bcreate_game_router\s*\(/ },
             { id: 'server.results_agent_views', label: 'Server Result Units or Agent player views', scope: 'server', pattern: /\bresultDefinition\b|\bresult_definition\b|\bresultUnits\b|\bresult_units\b|\bagentPlayerContract\b|\bagent_player_contract\b|\bprojectAgentPlayerView\b|\bproject_agent_player_view\b/ },
+            { id: 'browser.agent_sdk', label: 'Agent SDK protocol in browser artifact', scope: 'agent_artifact', pattern: /randseed-single-player-agent/ },
           ];
 
           function collectSources(directory, relativeDirectory = '') {
@@ -908,22 +910,63 @@ jobs:
             return result;
           }
 
-          function makeReport(fullstack, sources) {
+          let artifactScanIncomplete = false;
+          function collectAgentArtifactFiles() {
+            const root = path.resolve(process.env.BUILD_DIR || '');
+            if (!process.env.BUILD_DIR || !fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+              artifactScanIncomplete = true;
+              return [];
+            }
+            const result = [];
+            const browserExtensions = new Set(['.cjs', '.html', '.htm', '.js', '.mjs']);
+            function walk(directory) {
+              for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+                const fullPath = path.join(directory, entry.name);
+                if (entry.isDirectory()) {
+                  walk(fullPath);
+                  continue;
+                }
+                if (!entry.isFile() || !browserExtensions.has(path.extname(entry.name).toLowerCase())) continue;
+                const relativePath = path.relative(root, fullPath).split(path.sep).join('/');
+                try {
+                  if (fs.statSync(fullPath).size > 16 * 1024 * 1024) {
+                    artifactScanIncomplete = true;
+                    continue;
+                  }
+                  result.push({ path: relativePath, content: fs.readFileSync(fullPath, 'utf8') });
+                } catch {
+                  artifactScanIncomplete = true;
+                }
+              }
+            }
+            try {
+              walk(root);
+            } catch {
+              artifactScanIncomplete = true;
+            }
+            return result;
+          }
+
+          function makeReport(fullstack, sources, agentArtifactFiles) {
             const browserFiles = sources.filter(file => /\.(?:cjs|html|htm|js|jsx|mjs|mts|ts|tsx)$/i.test(file.path));
             const serverFiles = sources.filter(file => /\.(?:cjs|js|mjs|mts|rs|ts|tsx)$/i.test(file.path));
-            const filesByScope = { browser: browserFiles, room: browserFiles, server: serverFiles };
+            const filesByScope = { browser: browserFiles, room: browserFiles, server: serverFiles, agent_artifact: agentArtifactFiles };
             const items = definitions.map(definition => {
               if ((definition.scope === 'room' || definition.scope === 'server') && !fullstack) {
                 return { id: definition.id, mark: 'not_applicable', evidence: [] };
               }
               const files = filesByScope[definition.scope];
+              if (files.length === 0 && (definition.scope === 'agent_artifact' ? artifactScanIncomplete : scanIncomplete)) {
+                return { id: definition.id, mark: 'not_verifiable', evidence: [] };
+              }
               if (files.length === 0) return { id: definition.id, mark: 'not_verifiable', evidence: [] };
               const evidence = definition.detect
                 ? definition.detect(files)
                 : files.filter(file => definition.pattern.test(file.content)).map(file => file.path).slice(0, 3);
               return {
                 id: definition.id,
-                mark: evidence.length > 0 ? 'detected' : scanIncomplete ? 'not_verifiable' : 'not_detected',
+                mark: evidence.length > 0 ? 'detected'
+                  : (definition.scope === 'agent_artifact' ? artifactScanIncomplete : scanIncomplete) ? 'not_verifiable' : 'not_detected',
                 evidence: evidence.slice(0, 3),
               };
             });
@@ -943,12 +986,13 @@ jobs:
               const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
               fullstack = Boolean(manifest.backend && typeof manifest.backend === 'object');
             }
-            const report = makeReport(fullstack, collectSources(process.cwd()));
+            const report = makeReport(fullstack, collectSources(process.cwd()), collectAgentArtifactFiles());
             fs.writeFileSync(process.env.SDK_REPORT_PATH || reportPath, JSON.stringify(report));
             console.log(`SDK adoption report generated: ${report.items.length} checklist items`);
           } catch (error) {
             console.error(`SDK adoption scan could not verify source: ${error instanceof Error ? error.message : 'unknown error'}`);
-            const fallback = makeReport(process.env.IS_FULLSTACK === 'true', []);
+            artifactScanIncomplete = true;
+            const fallback = makeReport(process.env.IS_FULLSTACK === 'true', [], []);
             fs.writeFileSync(process.env.SDK_REPORT_PATH || reportPath, JSON.stringify(fallback));
           }
           NODE
