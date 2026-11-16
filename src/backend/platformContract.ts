@@ -201,9 +201,9 @@ function projectSingleSubTablePublic(
     balances: ct.balances || {},
     prizePoolCoins: ct.prizePoolCoins || 0,
     tournament: ct.tournament || null,
-    tournamentHistory: ct.tournamentHistory || [],
+    tournamentHistory: Array.isArray(ct.tournamentHistory) ? ct.tournamentHistory.slice(0, 10) : [],
     lastRoundSummary: ct.lastRoundSummary || null,
-    roundHistory: ct.roundHistory || [],
+    roundHistory: Array.isArray(ct.roundHistory) ? ct.roundHistory.slice(0, 20) : [],
   };
 }
 
@@ -269,6 +269,9 @@ export function projectBlackjackRoomState(state: RoyalBlackjackRoomState): State
     minBet: state.minBet,
     maxBet: state.maxBet,
     actionTimeLimitSec: state.actionTimeLimitSec,
+    disconnectGraceSec: state.disconnectGraceSec ?? 10,
+    lagGraceSec: state.lagGraceSec ?? 10,
+    disconnectedPlayerIds: Object.keys(state.disconnectedAtElapsedSec || {}),
     phase: state.phase,
     currentTurnSeatIndex: state.currentTurnSeatIndex,
     turnOrder: state.turnOrder,
@@ -285,9 +288,9 @@ export function projectBlackjackRoomState(state: RoyalBlackjackRoomState): State
     walletCoins: state.walletCoins,
     prizePoolCoins: state.prizePoolCoins,
     tournament: state.tournament || null,
-    tournamentHistory: state.tournamentHistory || [],
+    tournamentHistory: Array.isArray(state.tournamentHistory) ? state.tournamentHistory.slice(0, 10) : [],
     lastRoundSummary: state.lastRoundSummary || null,
-    roundHistory: state.roundHistory || [],
+    roundHistory: Array.isArray(state.roundHistory) ? state.roundHistory.slice(0, 20) : [],
     customTables: publicCustomTables,
     players: state.players || [],
     playerNames,
@@ -350,10 +353,14 @@ export function emitBlackjackHandSettlementUnit(params: {
   table: Table;
   seatResults: SeatResult[];
   endingBalances: Record<string, number>;
+  timestampMs?: number;
 }): SettlementUnitEnvelope {
-  const { table, seatResults, endingBalances } = params;
-  const now = Date.now();
+  const { table, seatResults, endingBalances, timestampMs } = params;
   const unitSeq = table.roundsPlayed || 1;
+  const now =
+    typeof timestampMs === 'number' && Number.isSafeInteger(timestampMs) && timestampMs >= 0
+      ? timestampMs
+      : 1_700_000_000_000 + unitSeq * 1000;
   const settlementUnitId = `${table.id}_hand_${unitSeq}_${now}`;
 
   const byPlayer = new Map<

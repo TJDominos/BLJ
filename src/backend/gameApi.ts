@@ -11,8 +11,10 @@ import {
   houseStats
 } from './db';
 import { botApi } from './botApi';
+import crypto from 'node:crypto';
 import { emitBlackjackHandSettlementUnit } from './platformContract';
-import { createDeterministicShoe, calculateHandScore } from './gameRules';
+import { ChaCha20Rng } from './serverSdk/prng';
+import { shuffleShoeWithVrfRng, calculateHandScore } from './gameRules';
 
 const calculateScore = (cards: PlayingCard[]): number => calculateHandScore(cards, false);
 
@@ -46,12 +48,13 @@ const check21Plus3 = (c1: PlayingCard, c2: PlayingCard, dealerUp: PlayingCard): 
   return 0;
 };
 
-let shoeSeedSeq = 20261031;
+let vrfDeckCounter = 0;
 const getVRFDeck = async (): Promise<PlayingCard[]> => {
   await delay(400);
-  shoeSeedSeq += 131;
-  const { deck } = createDeterministicShoe(shoeSeedSeq, gameRules.deckCount);
-  return deck;
+  vrfDeckCounter += 1;
+  const randomSeedHex = crypto.randomBytes(32).toString('hex');
+  const rng = ChaCha20Rng.fromDerived(randomSeedHex, 'rest_table_shoe', String(vrfDeckCounter));
+  return shuffleShoeWithVrfRng(rng, gameRules.deckCount);
 };
 
 export const gameApi = {

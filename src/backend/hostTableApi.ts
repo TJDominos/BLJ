@@ -1,5 +1,7 @@
+import crypto from 'node:crypto';
 import { Table, TableSettings } from '../store/gameStore';
 import { tablesDb, usersDb, delay, DEFAULT_CUSTOM_TABLE_MAX_HOSTING_TIME_MS } from './db';
+import { ChaCha20Rng } from './serverSdk/prng';
 
 export const hostTableApi = {
   async getTable(tableId: string): Promise<Table> {
@@ -39,7 +41,13 @@ export const hostTableApi = {
     const resolvedHostName = (userName && userName !== 'Player' ? userName : hostUser?.name) || userName || 'Host';
     const resolvedHostAvatar = userAvatar || hostUser?.avatar;
 
-    const tableId = `table_${Math.random().toString(36).substr(2, 9)}`;
+    const idRng = ChaCha20Rng.fromDerived(
+      crypto.randomBytes(32).toString('hex'),
+      'host_table_id',
+      userId,
+      String(now)
+    );
+    const tableId = `table_${idRng.nextU32().toString(36)}${idRng.nextBounded(1296).toString(36)}`;
     const newTable: Table = {
       id: tableId,
       name: trimmedName,

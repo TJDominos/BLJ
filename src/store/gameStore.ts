@@ -15,7 +15,10 @@ import {
   getRandseedRoomSnapshot,
   matchRandseedRoom,
   sendRandseedRoomAction,
+  sendRandseedRoomActionConfirmed,
   readyRandseedRoom,
+  fetchAllRandseedMatchHistory,
+  type ArchiveHistoryEntry,
   type RoomConnectionStatus,
   type RoomPlayer,
 } from '../lib/randseedRuntime';
@@ -187,6 +190,7 @@ export interface SeatResult {
   insuranceBet?: number;
   insuranceWin?: number;
   isSplit?: boolean;
+  isDouble?: boolean;
   win?: number;
   net: number;
   action: string;
@@ -196,12 +200,50 @@ export interface SeatResult {
 export interface GameRecord {
   id: string;
   tableId: string;
+  tableMode?: TableMode;
+  tableName?: string;
+  tableMinBet?: number;
   result: 'win' | 'lose' | 'push' | 'blackjack';
   amountWon: number;
   timestamp: number;
   seatResults: SeatResult[];
   dealerScore?: number;
   currency?: 'Gcoin' | 'Bonus';
+}
+
+export interface PersonalArchiveLegacyAggregates {
+  regularRounds: number;
+  regularWins: number;
+  regularNet: number;
+  regularBlackjacks: number;
+  regularDoubles: number;
+  regularSplits: number;
+  regularSideBetHands: number;
+  regularSideBetWins: number;
+  regularSideBetNet: number;
+  regularSideBetGrossWin: number;
+  regularPairWins: number;
+  regularPlus3Wins: number;
+  tournamentRounds: number;
+  tournamentWins: number;
+  tournamentNet: number;
+  tournamentBlackjacks: number;
+  tournamentSideBetHands: number;
+  tournamentSideBetWins: number;
+  tournamentSideBetNet: number;
+  tournamentSideBetGrossWin: number;
+  tournamentPairWins: number;
+  tournamentPlus3Wins: number;
+  bestSingleWin: number;
+}
+
+export interface PersonalArchiveData {
+  records: GameRecord[];
+  legacyAggregates: PersonalArchiveLegacyAggregates;
+  tournamentsEntered: number;
+  tournamentsWon: number;
+  tournamentPrizeCoinsWon: number;
+  totalArchivedMatches: number;
 }
 
 export interface OnlinePlayerEntry {
@@ -212,6 +254,7 @@ export interface OnlinePlayerEntry {
   tableId?: string;
   tableName?: string;
   isPlaying?: boolean;
+  isDisconnected?: boolean;
 }
 
 const sessionStartedAtMs = Date.now();
@@ -222,6 +265,413 @@ let latestOnlineRoomState: Record<string, any> | null = null;
 let latestOnlineRoomId: string | null = null;
 let roomListenersRegistered = false;
 let loginInFlight: Promise<void> | null = null;
+let archiveFetchInFlight: Promise<void> | null = null;
+let archiveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+const seenSettledRoundIdsForArchive = new Set<string>();
+
+function createEmptyLegacyAggregates(): PersonalArchiveLegacyAggregates {
+  return {
+    regularRounds: 0,
+    regularWins: 0,
+    regularNet: 0,
+    regularBlackjacks: 0,
+    regularDoubles: 0,
+    regularSplits: 0,
+    regularSideBetHands: 0,
+    regularSideBetWins: 0,
+    regularSideBetNet: 0,
+    regularSideBetGrossWin: 0,
+    regularPairWins: 0,
+    regularPlus3Wins: 0,
+    tournamentRounds: 0,
+    tournamentWins: 0,
+    tournamentNet: 0,
+    tournamentBlackjacks: 0,
+    tournamentSideBetHands: 0,
+    tournamentSideBetWins: 0,
+    tournamentSideBetNet: 0,
+    tournamentSideBetGrossWin: 0,
+    tournamentPairWins: 0,
+    tournamentPlus3Wins: 0,
+    bestSingleWin: 0,
+  };
+}
+
+function createEmptyPersonalArchive(): PersonalArchiveData {
+  return {
+    records: [],
+    legacyAggregates: createEmptyLegacyAggregates(),
+    tournamentsEntered: 0,
+    tournamentsWon: 0,
+    tournamentPrizeCoinsWon: 0,
+    totalArchivedMatches: 0,
+  };
+}
+
+function resolveSelfIdWithinArchiveEntry(
+  entry: ArchiveHistoryEntry,
+  currentUserId: string | undefined,
+  candidateIds: string[]
+): string | undefined {
+  const nonBotCandidates = candidateIds.filter((id) => id && !id.startsWith('bot_'));
+  if (currentUserId && nonBotCandidates.includes(currentUserId)) {
+    return currentUserId;
+  }
+
+  const summaryObj =
+    entry.summary && typeof entry.summary === 'object' && !Array.isArray(entry.summary)
+      ? (entry.summary as Record<string, any>)
+      : {};
+  const scoresObj =
+    summaryObj.scores && typeof summaryObj.scores === 'object' && !Array.isArray(summaryObj.scores)
+      ? (summaryObj.scores as Record<string, unknown>)
+      : null;
+
+  if (typeof entry.score === 'number' && Number.isFinite(entry.score) && scoresObj) {
+    const matchingScoreIds = Object.entries(scoresObj)
+      .filter(([pid, sc]) => !pid.startsWith('bot_') && typeof sc === 'number' && sc === entry.score)
+      .map(([pid]) => pid);
+    if (matchingScoreIds.length === 1) {
+      return matchingScoreIds[0];
+    }
+    const candidateMatch = matchingScoreIds.find((pid) => nonBotCandidates.includes(pid));
+    if (candidateMatch) return candidateMatch;
+  }
+
+  if (typeof entry.rank === 'number' && entry.rank >= 1 && scoresObj) {
+    const rankedIds = Object.entries(scoresObj)
+      .filter(([pid, sc]) => !pid.startsWith('bot_') && typeof sc === 'number')
+      .sort((a, b) => Number(b[1]) - Number(a[1]))
+      .map(([pid]) => pid);
+    if (rankedIds[entry.rank - 1]) {
+      return rankedIds[entry.rank - 1];
+    }
+  }
+
+  if (nonBotCandidates.length === 1) {
+    return nonBotCandidates[0];
+  }
+
+  return currentUserId;
+}
+
+function readMetricNumber(
+  metricsSource: Record<string, unknown> | any[] | undefined,
+  statsObj: Record<string, unknown> | null,
+  key: string
+): number {
+  if (statsObj && typeof statsObj[key] === 'number' && Number.isFinite(statsObj[key] as number)) {
+    return Number(statsObj[key]);
+  }
+  if (Array.isArray(metricsSource)) {
+    const found = metricsSource.find((m) => m && m.key === key && typeof m.value === 'number');
+    if (found) return Number(found.value);
+  } else if (metricsSource && typeof metricsSource === 'object') {
+    const val = metricsSource[key];
+    if (typeof val === 'number' && Number.isFinite(val)) {
+      return val;
+    }
+  }
+  return 0;
+}
+
+function buildPersonalArchiveFromEntries(
+  entries: ArchiveHistoryEntry[],
+  currentUserId?: string
+): PersonalArchiveData {
+  const legacyAggregates = createEmptyLegacyAggregates();
+  const records: GameRecord[] = [];
+  const seenRoundIds = new Set<string>();
+  const seenTournamentKeys = new Set<string>();
+  let tournamentsEntered = 0;
+  let tournamentsWon = 0;
+  let tournamentPrizeCoinsWon = 0;
+
+  for (const entry of entries) {
+    const summaryObj =
+      entry.summary && typeof entry.summary === 'object' && !Array.isArray(entry.summary)
+        ? (entry.summary as Record<string, any>)
+        : {};
+    const customMetrics =
+      summaryObj.customMetrics &&
+      typeof summaryObj.customMetrics === 'object' &&
+      !Array.isArray(summaryObj.customMetrics)
+        ? (summaryObj.customMetrics as Record<string, any>)
+        : {};
+
+    const settledRounds: any[] = Array.isArray(customMetrics.settledRounds)
+      ? customMetrics.settledRounds
+      : [];
+    const tournamentResults: any[] = Array.isArray(customMetrics.tournamentResults)
+      ? customMetrics.tournamentResults
+      : [];
+    const settlementUnit =
+      customMetrics.settlementUnit &&
+      typeof customMetrics.settlementUnit === 'object' &&
+      !Array.isArray(customMetrics.settlementUnit)
+        ? (customMetrics.settlementUnit as Record<string, any>)
+        : null;
+
+    const candidateSet = new Set<string>();
+    for (const r of settledRounds) {
+      if (Array.isArray(r?.seatResults)) {
+        for (const sr of r.seatResults) {
+          if (typeof sr?.userId === 'string' && sr.userId) candidateSet.add(sr.userId);
+        }
+      }
+    }
+    for (const tr of tournamentResults) {
+      if (Array.isArray(tr?.participantIds)) {
+        for (const pid of tr.participantIds) {
+          if (typeof pid === 'string' && pid) candidateSet.add(pid);
+        }
+      }
+      if (Array.isArray(tr?.record?.winners)) {
+        for (const w of tr.record.winners) {
+          if (typeof w?.userId === 'string' && w.userId) candidateSet.add(w.userId);
+        }
+      }
+    }
+    if (Array.isArray(settlementUnit?.participants)) {
+      for (const p of settlementUnit.participants) {
+        if (typeof p?.playerId === 'string' && p.playerId) candidateSet.add(p.playerId);
+      }
+    }
+    if (summaryObj.scores && typeof summaryObj.scores === 'object' && !Array.isArray(summaryObj.scores)) {
+      for (const pid of Object.keys(summaryObj.scores)) {
+        candidateSet.add(pid);
+      }
+    }
+
+    const selfEntryId = resolveSelfIdWithinArchiveEntry(
+      entry,
+      currentUserId,
+      Array.from(candidateSet)
+    );
+    const normalizedSelfId = currentUserId || selfEntryId || 'me';
+
+    // 1. Parse persisted tournament results across all tables in the match
+    for (const tr of tournamentResults) {
+      const rec = tr?.record;
+      if (!rec || typeof rec !== 'object') continue;
+      const tKey = `${tr.tableId || 'table'}:${rec.id || rec.timestamp || entry.matchId}`;
+      if (seenTournamentKeys.has(tKey)) continue;
+
+      const participantIds: string[] = Array.isArray(tr.participantIds) ? tr.participantIds : [];
+      const winners: any[] = Array.isArray(rec.winners) ? rec.winners : [];
+      const inParticipants = Boolean(selfEntryId && participantIds.includes(selfEntryId));
+      const winnerIdx = selfEntryId ? winners.findIndex((w) => w?.userId === selfEntryId) : -1;
+
+      if (inParticipants || winnerIdx !== -1) {
+        seenTournamentKeys.add(tKey);
+        tournamentsEntered += 1;
+        if (winnerIdx !== -1) {
+          tournamentPrizeCoinsWon += Number(winners[winnerIdx]?.prizeCoins || 0);
+          if (winnerIdx === 0) {
+            tournamentsWon += 1;
+          }
+        }
+      }
+    }
+
+    // 2. Parse detailed settled rounds (contains exact seatResults, side bets, doubles, splits, scores)
+    let matchHadMyDetailedRounds = false;
+    for (const sr of settledRounds) {
+      if (!sr || typeof sr !== 'object') continue;
+      const roundId = typeof sr.roundId === 'string' && sr.roundId ? sr.roundId : '';
+      if (!roundId || seenRoundIds.has(roundId)) continue;
+
+      const rawSeatResults: SeatResult[] = Array.isArray(sr.seatResults) ? sr.seatResults : [];
+      if (rawSeatResults.length === 0) continue;
+
+      const mySeats = selfEntryId
+        ? rawSeatResults.filter((s) => s && s.userId === selfEntryId)
+        : [];
+      if (mySeats.length === 0) continue;
+
+      seenRoundIds.add(roundId);
+      matchHadMyDetailedRounds = true;
+
+      const normalizedSeatResults: SeatResult[] = rawSeatResults.map((s) =>
+        selfEntryId && s.userId === selfEntryId
+          ? { ...s, userId: normalizedSelfId }
+          : s
+      );
+
+      const amountWon =
+        (selfEntryId && sr.winnings && typeof sr.winnings[selfEntryId] === 'number'
+          ? sr.winnings[selfEntryId]
+          : 0) || 0;
+      const totalNet = mySeats.reduce((sum, s) => sum + (Number(s.net) || 0), 0);
+      const hasBlackjack = mySeats.some((s) => (s.action || '').toLowerCase().includes('blackjack'));
+      const resType: GameRecord['result'] = hasBlackjack
+        ? 'blackjack'
+        : totalNet > 0
+        ? 'win'
+        : totalNet < 0
+        ? 'lose'
+        : 'push';
+
+      records.push({
+        id: roundId,
+        tableId: typeof sr.tableId === 'string' && sr.tableId ? sr.tableId : 'table_1',
+        tableMode: sr.tableMode === 'tournament' ? 'tournament' : 'regular',
+        tableName: typeof sr.tableName === 'string' && sr.tableName ? sr.tableName : undefined,
+        tableMinBet: typeof sr.tableMinBet === 'number' ? sr.tableMinBet : undefined,
+        result: resType,
+        amountWon,
+        timestamp: Number(sr.timestamp) || entry.endTime || entry.startTime || Date.now(),
+        seatResults: normalizedSeatResults,
+        dealerScore: typeof sr.dealerScore === 'number' ? sr.dealerScore : undefined,
+        currency: 'Gcoin',
+      });
+    }
+
+    // 3. Fallback for legacy / Result-Unit-only archived matches lacking settledRounds
+    if (!matchHadMyDetailedRounds && settledRounds.length === 0) {
+      const statsObj =
+        entry.stats && typeof entry.stats === 'object' && !Array.isArray(entry.stats)
+          ? (entry.stats as Record<string, unknown>)
+          : null;
+      const participants: any[] = Array.isArray(settlementUnit?.participants)
+        ? settlementUnit!.participants
+        : [];
+      const myParticipant = selfEntryId
+        ? participants.find((p) => p && p.playerId === selfEntryId)
+        : participants.length === 1
+        ? participants[0]
+        : undefined;
+      const metricsSource: Record<string, unknown> | any[] | undefined =
+        myParticipant?.metrics && typeof myParticipant.metrics === 'object'
+          ? myParticipant.metrics
+          : undefined;
+
+      const handsPlayed = readMetricNumber(metricsSource, statsObj, 'hands_played');
+      const handsWon = readMetricNumber(metricsSource, statsObj, 'hands_won');
+      const blackjacks = readMetricNumber(metricsSource, statsObj, 'blackjack_count');
+      const doubles = readMetricNumber(metricsSource, statsObj, 'double_count');
+      const splits = readMetricNumber(metricsSource, statsObj, 'split_count');
+      const sideBetHands = readMetricNumber(metricsSource, statsObj, 'side_bet_hands');
+      const sideBetWins = readMetricNumber(metricsSource, statsObj, 'side_bet_wins');
+      const sideBetNet = readMetricNumber(metricsSource, statsObj, 'side_bet_net');
+      const sideBetGrossWin = readMetricNumber(metricsSource, statsObj, 'side_bet_gross_win');
+      const pairWins = readMetricNumber(metricsSource, statsObj, 'pair_wins');
+      const plus3Wins = readMetricNumber(metricsSource, statsObj, 'plus3_wins');
+      const bestSingleWin = readMetricNumber(metricsSource, statsObj, 'best_single_win');
+      const netDelta =
+        readMetricNumber(metricsSource, statsObj, 'net_coins_delta') ||
+        (typeof myParticipant?.score === 'number' ? Number(myParticipant.score) : 0);
+
+      const hasAnyStats =
+        handsPlayed > 0 ||
+        netDelta !== 0 ||
+        Boolean(myParticipant) ||
+        (statsObj !== null && Object.keys(statsObj).length > 0);
+
+      if (hasAnyStats) {
+        const metaMode = settlementUnit?.metadata?.mode === 'tournament' ? 'tournament' : 'regular';
+        const effectiveHands = handsPlayed > 0 ? handsPlayed : 1;
+        const effectiveWins =
+          handsPlayed > 0
+            ? handsWon
+            : myParticipant?.outcome === 'win' || netDelta > 0
+            ? 1
+            : 0;
+
+        if (bestSingleWin > legacyAggregates.bestSingleWin) {
+          legacyAggregates.bestSingleWin = bestSingleWin;
+        } else if (netDelta > legacyAggregates.bestSingleWin) {
+          legacyAggregates.bestSingleWin = netDelta;
+        }
+
+        if (metaMode === 'tournament') {
+          legacyAggregates.tournamentRounds += effectiveHands;
+          legacyAggregates.tournamentWins += effectiveWins;
+          legacyAggregates.tournamentNet += netDelta;
+          legacyAggregates.tournamentBlackjacks += blackjacks;
+          legacyAggregates.tournamentSideBetHands += sideBetHands;
+          legacyAggregates.tournamentSideBetWins += sideBetWins;
+          legacyAggregates.tournamentSideBetNet += sideBetNet;
+          legacyAggregates.tournamentSideBetGrossWin += sideBetGrossWin;
+          legacyAggregates.tournamentPairWins += pairWins;
+          legacyAggregates.tournamentPlus3Wins += plus3Wins;
+        } else {
+          legacyAggregates.regularRounds += effectiveHands;
+          legacyAggregates.regularWins += effectiveWins;
+          legacyAggregates.regularNet += netDelta;
+          legacyAggregates.regularBlackjacks += blackjacks;
+          legacyAggregates.regularDoubles += doubles;
+          legacyAggregates.regularSplits += splits;
+          legacyAggregates.regularSideBetHands += sideBetHands;
+          legacyAggregates.regularSideBetWins += sideBetWins;
+          legacyAggregates.regularSideBetNet += sideBetNet;
+          legacyAggregates.regularSideBetGrossWin += sideBetGrossWin;
+          legacyAggregates.regularPairWins += pairWins;
+          legacyAggregates.regularPlus3Wins += plus3Wins;
+        }
+
+        const legacyId = `archive_${entry.matchId}`;
+        if (!seenRoundIds.has(legacyId)) {
+          seenRoundIds.add(legacyId);
+          const actionLabel =
+            blackjacks > 0
+              ? 'blackjack'
+              : effectiveWins > 0 || netDelta > 0
+              ? 'won'
+              : netDelta < 0
+              ? 'lost'
+              : 'push';
+          records.push({
+            id: legacyId,
+            tableId:
+              typeof settlementUnit?.metadata?.tableId === 'string' &&
+              settlementUnit.metadata.tableId
+                ? settlementUnit.metadata.tableId
+                : 'table_1',
+            tableMode: metaMode,
+            tableName:
+              typeof settlementUnit?.metadata?.tableName === 'string' &&
+              settlementUnit.metadata.tableName
+                ? settlementUnit.metadata.tableName
+                : undefined,
+            result:
+              blackjacks > 0
+                ? 'blackjack'
+                : netDelta > 0
+                ? 'win'
+                : netDelta < 0
+                ? 'lose'
+                : 'push',
+            amountWon: Math.max(0, netDelta),
+            timestamp: entry.endTime || entry.startTime || Date.now(),
+            seatResults: [
+              {
+                seatIndex: 0,
+                userId: normalizedSelfId,
+                bet: 0,
+                sideBetWin: sideBetGrossWin,
+                net: netDelta,
+                action: actionLabel,
+              },
+            ],
+            currency: 'Gcoin',
+          });
+        }
+      }
+    }
+  }
+
+  records.sort((a, b) => b.timestamp - a.timestamp);
+
+  return {
+    records,
+    legacyAggregates,
+    tournamentsEntered,
+    tournamentsWon,
+    tournamentPrizeCoinsWon,
+    totalArchivedMatches: entries.length,
+  };
+}
 
 function computeClientTableCodeHash(tableId: string, code: string): string {
   const input = `${tableId}:${code.trim()}:royal_bj_pin`;
@@ -728,6 +1178,12 @@ function buildOnlinePlayersList(
     return null;
   };
 
+  const disconnectedSet = new Set<string>(
+    Array.isArray(roomState?.disconnectedPlayerIds)
+      ? roomState.disconnectedPlayerIds.filter((id: unknown): id is string => typeof id === 'string')
+      : []
+  );
+
   for (const rp of sdkPlayers) {
     if (!rp || typeof rp.playerId !== 'string') continue;
     const uid = rp.playerId.trim();
@@ -756,6 +1212,7 @@ function buildOnlinePlayersList(
       tableId: tableInfo?.tableId,
       tableName: tableInfo?.tableName,
       isPlaying: tableInfo?.isPlaying ?? false,
+      isDisconnected: disconnectedSet.has(uid),
     });
   }
 
@@ -785,6 +1242,7 @@ function buildOnlinePlayersList(
       tableId: tableInfo?.tableId,
       tableName: tableInfo?.tableName,
       isPlaying: tableInfo?.isPlaying ?? false,
+      isDisconnected: disconnectedSet.has(uid),
     });
   }
 
@@ -822,6 +1280,7 @@ function buildOnlinePlayersList(
         tableId: t.id,
         tableName: t.name,
         isPlaying: Boolean(s.hand && t.status === 'playing'),
+        isDisconnected: disconnectedSet.has(uid),
       });
     }
   }
@@ -835,6 +1294,7 @@ function buildOnlinePlayersList(
       tableId: tableInfo?.tableId,
       tableName: tableInfo?.tableName,
       isPlaying: tableInfo?.isPlaying ?? false,
+      isDisconnected: disconnectedSet.has(currentUser.id),
     });
   }
 
@@ -893,10 +1353,16 @@ interface GameStore {
   activeTableId: string | null;
   gameRecords: GameRecord[];
   onlinePlayers: OnlinePlayerEntry[];
+  disconnectedPlayerIds: string[];
   unlockedTableIds: Record<string, boolean>;
   roomStatus: RoomConnectionStatus;
   roomError: string | null;
+  personalArchive: PersonalArchiveData;
+  personalArchiveStatus: 'idle' | 'loading' | 'loaded' | 'error';
+  personalArchiveError: string | null;
+  personalArchiveLastFetchedAt: number | null;
 
+  fetchPersonalArchive: (force?: boolean) => Promise<void>;
   login: (name: string, overrideUserId?: string, avatar?: string, isCreator?: boolean) => Promise<void>;
   reconnectRoom: () => Promise<void>;
   syncStateFromServer: () => Promise<void>;
@@ -1052,16 +1518,43 @@ export const useGameStore = create<GameStore>((set, get) => {
         ? null
         : curActive;
 
+    const disconnectedPlayerIds: string[] = Array.isArray(roomState.disconnectedPlayerIds)
+      ? roomState.disconnectedPlayerIds.filter((id: unknown): id is string => typeof id === 'string')
+      : [];
+
+    let detectedNewSettledRound = false;
+    for (const t of Object.values(nextTables)) {
+      const roundId = t.lastRoundSummary?.roundId;
+      if (roundId && !seenSettledRoundIdsForArchive.has(roundId)) {
+        seenSettledRoundIdsForArchive.add(roundId);
+        // Only trigger a background refresh if we already fetched the archive at least once
+        if (get().personalArchiveLastFetchedAt !== null) {
+          detectedNewSettledRound = true;
+        }
+      }
+    }
+
     set({
       currentUser: syncedUser,
       tables: nextTables,
       gameRecords: updatedRecords,
       onlinePlayers,
+      disconnectedPlayerIds,
       unlockedTableIds: nextUnlocked,
       activeTableId: nextActiveId,
       roomStatus: 'connected',
       roomError: null,
     });
+
+    if (get().personalArchiveStatus === 'idle') {
+      get().fetchPersonalArchive().catch(() => {});
+    } else if (detectedNewSettledRound) {
+      if (archiveRefreshTimer) clearTimeout(archiveRefreshTimer);
+      archiveRefreshTimer = setTimeout(() => {
+        archiveRefreshTimer = null;
+        get().fetchPersonalArchive(true).catch(() => {});
+      }, 600);
+    }
   };
 
   /**
@@ -1072,6 +1565,20 @@ export const useGameStore = create<GameStore>((set, get) => {
       return false;
     }
     return sendRandseedRoomAction(actionData);
+  };
+
+  const dispatchConfirmedOnlineAction = async (
+    actionData: Record<string, any>
+  ): Promise<{ ok: boolean; error?: string }> => {
+    if (!isRandseedRoomConnected()) {
+      return {
+        ok: false,
+        error:
+          getRandseedRoomError() ||
+          'Online room is not connected. Please wait for connection and try again.',
+      };
+    }
+    return sendRandseedRoomActionConfirmed(actionData);
   };
 
   const connectAndSyncRoom = async (fallbackName = 'Player', fallbackAvatar?: string) => {
@@ -1117,9 +1624,57 @@ export const useGameStore = create<GameStore>((set, get) => {
     activeTableId: null,
     gameRecords: [],
     onlinePlayers: [],
+    disconnectedPlayerIds: [],
     unlockedTableIds: {},
     roomStatus: getRandseedRoomStatus(),
     roomError: getRandseedRoomError(),
+    personalArchive: createEmptyPersonalArchive(),
+    personalArchiveStatus: 'idle',
+    personalArchiveError: null,
+    personalArchiveLastFetchedAt: null,
+
+    fetchPersonalArchive: async (force = false) => {
+      const state = get();
+      if (archiveFetchInFlight) {
+        return archiveFetchInFlight;
+      }
+      if (
+        !force &&
+        state.personalArchiveStatus === 'loaded' &&
+        state.personalArchiveLastFetchedAt &&
+        Date.now() - state.personalArchiveLastFetchedAt < 5000
+      ) {
+        return;
+      }
+
+      archiveFetchInFlight = (async () => {
+        set({
+          personalArchiveStatus: 'loading',
+          personalArchiveError: null,
+        });
+        const res = await fetchAllRandseedMatchHistory({ pageSize: 100, maxPages: 10 });
+        if (res.error) {
+          set({
+            personalArchiveStatus: 'error',
+            personalArchiveError: res.error,
+          });
+          return;
+        }
+
+        const currentUserId = get().currentUser?.id;
+        const parsed = buildPersonalArchiveFromEntries(res.items, currentUserId);
+        set({
+          personalArchive: parsed,
+          personalArchiveStatus: 'loaded',
+          personalArchiveError: null,
+          personalArchiveLastFetchedAt: Date.now(),
+        });
+      })().finally(() => {
+        archiveFetchInFlight = null;
+      });
+
+      return archiveFetchInFlight;
+    },
 
     login: async (name: string, _overrideUserId?: string, avatar?: string, _isCreator?: boolean) => {
       if (loginInFlight) {
@@ -1260,23 +1815,52 @@ export const useGameStore = create<GameStore>((set, get) => {
 
     createTable: async (settings, liquidity) => {
       const user = get().currentUser;
-      if (!user) return '';
+      if (!user) {
+        throw new Error('Player session is not ready yet. Please wait a moment and try again.');
+      }
+      if (!isRandseedRoomConnected()) {
+        throw new Error(
+          getRandseedRoomError() ||
+            'Online room is not connected. Please wait for the room connection and try again.'
+        );
+      }
 
       const newTableId = `table_${Math.random().toString(36).slice(2, 11)}`;
-      await dispatchOnlineAction({
+      const safeAvatar =
+        typeof user.avatar === 'string' && user.avatar.length > 0 && user.avatar.length <= 4096
+          ? user.avatar
+          : undefined;
+      const safeLiquidity = Number.isFinite(Number(liquidity))
+        ? Math.max(0, Math.round(Number(liquidity)))
+        : 0;
+      const cleanSettings = JSON.parse(JSON.stringify(settings));
+
+      const dispatchRes = await dispatchConfirmedOnlineAction({
         action: 'create_table',
         tableId: newTableId,
-        settings: JSON.parse(JSON.stringify(settings)),
-        liquidity,
-        playerName: user.name,
-        ...(user.avatar ? { playerAvatar: user.avatar } : {}),
+        settings: cleanSettings,
+        liquidity: safeLiquidity,
+        playerName: (user.name || 'Player').trim().slice(0, 120) || 'Player',
+        ...(safeAvatar ? { playerAvatar: safeAvatar } : {}),
       });
 
-      // Wait briefly for the authoritative room snapshot containing the new online table
+      if (!dispatchRes.ok) {
+        throw new Error(dispatchRes.error || 'Failed to create custom table.');
+      }
+
+      // Wait for the authoritative room snapshot containing the new online table
       const waitStart = Date.now();
-      while (Date.now() - waitStart < 1200) {
+      while (Date.now() - waitStart < 6000) {
+        if (get().tables[newTableId]) break;
+        await get().syncStateFromServer();
         if (get().tables[newTableId]) break;
         await new Promise((r) => setTimeout(r, 50));
+      }
+
+      if (!get().tables[newTableId]) {
+        throw new Error(
+          'Custom table was not confirmed by the room server in time. Please try again.'
+        );
       }
 
       set((state) => ({
@@ -1302,11 +1886,14 @@ export const useGameStore = create<GameStore>((set, get) => {
         return false;
       }
 
-      await dispatchOnlineAction({
+      const res = await dispatchConfirmedOnlineAction({
         action: 'verify_table_code',
         tableId,
         tableCode: submitted,
       });
+      if (!res.ok) {
+        return false;
+      }
 
       set((state) => ({
         unlockedTableIds: { ...state.unlockedTableIds, [tableId]: true },
@@ -1315,30 +1902,33 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     updateTableSettings: async (tableId, settings) => {
-      await dispatchOnlineAction({
+      const res = await dispatchConfirmedOnlineAction({
         action: 'update_table_settings',
         tableId,
         settings: JSON.parse(JSON.stringify(settings)),
       });
+      if (!res.ok) {
+        throw new Error(res.error || 'Failed to update table settings.');
+      }
     },
 
     depositLiquidity: async (tableId, amount) => {
-      await dispatchOnlineAction({
+      await dispatchConfirmedOnlineAction({
         action: 'deposit_liquidity',
         tableId,
-        amount,
+        amount: Number.isFinite(Number(amount)) ? Math.max(0, Number(amount)) : 0,
       });
     },
 
     pauseTable: async (tableId) => {
-      await dispatchOnlineAction({
+      await dispatchConfirmedOnlineAction({
         action: 'pause_table',
         tableId,
       });
     },
 
     resumeTable: async (tableId) => {
-      await dispatchOnlineAction({
+      await dispatchConfirmedOnlineAction({
         action: 'resume_table',
         tableId,
       });
@@ -1346,10 +1936,10 @@ export const useGameStore = create<GameStore>((set, get) => {
 
     withdrawLiquidity: async (tableId, amount) => {
       if (amount <= 0) return;
-      await dispatchOnlineAction({
+      await dispatchConfirmedOnlineAction({
         action: 'withdraw_liquidity',
         tableId,
-        amount,
+        amount: Number.isFinite(Number(amount)) ? Math.max(0, Number(amount)) : 0,
       });
     },
 
@@ -1504,13 +2094,15 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     closeTable: async (tableId) => {
-      await dispatchOnlineAction({
+      const res = await dispatchConfirmedOnlineAction({
         action: 'close_table',
         tableId,
       });
-      set((state) => ({
-        activeTableId: state.activeTableId === tableId ? null : state.activeTableId,
-      }));
+      if (res.ok) {
+        set((state) => ({
+          activeTableId: state.activeTableId === tableId ? null : state.activeTableId,
+        }));
+      }
     },
   };
 });

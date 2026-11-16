@@ -5,7 +5,7 @@ import { systemConfig } from '@/config/systemConfig';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { ChevronDown, ChevronRight, Copy, Coins, Settings as SettingsIcon, CheckCircle2, RefreshCw, X, Play, Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, Coins, Settings as SettingsIcon, CheckCircle2, RefreshCw, X, Play, Loader2, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { HeaderUI } from '@/components/blackjack/HeaderUI';
 
@@ -21,6 +21,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
 
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isHosting, setIsHosting] = useState(false);
+  const [hostError, setHostError] = useState<string | null>(null);
   const defaultTournament: TournamentSettings = {
        ticketPrice: 100,
        startingChips: 1000,
@@ -76,6 +77,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
 
   const handleSubmit = async () => {
     setHasAttemptedSubmit(true);
+    setHostError(null);
     if (!settings.name) return;
     if (settings.mode !== 'tournament' && (!settings.minBet || !settings.maxBet || settings.maxBet < settings.minBet)) return;
     if (settings.mode === 'tournament') {
@@ -83,14 +85,21 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
         if (settings.tournament?.hostFeePct === '' as any) return;
     }
     setIsHosting(true);
-    if (editingTable) {
+    try {
+      if (editingTable) {
         await updateTableSettings(editingTable.id, settings);
-        setIsHosting(false);
         onNavigate('manage_tables');
-    } else {
+      } else {
         const newTableId = await createTable(settings, settings.mode === 'tournament' ? 0 : minLiquidity);
-        setIsHosting(false);
-        onNavigate('table', newTableId); 
+        if (!newTableId) {
+          throw new Error('Failed to create custom table.');
+        }
+        onNavigate('table', newTableId);
+      }
+    } catch (err: any) {
+      setHostError(err?.message || 'Failed to create custom table. Please try again.');
+    } finally {
+      setIsHosting(false);
     }
   };
 
@@ -114,15 +123,15 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
       />
 
       <div className="flex-1 w-full overflow-y-auto overflow-x-hidden flex flex-col items-center [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-        <div className="w-full max-w-[1024px] flex flex-col items-center gap-2 z-40 px-2 sm:px-4 pt-2 sm:pt-3 pb-1 relative pointer-events-none">
-          <div className="flex flex-row items-center justify-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-[420px] mx-auto mt-[-2px]">
-            <div className="bg-[#1e2025]/90 backdrop-blur-sm border border-white/10 rounded-full px-3 sm:px-6 shadow-2xl flex items-center justify-center flex-1 h-[36px] min-w-[240px]">
-               <div className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider">
+        <div className="w-full max-w-[1024px] flex flex-col items-center gap-2 z-40 px-4 pt-3 pb-1 relative pointer-events-none">
+          <div className="flex flex-row items-center justify-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-[420px] mx-auto">
+            <div className="bg-[#1e2025]/90 backdrop-blur-sm border border-white/10 rounded-full px-3 sm:px-6 shadow-2xl flex items-center justify-center flex-1 h-[36px] min-w-0">
+               <div className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider truncate">
                  <span className="text-white/40 uppercase">Balance</span>
-                 <div className="w-3.5 h-3.5 rounded-full bg-[#ffc53d] border-[2px] border-[#eaaa08] shadow-[0_0_4px_rgba(255,197,61,0.4)] relative overflow-hidden">
+                 <div className="w-3.5 h-3.5 rounded-full bg-[#ffc53d] border-[2px] border-[#eaaa08] shadow-[0_0_4px_rgba(255,197,61,0.4)] relative overflow-hidden shrink-0">
                     <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-white/40 rounded-full blur-[1px]"></div>
                  </div>
-                 <span className="text-[#32d5a4] text-sm">{currentUser.balance.toLocaleString('en-US', {minimumFractionDigits: currentUser.balance % 1 !== 0 ? 2 : 0, maximumFractionDigits: 2})}</span>
+                 <span className="text-[#32d5a4] text-sm font-mono truncate">{currentUser.balance.toLocaleString('en-US', {minimumFractionDigits: currentUser.balance % 1 !== 0 ? 2 : 0, maximumFractionDigits: 2})}</span>
                </div>
             </div>
             <button 
@@ -134,7 +143,7 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
           </div>
         </div>
 
-        <div className="w-full max-w-[1024px] flex flex-col min-h-[500px] pl-[24px] py-[12px] pr-[12px] sm:pr-[24px] gap-[12px] mx-auto z-10 pointer-events-auto bg-[#1a1b23] sm:rounded-[32px] sm:mb-[48px] mb-[48px] pb-12 border border-x-0 border-white/5 sm:border-x shadow-2xl shrink-0">
+        <div className="w-full max-w-[1024px] flex flex-col min-h-[500px] px-4 sm:px-6 py-4 gap-3 mx-auto z-10 pointer-events-auto bg-[#1a1b23] sm:rounded-[32px] sm:mb-[48px] mb-[48px] pb-12 border border-x-0 border-white/5 sm:border-x shadow-2xl shrink-0">
         
         {/* Title */}
         <div className="flex flex-col items-center gap-2 py-4 text-center px-4">
@@ -1051,6 +1060,12 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
 
       {/* 3. Host */}
       <div className="pt-4 pb-8 flex flex-col gap-3">
+        {hostError && (
+          <div className="flex items-start gap-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 px-4 py-3 text-sm text-rose-300">
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <span>{hostError}</span>
+          </div>
+        )}
         <Button 
           size="lg" 
           disabled={isHosting}

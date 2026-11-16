@@ -305,12 +305,12 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
       {/* Iframe Max-Size Container (1280x720) */}
       <div className="relative z-10 w-full h-full flex flex-col overflow-hidden">
         {/* Top Header Bar: Global left/right padding 16px (px-4) */}
-        <header className="w-full h-14 sm:h-16 shrink-0 bg-[#111613]/95 border-b border-[#c6a364]/20 px-2.5 sm:px-4 flex items-center justify-between gap-2 sm:gap-4">
+        <header className="w-full h-14 sm:h-16 shrink-0 bg-[#111613]/95 border-b border-[#c6a364]/20 px-4 flex items-center justify-between gap-2 sm:gap-4">
           {/* Brand Title */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0 min-w-0">
             <RoyalBlackjackLogo className="w-7 h-7 sm:w-8 sm:h-8 rounded-full shadow-md shrink-0" />
             <span className="text-sm sm:text-lg md:text-2xl font-bold tracking-wider text-[#f5e6c8] whitespace-nowrap truncate">
-              <span className="hidden xs:inline">ROYAL </span>BLACKJACK
+              <span className="hidden sm:inline">ROYAL </span>BLACKJACK
             </span>
           </div>
 
@@ -343,10 +343,10 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
               <button
                 onClick={() => setShowMyStatsModal(true)}
                 title="My Stats (Personal Cross-Table Records)"
-                className="flex items-center gap-1 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold text-[#ffd86b] bg-[#d4af37]/15 hover:bg-[#d4af37]/25 border border-[#d4af37]/40 transition-colors whitespace-nowrap cursor-pointer"
+                className="flex items-center gap-1 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold text-[#ffd86b] bg-[#d4af37]/15 hover:bg-[#d4af37]/25 border border-[#d4af37]/40 transition-colors whitespace-nowrap cursor-pointer min-h-[36px]"
               >
                 <User className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#ffd86b] shrink-0" />
-                <span className="hidden xs:inline">My </span>
+                <span className="hidden sm:inline">My </span>
                 <span>Stats</span>
               </button>
 
@@ -354,7 +354,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 <button
                   onClick={handleOpenStats}
                   title="Creator Report"
-                  className="flex items-center gap-1 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 transition-colors whitespace-nowrap cursor-pointer"
+                  className="flex items-center gap-1 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 transition-colors whitespace-nowrap cursor-pointer min-h-[36px]"
                 >
                   <BarChart3 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400 shrink-0" />
                   <span>Report</span>
@@ -366,54 +366,54 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
 
         {/* Main Workspace: Global padding 16px (p-4), stacked flex on mobile to prevent overlap, 12-col grid on desktop */}
         <style>{`.hide-scrollbar-custom::-webkit-scrollbar { display: none; } .hide-scrollbar-custom { -ms-overflow-style: none; scrollbar-width: none; }`}</style>
-        <main className="flex-1 min-h-0 w-full p-3 sm:p-4 flex flex-col lg:grid lg:grid-cols-12 gap-3.5 sm:gap-4 overflow-y-auto lg:overflow-hidden hide-scrollbar-custom">
+        <main className="flex-1 min-h-0 w-full p-4 pb-6 lg:pb-4 flex flex-col lg:grid lg:grid-cols-12 gap-3 sm:gap-4 overflow-y-auto lg:overflow-hidden hide-scrollbar-custom">
           {/* LEFT COLUMN (5 Cols): Blackjack Felt Visual + Collapsible Online Players / Game Rules */}
-          <div className="w-full lg:col-span-5 flex flex-col gap-3.5 sm:gap-4 shrink-0 lg:shrink lg:min-h-0">
+          <div className="w-full lg:col-span-5 flex flex-col gap-3 sm:gap-4 shrink-0 lg:shrink lg:min-h-0">
             {/* 1. Blackjack Poker Felt Showcase */}
-            <div className="shrink-0 relative rounded-2xl bg-gradient-to-b from-[#164e2e] via-[#113d23] to-[#0b2616] border-2 border-[#6b4c2a] shadow-[inset_0_0_42px_rgba(0,0,0,0.75)] p-4 sm:p-5 flex flex-col justify-center overflow-hidden">
-              <div className="absolute inset-x-3 top-3 bottom-3 rounded-2xl border border-[#d4af37]/20 pointer-events-none" />
+            <div className="shrink-0 relative rounded-2xl bg-gradient-to-b from-[#164e2e] via-[#113d23] to-[#0b2616] border-2 border-[#6b4c2a] shadow-[inset_0_0_42px_rgba(0,0,0,0.75)] p-3 sm:p-5 flex flex-col justify-center overflow-hidden">
+              <div className="absolute inset-x-2.5 top-2.5 bottom-2.5 sm:inset-x-3 sm:top-3 sm:bottom-3 rounded-xl sm:rounded-2xl border border-[#d4af37]/20 pointer-events-none" />
 
               {/* Cards Showcase: Dealer vs Player 21 */}
-              <div className="relative z-10 my-1 flex items-center justify-around gap-4 py-1">
-                <div className="flex flex-col items-center gap-2">
-                  <span className="text-xs sm:text-sm uppercase tracking-wider text-emerald-200 font-semibold">
+              <div className="relative z-10 my-0.5 sm:my-1 flex items-center justify-around gap-2 sm:gap-4 py-0.5 sm:py-1">
+                <div className="flex flex-col items-center gap-1.5 sm:gap-2">
+                  <span className="text-[10px] sm:text-sm uppercase tracking-wider text-emerald-200 font-semibold whitespace-nowrap">
                     Dealer · 17 Stands
                   </span>
-                  <div className="flex items-center -space-x-3">
-                    <div className="w-14 h-20 rounded-lg overflow-hidden border border-[#d4af37]/70 shadow-xl flex items-center justify-center -rotate-6 bg-[#18452B] shrink-0">
+                  <div className="flex items-center -space-x-2.5 sm:-space-x-3">
+                    <div className="w-11 h-16 sm:w-14 sm:h-20 rounded-lg overflow-hidden border border-[#d4af37]/70 shadow-xl flex items-center justify-center -rotate-6 bg-[#18452B] shrink-0">
                       <img
                         src="/card-back.png"
                         alt="Dealer Hole Card"
                         className="w-full h-full object-cover rounded-md"
                       />
                     </div>
-                    <div className="w-14 h-20 rounded-lg bg-white text-slate-900 border border-slate-200 shadow-lg p-2 flex flex-col justify-between rotate-6">
-                      <div className="text-xs font-black leading-none">7♣</div>
-                      <div className="self-center text-xl leading-none">♣</div>
-                      <div className="text-xs font-black leading-none self-end rotate-180">7</div>
+                    <div className="w-11 h-16 sm:w-14 sm:h-20 rounded-lg bg-white text-slate-900 border border-slate-200 shadow-lg p-1.5 sm:p-2 flex flex-col justify-between rotate-6">
+                      <div className="text-[10px] sm:text-xs font-black leading-none">7♣</div>
+                      <div className="self-center text-base sm:text-xl leading-none">♣</div>
+                      <div className="text-[10px] sm:text-xs font-black leading-none self-end rotate-180">7</div>
                     </div>
                   </div>
                 </div>
 
-                <div className="flex flex-col items-center gap-1">
-                  <span className="text-base font-mono font-bold text-[#f5d97e] tracking-widest">VS</span>
-                  <span className="text-xs text-emerald-200/75">Live Table</span>
+                <div className="flex flex-col items-center gap-0.5 sm:gap-1 shrink-0">
+                  <span className="text-sm sm:text-base font-mono font-bold text-[#f5d97e] tracking-widest">VS</span>
+                  <span className="text-[10px] sm:text-xs text-emerald-200/75 whitespace-nowrap">Live Table</span>
                 </div>
 
-                <div className="flex flex-col items-center gap-2">
-                  <span className="text-xs sm:text-sm uppercase tracking-wider text-[#f5d97e] font-bold">
+                <div className="flex flex-col items-center gap-1.5 sm:gap-2">
+                  <span className="text-[10px] sm:text-sm uppercase tracking-wider text-[#f5d97e] font-bold whitespace-nowrap">
                     Natural 21 · 3:2
                   </span>
-                  <div className="flex items-center -space-x-3">
-                    <div className="w-14 h-20 rounded-lg bg-white text-slate-950 border-2 border-[#d4af37] shadow-xl p-2 flex flex-col justify-between -rotate-6">
-                      <div className="text-xs font-black leading-none">A♠</div>
-                      <div className="self-center text-xl leading-none">♠</div>
-                      <div className="text-xs font-black leading-none self-end rotate-180">A</div>
+                  <div className="flex items-center -space-x-2.5 sm:-space-x-3">
+                    <div className="w-11 h-16 sm:w-14 sm:h-20 rounded-lg bg-white text-slate-950 border-2 border-[#d4af37] shadow-xl p-1.5 sm:p-2 flex flex-col justify-between -rotate-6">
+                      <div className="text-[10px] sm:text-xs font-black leading-none">A♠</div>
+                      <div className="self-center text-base sm:text-xl leading-none">♠</div>
+                      <div className="text-[10px] sm:text-xs font-black leading-none self-end rotate-180">A</div>
                     </div>
-                    <div className="w-14 h-20 rounded-lg bg-white text-[#dc2626] border-2 border-[#d4af37] shadow-xl p-2 flex flex-col justify-between rotate-6">
-                      <div className="text-xs font-black leading-none">K♦</div>
-                      <div className="self-center text-xl leading-none">♦</div>
-                      <div className="text-xs font-black leading-none self-end rotate-180">K</div>
+                    <div className="w-11 h-16 sm:w-14 sm:h-20 rounded-lg bg-white text-[#dc2626] border-2 border-[#d4af37] shadow-xl p-1.5 sm:p-2 flex flex-col justify-between rotate-6">
+                      <div className="text-[10px] sm:text-xs font-black leading-none">K♦</div>
+                      <div className="self-center text-base sm:text-xl leading-none">♦</div>
+                      <div className="text-[10px] sm:text-xs font-black leading-none self-end rotate-180">K</div>
                     </div>
                   </div>
                 </div>
@@ -463,7 +463,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
 
                 <div
                   className={cn(
-                    'items-center gap-1 bg-black/40 p-1 rounded-xl border border-white/10 text-xs shrink-0',
+                    'items-center gap-1 bg-black/40 p-1 rounded-xl border border-white/10 text-xs max-w-full overflow-x-auto hide-scrollbar-custom',
                     isMobileOnlineExpanded ? 'flex' : 'hidden lg:flex'
                   )}
                 >
@@ -972,23 +972,23 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                         )}
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-6 text-sm sm:text-base text-slate-200">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:gap-x-6 text-xs sm:text-base text-slate-200">
                         {isTournament && trn ? (
                           <>
-                            <div className="flex items-center gap-2">
-                              <CurrencyIcon currency="Chip" className="w-4 h-4" />
+                            <div className="flex items-center gap-1.5 sm:gap-2">
+                              <CurrencyIcon currency="Chip" className="w-4 h-4 shrink-0" />
                               <span className="text-slate-400">Ticket:</span>
                               <span className="font-mono font-bold text-[#ffc53d]">
-                                {trn.ticketPrice} Game Coins
+                                {trn.ticketPrice} Coins
                               </span>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1.5 sm:gap-2">
                               <span className="text-slate-400">Allowance:</span>
                               <span className="font-mono font-bold text-emerald-300">
                                 {(trn.startingChips || 5000).toLocaleString()}
                               </span>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1.5 sm:gap-2">
                               <span className="text-slate-400">Win Rule:</span>
                               <span className="font-mono font-semibold text-amber-200">
                                 {trn.isSurvivorCap ? `Top ${trn.targetSurvivors}` : ''}
@@ -998,8 +998,8 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                             </div>
                           </>
                         ) : (
-                          <div className="flex items-center gap-2">
-                            <CurrencyIcon currency="Chip" className="w-4 h-4" />
+                          <div className="flex items-center gap-1.5 sm:gap-2">
+                            <CurrencyIcon currency="Chip" className="w-4 h-4 shrink-0" />
                             <span className="text-slate-400">Bet Limits:</span>
                             <span className="font-mono font-bold text-white">
                               {room.settings.minBet} – {room.settings.maxBet}
@@ -1007,8 +1007,8 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                           </div>
                         )}
 
-                        <div className="flex items-center gap-2">
-                          <Users className="w-4 h-4 text-slate-400" />
+                        <div className="flex items-center gap-1.5 sm:gap-2">
+                          <Users className="w-4 h-4 text-slate-400 shrink-0" />
                           <span className={cn('font-mono font-bold', isFull ? 'text-amber-400' : 'text-emerald-400')}>
                             {occupiedSeats}/{totalSeats} Seats
                           </span>
@@ -1039,7 +1039,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                         e.stopPropagation();
                         onSelectTable(room.id);
                       }}
-                      className="w-full sm:w-auto px-4 sm:px-5 py-2.5 sm:py-3 rounded-xl text-sm sm:text-base font-bold text-[#090d0b] bg-[#e5c158] group-hover:bg-[#f5d97e] transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                      className="w-full sm:w-auto min-h-[44px] px-4 sm:px-5 py-2.5 sm:py-3 rounded-xl text-sm sm:text-base font-bold text-[#090d0b] bg-[#e5c158] group-hover:bg-[#f5d97e] transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       <span>Enter Table</span>
                       <ChevronRight className="w-5 h-5" />
@@ -1068,10 +1068,10 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
               transition={{ duration: 0.15 }}
               className="w-full max-w-xl rounded-2xl bg-[#121915] border border-[#c6a364]/35 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
             >
-              <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between bg-black/30">
+              <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-white/10 flex items-center justify-between bg-black/30">
                 <div className="flex items-center gap-2.5">
                   <Crown className="w-5 h-5 text-[#d4af37]" />
-                  <h3 className="text-lg font-bold text-white">Create Custom Table</h3>
+                  <h3 className="text-base sm:text-lg font-bold text-white">Create Custom Table</h3>
                 </div>
                 <button
                   onClick={() => setShowCreateModal(false)}
@@ -1081,7 +1081,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 </button>
               </div>
 
-              <form onSubmit={handleCreateRoom} className="p-6 overflow-y-auto space-y-4 text-sm">
+              <form onSubmit={handleCreateRoom} className="p-4 sm:p-6 overflow-y-auto space-y-4 text-sm">
                 <div className="grid grid-cols-2 gap-2 p-1.5 bg-black/40 rounded-xl border border-white/10">
                   <button
                     type="button"
@@ -1579,19 +1579,19 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
               transition={{ duration: 0.15 }}
               className="w-full max-w-2xl rounded-2xl bg-[#121915] border border-[#c6a364]/35 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
             >
-              <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between bg-black/30">
-                <div className="flex items-center gap-2.5">
-                  <BarChart3 className="w-5 h-5 text-emerald-400" />
-                  <h3 className="text-base font-bold text-white">Game Statistics Overview</h3>
-                </div>
+              <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-white/10 flex items-center justify-between bg-black/30">
                 <div className="flex items-center gap-2">
+                  <BarChart3 className="w-5 h-5 text-emerald-400 shrink-0" />
+                  <h3 className="text-sm sm:text-base font-bold text-white truncate">Game Statistics Overview</h3>
+                </div>
+                <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
                   <button
                     onClick={loadRuntimeStats}
                     disabled={isLoadingStats}
-                    className="px-3 py-1.5 rounded-lg text-sm font-semibold text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 flex items-center gap-1.5 transition-colors cursor-pointer"
+                    className="px-2.5 sm:px-3 py-1.5 rounded-lg text-xs sm:text-sm font-semibold text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 flex items-center gap-1.5 transition-colors cursor-pointer"
                   >
-                    <RefreshCw className={cn('w-4 h-4', isLoadingStats && 'animate-spin')} />
-                    <span>Refresh</span>
+                    <RefreshCw className={cn('w-3.5 h-3.5 sm:w-4 sm:h-4', isLoadingStats && 'animate-spin')} />
+                    <span className="hidden sm:inline">Refresh</span>
                   </button>
                   <button
                     onClick={() => setShowStatsModal(false)}
@@ -1602,7 +1602,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 </div>
               </div>
 
-              <div className="p-6 overflow-y-auto space-y-5 text-sm">
+              <div className="p-4 sm:p-6 overflow-y-auto space-y-4 sm:space-y-5 text-sm">
                 {statsError ? (
                   <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300">
                     {statsError}
@@ -1705,13 +1705,13 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                         {(serverStats?.rooms || []).map((room: any) => (
                           <div
                             key={room.id}
-                            className="flex items-center justify-between rounded-xl bg-white/5 px-3.5 py-2.5 border border-white/5 text-xs"
+                            className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl bg-white/5 px-3.5 py-2.5 border border-white/5 text-xs"
                           >
-                            <div className="flex items-center gap-2">
-                              <span className="font-bold text-white">{room.name}</span>
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="font-bold text-white truncate">{room.name}</span>
                               <span
                                 className={cn(
-                                  'px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase',
+                                  'px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase shrink-0',
                                   room.mode === 'tournament'
                                     ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                                     : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
@@ -1720,7 +1720,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                                 {room.mode}
                               </span>
                             </div>
-                            <div className="flex items-center gap-4 font-mono text-slate-300">
+                            <div className="flex items-center gap-3 sm:gap-4 font-mono text-slate-300 shrink-0">
                               <span>
                                 Seats: <strong className="text-white">{room.seatedPlayers}/{room.maxSeats}</strong>
                               </span>

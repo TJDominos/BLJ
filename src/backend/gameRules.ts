@@ -1,27 +1,19 @@
 import { gameRules } from '../config/gameRules';
 import type { CardSuit, CardValue, PlayingCard } from '../store/gameStore';
+import {
+  ChaCha20Rng,
+  deriveSeedHex,
+  isValidSeedHex,
+  type ChaCha20State,
+} from './serverSdk/prng';
 
 const SUITS: CardSuit[] = ['hearts', 'diamonds', 'clubs', 'spades'];
 const VALUES: CardValue[] = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
 
-export function mulberry32Local(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 1831565813) >>> 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+const DEFAULT_FALLBACK_ROOT_SEED_HEX = '0'.repeat(64);
 
-export function createDeterministicShoe(
-  seed: number,
-  numDecks = gameRules.deckCount
-): { deck: PlayingCard[]; prngCalls: number } {
-  const rand = mulberry32Local(seed);
-  let prngCalls = 0;
+export function buildOrderedShoe(numDecks = gameRules.deckCount): PlayingCard[] {
   const deck: PlayingCard[] = [];
-
   for (let d = 0; d < numDecks; d++) {
     for (const suit of SUITS) {
       for (const value of VALUES) {
@@ -29,17 +21,49 @@ export function createDeterministicShoe(
       }
     }
   }
+  return deck;
+}
 
-  for (let i = deck.length - 1; i > 0; i--) {
-    const r = rand();
-    prngCalls++;
-    const j = Math.floor(r * (i + 1));
-    const tmp = deck[i];
-    deck[i] = deck[j];
-    deck[j] = tmp;
+/**
+ * Uses @randseed/server-sdk VRF ChaCha20Rng unbiased Fisher-Yates shuffle
+ * (`rng.shuffle` -> `nextBounded(i + 1)`) to generate an authoritative shoe.
+ */
+export function shuffleShoeWithVrfRng(
+  rng: ChaCha20Rng,
+  numDecks = gameRules.deckCount
+): PlayingCard[] {
+  const deck = buildOrderedShoe(numDecks);
+  return rng.shuffle(deck);
+}
+
+export function createVrfShoe(
+  seedOrRng: string | Uint8Array | ChaCha20Rng,
+  numDecks = gameRules.deckCount,
+  ...domains: string[]
+): { deck: PlayingCard[]; rngState: ChaCha20State } {
+  let rng: ChaCha20Rng;
+  if (seedOrRng instanceof ChaCha20Rng) {
+    rng = seedOrRng;
+  } else if (typeof seedOrRng === 'string') {
+    const normalizedSeedHex = isValidSeedHex(seedOrRng)
+      ? seedOrRng
+      : deriveSeedHex(DEFAULT_FALLBACK_ROOT_SEED_HEX, 'shoe-seed', seedOrRng);
+    rng =
+      domains.length > 0
+        ? ChaCha20Rng.fromDerived(normalizedSeedHex, ...domains)
+        : new ChaCha20Rng(normalizedSeedHex);
+  } else {
+    rng =
+      domains.length > 0
+        ? ChaCha20Rng.fromDerived(seedOrRng, ...domains)
+        : new ChaCha20Rng(seedOrRng);
   }
 
-  return { deck, prngCalls };
+  const deck = shuffleShoeWithVrfRng(rng, numDecks);
+  return {
+    deck,
+    rngState: rng.getState(),
+  };
 }
 
 export function calculateHandScore(cards: PlayingCard[], includeHidden = false): number {

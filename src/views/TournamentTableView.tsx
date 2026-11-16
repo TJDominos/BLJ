@@ -373,14 +373,8 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
       }
       const timer = setTimeout(() => setActionCountdown(actionCountdown - 1), 1000);
       return () => clearTimeout(timer);
-    } else if (actionCountdown === 0 && table?.status === 'playing') {
-      setActionCountdown(-1); // Prevent zero value from spilling over to the next turn's render phase
-      const activeSeat = table.currentTurnIndex;
-      if (activeSeat >= 0 && table.seats[activeSeat] && table.seats[activeSeat].hand?.status === 'playing') {
-        stand(table.id, activeSeat);
-      }
     }
-  }, [actionCountdown, isActiveTurnDealRevealed, table?.status, table?.id, table?.currentTurnIndex, stand, hit, currentUser?.id, JSON.stringify(table?.seats)]);
+  }, [actionCountdown, isActiveTurnDealRevealed, table?.status, table?.id, table?.currentTurnIndex, currentUser?.id, JSON.stringify(table?.seats)]);
 
   const prevActionSnapshot = React.useRef('');
   useEffect(() => {
@@ -779,15 +773,15 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
       <RankWidget onOpenChange={setIsStatsOpen} />
 
       {/* Floating Play Board Trigger Button & Sidebar (Left Side - Top) */}
-      <div className="fixed left-0 top-[calc(52%-2rem)] md:top-[calc(52%-2.4rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
+      <div className="fixed left-0 top-[calc(50%-1.75rem)] md:top-[calc(52%-2.4rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
         <button
           type="button"
           onClick={() => setIsTablePlayersOpen(true)}
           title="Play Board (Table Record & My Record)"
-          className="bg-zinc-950 border-y-2 border-r-2 border-[#d4af37] rounded-r-2xl p-2 md:p-2.5 pl-2.5 md:pl-3.5 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:translate-x-1 cursor-pointer flex flex-col items-center group relative"
+          className="bg-zinc-950 border-y-2 border-r-2 border-[#d4af37] rounded-r-2xl p-1.5 md:p-2.5 pl-2 md:pl-3.5 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:translate-x-1 cursor-pointer flex flex-col items-center group relative"
         >
           <Crown className="w-4 h-4 md:w-5 md:h-5 text-[#ffd86b] group-hover:scale-110 transition-transform" />
-          <span className="text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">
+          <span className="text-[8px] md:text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">
             Board
           </span>
         </button>
@@ -800,17 +794,17 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
       />
 
       {/* Floating Table List (Lobby Sidebar) Trigger Button (Left Side - Bottom) */}
-      <div className="fixed left-0 top-[calc(52%+2.2rem)] md:top-[calc(52%+2.6rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
+      <div className="fixed left-0 top-[calc(50%+1.75rem)] md:top-[calc(52%+2.6rem)] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
         <button
           type="button"
           onClick={() => onToggleSidebar && onToggleSidebar()}
           title="Tables Lobby"
-          className="bg-zinc-950 border-y-2 border-r-2 border-[#d4af37] rounded-r-2xl p-2 md:p-2.5 pl-2.5 md:pl-3.5 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:translate-x-1 cursor-pointer flex flex-col items-center group relative"
+          className="bg-zinc-950 border-y-2 border-r-2 border-[#d4af37] rounded-r-2xl p-1.5 md:p-2.5 pl-2 md:pl-3.5 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:translate-x-1 cursor-pointer flex flex-col items-center group relative"
         >
           <div className="relative">
             <Menu className="w-4 h-4 md:w-5 md:h-5 text-[#ffd86b] group-hover:scale-110 transition-transform" />
           </div>
-          <span className="text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">
+          <span className="text-[8px] md:text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">
             Tables
           </span>
         </button>
@@ -830,18 +824,18 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
           <div className="relative flex flex-row items-center border-[2px] border-[#6b4c2a] rounded-full bg-gradient-to-b from-[#eac574] via-[#d0a758] to-[#997027] p-0.5 sm:p-1 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8),inset_0_-1px_2px_rgba(0,0,0,0.4),0_4px_10px_rgba(0,0,0,0.5)] justify-between flex-1 h-[36px] sm:h-[40px] md:h-[44px] min-w-0">
             <div className="absolute left-1 right-1 inset-y-1 bg-black/20 pointer-events-none rounded-full z-0"></div>
 
-              <div id="balance-container" className="flex-1 flex flex-row items-center justify-between h-full w-full relative z-10 bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full px-3 sm:px-4 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6),0_1px_1px_rgba(255,255,255,0.4)] border border-[#3a2510]">
-               <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold tracking-wider">
-                 <CurrencyIcon currency="Chip" className="w-4 h-4" />
+              <div id="balance-container" className="flex-1 flex flex-row items-center justify-between h-full w-full relative z-10 bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full px-2 sm:px-3.5 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6),0_1px_1px_rgba(255,255,255,0.4)] border border-[#3a2510] min-w-0">
+               <div className="flex items-center gap-1 sm:gap-1.5 text-[10px] sm:text-[11px] font-bold tracking-wider truncate">
+                 <CurrencyIcon currency="Chip" className="w-3.5 h-3.5 shrink-0" />
                   {(() => {
                     const userBal = table.userBalances?.[currentUser.id];
                     const isSeatedInTournament = mySeats.length > 0 && Boolean(userBal);
                     const displayBalance = isSeatedInTournament ? userBal.balance : (currentUser.balance || 0);
                     const ticketPriceCoins = table.settings.tournament?.ticketPrice || 100;
                     return (
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[#ffc53d] text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-mono">
-                          {displayBalance.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0})} {isSeatedInTournament ? 'ALLOWANCE' : 'GAME COINS'}
+                      <div className="flex items-center gap-1 sm:gap-1.5 truncate">
+                        <span className="text-[#ffc53d] text-[13px] sm:text-[15px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-mono truncate">
+                          {displayBalance.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0})} <span className="hidden sm:inline">{isSeatedInTournament ? 'ALLOWANCE' : 'GAME COINS'}</span>
                         </span>
                         {!isSeatedInTournament && (currentUser.balance || 0) < ticketPriceCoins && table.status === 'waiting' && (
                           <button
@@ -851,9 +845,9 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                               await refillGameCoins(table.id);
                             }}
                             title="Server-side Game Coins Refill (+5,000)"
-                            className="ml-1 px-2 py-0.5 rounded-full bg-emerald-500 hover:bg-emerald-400 text-black font-black text-[9px] uppercase tracking-wider shadow transition-colors cursor-pointer"
+                            className="ml-0.5 sm:ml-1 px-1.5 sm:px-2 py-0.5 rounded-full bg-emerald-500 hover:bg-emerald-400 text-black font-black text-[9px] uppercase tracking-wider shadow transition-colors cursor-pointer shrink-0"
                           >
-                            +5,000 COINS
+                            +5K<span className="hidden sm:inline">,000 COINS</span>
                           </button>
                         )}
                       </div>
@@ -861,10 +855,10 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                  })()}
                </div>
   
-               <div className="w-px h-4 bg-white/10 mx-2 shadow-[1px_0_0_rgba(0,0,0,0.3)]" />
+               <div className="w-px h-3.5 sm:h-4 bg-white/10 mx-1 sm:mx-2 shadow-[1px_0_0_rgba(0,0,0,0.3)] shrink-0" />
   
                <div 
-                 className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold tracking-wider cursor-pointer hover:opacity-80 transition-opacity"
+                 className="flex items-center gap-1 sm:gap-1.5 text-[10px] sm:text-[11px] font-bold tracking-wider cursor-pointer hover:opacity-80 transition-opacity shrink-0"
                  onClick={() => setShowHistory(!showHistory)}
                >
                  {recentWinAmount ? (
@@ -873,28 +867,28 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                      initial={{ y: -10, opacity: 0 }}
                      animate={{ y: 0, opacity: 1 }}
                      className={cn(
-                       "flex items-center gap-2 text-[13px] sm:text-[14px]",
+                       "flex items-center gap-1 sm:gap-2 text-[12px] sm:text-[14px]",
                        recentWinAmount.won ? "text-emerald-400" : (recentWinAmount.amount > 0 ? "text-yellow-400" : "text-white/60")
                      )}
                    >
-                     <span className="uppercase font-bold tracking-wider drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">
-                        {recentWinAmount.won ? "WIN" : (recentWinAmount.amount > 0 ? "RETURN" : "")}
+                     <span className="uppercase font-bold tracking-wider drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] text-[10px] sm:text-[12px]">
+                        {recentWinAmount.won ? "WIN" : (recentWinAmount.amount > 0 ? "RET" : "")}
                      </span>
                      {recentWinAmount.amount > 0 && (
                        <>
-                         <CurrencyIcon currency="Chip" className="w-3.5 h-3.5" />
-                         <span className="text-[#32d5a4] font-mono text-[14px] sm:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">{recentWinAmount.amount % 1 !== 0 ? recentWinAmount.amount.toFixed(2) : recentWinAmount.amount}</span>
+                         <CurrencyIcon currency="Chip" className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
+                         <span className="text-[#32d5a4] font-mono text-[12px] sm:text-[15px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">{recentWinAmount.amount % 1 !== 0 ? recentWinAmount.amount.toFixed(2) : recentWinAmount.amount}</span>
                        </>
                      )}
                    </motion.div>
                  ) : (
-                   <div className="flex items-center gap-1.5 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">
-                     <div className="flex items-center gap-1 text-white/60 uppercase">
-                       <ArrowDown className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                   <div className="flex items-center gap-1 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">
+                     <div className="flex items-center gap-0.5 text-white/60 uppercase text-[9px] sm:text-[10px]">
+                       <ArrowDown className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                        <span>Bet</span>
                      </div>
-                     <CurrencyIcon currency="Chip" className="w-3.5 h-3.5" />
-                     <span className="text-[#32d5a4] font-mono text-[14px] sm:text-[16px]">{myTotalBet % 1 !== 0 ? myTotalBet.toFixed(2) : myTotalBet}</span>
+                     <CurrencyIcon currency="Chip" className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
+                     <span className="text-[#32d5a4] font-mono text-[12px] sm:text-[15px]">{myTotalBet % 1 !== 0 ? myTotalBet.toFixed(2) : myTotalBet}</span>
                    </div>
                  )}
                </div>
@@ -905,17 +899,17 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
             onClick={() => { 
                 onNavigate(hasHostedTables ? 'manage_tables' : 'host_table');
             }}
-            className={cn("flex text-[10px] sm:text-[11px] font-black uppercase tracking-wider text-white px-2 sm:px-2.5 py-1.5 sm:py-2 rounded-[12px] sm:rounded-[14px] items-center gap-1 shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border transition-transform whitespace-nowrap shrink-0 group relative", isPlayerDealt ? "bg-black/50 border-white/10 opacity-50" : "bg-gradient-to-b from-[#28a19b] to-[#126b6f] hover:from-[#2ebaba] hover:to-[#178287] border-[#0d4f52] hover:scale-105 active:scale-95")}
+            className={cn("flex text-[9px] sm:text-[11px] font-black uppercase tracking-wider text-white px-1.5 sm:px-2.5 py-1.5 sm:py-2 rounded-[10px] sm:rounded-[14px] items-center gap-1 shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border transition-transform whitespace-nowrap shrink-0 group relative", isPlayerDealt ? "bg-black/50 border-white/10 opacity-50" : "bg-gradient-to-b from-[#28a19b] to-[#126b6f] hover:from-[#2ebaba] hover:to-[#178287] border-[#0d4f52] hover:scale-105 active:scale-95")}
           >
             {hasLowLiquidityAlert && (
-               <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-pulse border border-white/20 shadow-[0_0_8px_rgba(239,68,68,0.8)] z-10" />
+               <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse border border-white/20 shadow-[0_0_8px_rgba(239,68,68,0.8)] z-10" />
             )}
-            <span className="drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">{hasHostedTables ? "Manage Tables" : "Host Tables"}</span>
+            <span className="drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">{hasHostedTables ? "Manage" : "Host"}<span className="hidden sm:inline"> Tables</span></span>
           </button>
         </div>
 
         {/* Right Symmetrical Spacer */}
-        <div className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 shrink-0 pointer-events-none" />
+        <div className="hidden sm:block w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 shrink-0 pointer-events-none" />
       </div>
                {showHistory && (
                  <div className="fixed inset-0 z-50 pointer-events-auto bg-black/40 backdrop-blur-sm" onClick={() => setShowHistory(false)}></div>
@@ -1163,54 +1157,55 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
               </AnimatePresence>
 
               {table.settings.mode === 'tournament' && (
-                 <div className="pointer-events-auto flex items-center justify-center gap-2 mt-2 border border-yellow-500/40 bg-black/50 px-3 py-1.5 rounded-lg backdrop-blur-md shadow-[0_2px_10px_rgba(0,0,0,0.5)]">
-                    <div className="flex flex-col items-end border-r border-white/10 pr-2">
+                 <div className="pointer-events-auto grid grid-cols-3 sm:flex items-center justify-center gap-x-3 gap-y-1.5 sm:gap-2 mt-2 border border-yellow-500/40 bg-black/50 px-2.5 sm:px-3 py-1.5 rounded-lg backdrop-blur-md shadow-[0_2px_10px_rgba(0,0,0,0.5)]">
+                    <div className="flex flex-col items-center sm:items-end sm:border-r sm:border-white/10 sm:pr-2">
                         <span className="text-[8px] uppercase tracking-widest font-bold text-white/50">Ticket</span>
-                        <span className="text-yellow-400 font-mono font-bold text-xs flex items-center gap-1 mt-0.5">
-                            <div className="w-2 h-2 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08]"></div>
-                            {table.settings.tournament?.ticketPrice} Game Coins
+                        <span className="text-yellow-400 font-mono font-bold text-[11px] sm:text-xs flex items-center gap-1 mt-0.5">
+                            <div className="w-2 h-2 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08] shrink-0"></div>
+                            {table.settings.tournament?.ticketPrice} <span className="hidden sm:inline">Game </span>Coins
                         </span>
                     </div>
-                    <div className="flex flex-col items-center border-r border-white/10 px-2">
+                    <div className="flex flex-col items-center sm:border-r sm:border-white/10 sm:px-2">
                         <span className="text-[8px] uppercase tracking-widest font-bold text-white/50">Allowance</span>
-                        <span className="text-emerald-300 font-mono font-bold text-xs flex items-center gap-1 mt-0.5">
+                        <span className="text-emerald-300 font-mono font-bold text-[11px] sm:text-xs flex items-center gap-1 mt-0.5">
                             {(table.settings.tournament?.startingChips || 5000).toLocaleString()}
                         </span>
                     </div>
-                    <div className="flex flex-col items-center border-r border-white/10 px-2">
+                    <div className="flex flex-col items-center sm:border-r sm:border-white/10 sm:px-2">
                         <span className="text-[8px] uppercase tracking-widest font-bold text-white/50">Round</span>
-                        <span className="text-emerald-400 font-mono font-bold text-xs flex items-center gap-1 mt-0.5">
+                        <span className="text-emerald-400 font-mono font-bold text-[11px] sm:text-xs flex items-center gap-1 mt-0.5">
                             {(table.roundsPlayed || 0) + 1}{table.settings.tournament?.isHardCapRounds ? `/${table.settings.tournament?.maxRounds}` : ''}
                         </span>
                     </div>
-                    <div className="flex flex-col items-center border-r border-white/10 px-2">
+                    <div className="flex flex-col items-center sm:border-r sm:border-white/10 sm:px-2">
                         <span className="text-[8px] uppercase tracking-widest font-bold text-white/50">Win Rule</span>
-                        <span className="text-blue-300 font-mono font-bold text-xs flex items-center gap-1 mt-0.5">
+                        <span className="text-blue-300 font-mono font-bold text-[11px] sm:text-xs flex items-center gap-1 mt-0.5">
                             {table.settings.tournament?.isSurvivorCap ? `Top ${table.settings.tournament.targetSurvivors || 1}` : 'Coin Split'}
                         </span>
                     </div>
-                    <div className="flex flex-col items-start border-r border-white/10 pr-2 pl-2">
+                    <div className="flex flex-col items-center sm:items-start sm:border-r sm:border-white/10 sm:pr-2 sm:pl-2">
                         <span className="text-[8px] uppercase tracking-widest font-bold text-white/50">Min Bet</span>
-                        <span className="text-red-400 font-mono font-bold text-xs flex items-center gap-1 mt-0.5">
-                            <div className="w-2 h-2 rounded-full bg-red-400 border-[1px] border-red-500"></div>
+                        <span className="text-red-400 font-mono font-bold text-[11px] sm:text-xs flex items-center gap-1 mt-0.5">
+                            <div className="w-2 h-2 rounded-full bg-red-400 border-[1px] border-red-500 shrink-0"></div>
                             {table.settings.tournament?.minBetChips || 50}
                         </span>
                     </div>
-                    <div className="flex flex-col items-start pl-2">
+                    <div className="flex flex-col items-center sm:items-start sm:pl-2">
                         <span className="text-[8px] uppercase tracking-widest font-bold text-[#fbc531]">Prize Pool</span>
-                        <span className="text-yellow-400 font-mono font-bold text-xs flex items-center gap-1 mt-0.5">
-                            <div className="w-2 h-2 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08]"></div>
+                        <span className="text-yellow-400 font-mono font-bold text-[11px] sm:text-xs flex items-center gap-1 mt-0.5">
+                            <div className="w-2 h-2 rounded-full bg-[#ffc53d] border-[1px] border-[#eaaa08] shrink-0"></div>
                             {table.liquidity > 0
                               ? Math.round(table.liquidity * (1 - ((table.settings.tournament?.hostFeePct || 3) + (table.settings.tournament?.platformFeePct || 2)) / 100))
-                              : Math.round((table.settings.tournament?.ticketPrice || 0) * (table.settings.maxSeats || 3) * (1 - ((table.settings.tournament?.hostFeePct || 3) + (table.settings.tournament?.platformFeePct || 2)) / 100))} Game Coins
+                              : Math.round((table.settings.tournament?.ticketPrice || 0) * (table.settings.maxSeats || 3) * (1 - ((table.settings.tournament?.hostFeePct || 3) + (table.settings.tournament?.platformFeePct || 2)) / 100))} <span className="hidden sm:inline">Game </span>Coins
                         </span>
                     </div>
                  </div>
               )}
            </div>
 
-           <div className="absolute left-0 top-[35%] sm:top-[40%] -translate-y-[120%] z-40 bg-[#1e2025]/80 backdrop-blur-sm border border-b border-l-0 border-[#ffc53d]/30 p-2 sm:p-3 rounded-tr-xl shadow-[0_0_15px_rgba(255,197,61,0.15)] hover:bg-[#ffc53d]/10 hover:border-[#ffc53d]/50 hover:shadow-[0_0_20px_rgba(255,197,61,0.25)] transition-all group pointer-events-auto cursor-pointer" onClick={() => setShowTournamentHistory(true)} title="Tournament History">
-             <History className="w-5 h-5 text-[#ffc53d] group-hover:scale-110 transition-transform" />
+           <div className="fixed left-0 top-[calc(50%-5.2rem)] md:top-[calc(52%-6.2rem)] -translate-y-1/2 z-[90] bg-zinc-950 border-y-2 border-r-2 border-[#ffc53d]/60 p-1.5 md:p-2 pl-2 md:pl-3 rounded-r-2xl shadow-[0_0_15px_rgba(255,197,61,0.2)] hover:translate-x-1 transition-all group pointer-events-auto cursor-pointer flex flex-col items-center [@media(max-height:520px)_and_(orientation:landscape)]:scale-75 [@media(max-height:520px)_and_(orientation:landscape)]:origin-left" onClick={() => setShowTournamentHistory(true)} title="Tournament History">
+             <History className="w-4 h-4 md:w-5 md:h-5 text-[#ffc53d] group-hover:scale-110 transition-transform" />
+             <span className="text-[8px] md:text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">Hist</span>
            </div>
 
            {/* Discard Pile (Left Top) */}
@@ -1281,7 +1276,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
            </div>
 
            {/* Shoe / Deck (Right Top) */}
-           <div className="absolute top-[42px] right-2 sm:top-[44px] sm:right-12 lg:top-8 lg:right-16 [@media(max-height:740px)]:top-4 [@media(max-height:740px)]:scale-[0.78] [@media(max-height:740px)]:origin-top [@media(max-height:520px)_and_(orientation:landscape)]:top-[28px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.65] [@media(max-height:520px)_and_(orientation:landscape)]:origin-top z-10 flex flex-col items-center gap-1.5 pointer-events-none">
+           <div className="absolute top-[42px] right-5 sm:top-[44px] sm:right-12 lg:top-8 lg:right-16 [@media(max-height:740px)]:top-4 [@media(max-height:740px)]:scale-[0.78] [@media(max-height:740px)]:origin-top [@media(max-height:520px)_and_(orientation:landscape)]:top-[28px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.65] [@media(max-height:520px)_and_(orientation:landscape)]:origin-top z-10 flex flex-col items-center gap-1.5 pointer-events-none">
              <div className="relative w-[40px] h-[60px] sm:w-[52px] sm:h-[76px] md:w-[64px] md:h-[92px] lg:w-[76px] lg:h-[110px]">
                {Array.from({ length: 12 }).map((_, i) => (
                  <div key={i} className={cn("absolute inset-0 rounded-lg shadow-sm border", i === 3 ? "bg-red-600 border-red-700" : "bg-white border-gray-300")} style={{ transform: `translate(${-i * 1.5}px, ${-i * 1.5}px)` }}>
@@ -1309,8 +1304,8 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                  className={cn(
                    "flex w-full md:w-[94%] max-w-[1040px] mx-auto h-full max-h-[420px] min-h-0 pt-[8px] sm:pt-[14px] md:pt-[20px] mt-auto mb-0",
                    sideBetsEnabled
-                     ? "pb-[118px] sm:pb-[130px] md:pb-[136px] [@media(max-height:740px)]:pb-[112px]"
-                     : "pb-[66px] sm:pb-[74px] md:pb-[78px] [@media(max-height:740px)]:pb-[62px]",
+                     ? "pb-[136px] sm:pb-[130px] md:pb-[136px] [@media(max-height:740px)]:pb-[122px]"
+                     : "pb-[84px] sm:pb-[74px] md:pb-[78px] [@media(max-height:740px)]:pb-[72px]",
                    "[@media(max-height:520px)_and_(orientation:landscape)]:!h-auto [@media(max-height:520px)_and_(orientation:landscape)]:!pt-[4px] [@media(max-height:520px)_and_(orientation:landscape)]:!pb-[54px] [@media(max-height:520px)_and_(orientation:landscape)]:!mb-0 justify-start gap-[2%] sm:gap-[1%] items-end px-[4%] md:px-0 z-10 transition-all duration-300 overflow-x-auto md:overflow-visible snap-x snap-mandatory md:snap-none hide-scrollbar-custom"
                  )}
                >
@@ -1497,7 +1492,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                })}
              </div>
              {/* Left/Right seat scroll indicators (mobile only where seats overflow horizontally) */}
-             <div className="md:hidden absolute left-1.5 right-1.5 sm:left-3 sm:right-3 bottom-[84px] sm:bottom-[94px] [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-[42px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-75 flex justify-between pointer-events-none z-30">
+             <div className="md:hidden absolute left-1.5 right-1.5 sm:left-3 sm:right-3 bottom-[96px] sm:bottom-[94px] [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-[42px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-75 flex justify-between pointer-events-none z-30">
                 <button
                   type="button"
                   onClick={() => scrollSeats('left')}
@@ -1543,12 +1538,12 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
               dealCountdown={dealCountdown}
               isTournament={true}
               onSideBetsToggle={() => setSideBetsEnabled(!sideBetsEnabled)}
-              className="absolute bottom-2 [@media(max-height:740px)]:bottom-1.5 [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-0.5 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.78] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom w-full flex flex-col items-center z-[80] px-4 pointer-events-none"
+              className="absolute bottom-7 sm:bottom-2 [@media(max-height:740px)]:bottom-6 sm:[@media(max-height:740px)]:bottom-1.5 [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-0.5 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.78] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom w-full flex flex-col items-center z-[80] px-2 sm:px-4 pointer-events-none"
             />
          )}
 
          {table.status === 'playing' && isMyTurn && isActiveTurnDealRevealed && !isSidebarOpen && !isTablePlayersOpen && !isStatsOpen && (
-           <div className="absolute bottom-2 [@media(max-height:740px)]:bottom-1.5 [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-0.5 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.78] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom w-full flex flex-col items-center z-[80] px-4 pointer-events-none">
+           <div className="absolute bottom-7 sm:bottom-2 [@media(max-height:740px)]:bottom-6 sm:[@media(max-height:740px)]:bottom-1.5 [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-0.5 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.78] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom w-full flex flex-col items-center z-[80] px-2 sm:px-4 pointer-events-none">
              <ActiveTurnHUD 
                tableId={table.id}
                activeSeatIndex={activeSeatIndex}
@@ -1564,7 +1559,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
            type="button"
            onClick={() => setShowRules(true)}
            title="View Payout Rate, Prizes & Table Rules"
-           className="absolute bottom-2.5 right-2.5 sm:bottom-3 sm:right-4 z-[85] pointer-events-auto flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-black/55 hover:bg-black/80 border border-[#ffc53d]/35 hover:border-[#ffc53d] text-[#ffc53d] hover:text-white text-[10px] sm:text-[11px] font-bold tracking-wider uppercase backdrop-blur-md shadow-[0_2px_10px_rgba(0,0,0,0.6)] transition-all cursor-pointer"
+           className="absolute bottom-1.5 right-2.5 sm:bottom-3 sm:right-4 z-[85] pointer-events-auto flex items-center gap-1.5 px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-lg bg-black/55 hover:bg-black/80 border border-[#ffc53d]/35 hover:border-[#ffc53d] text-[#ffc53d] hover:text-white text-[9px] sm:text-[11px] font-bold tracking-wider uppercase backdrop-blur-md shadow-[0_2px_10px_rgba(0,0,0,0.6)] transition-all cursor-pointer"
          >
            <span className="drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">RTP {calculateBaseRTP(table.settings.winningRule)} · Rules</span>
          </button>

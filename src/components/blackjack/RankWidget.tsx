@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { User, X, Trophy, Coins, Zap, Shield, Flame, ChevronRight, History, Award } from 'lucide-react';
-import { useGameStore, GameRecord } from '@/store/gameStore';
+import { User, X, ChevronRight, History, RefreshCw, AlertCircle } from 'lucide-react';
+import { useGameStore } from '@/store/gameStore';
 import { useNavigate } from '@/lib/router';
 import { cn } from '@/lib/utils';
 import { CurrencyIcon } from '@/components/CurrencyIcon';
-import { getAvatarUrl } from '@/utils/avatar';
 
 interface RankWidgetProps {
   externalOpen?: boolean;
@@ -20,7 +19,14 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
   hideFloatingTrigger = false,
   onOpenChange,
 }) => {
-  const { gameRecords, currentUser, tables } = useGameStore();
+  const {
+    personalArchive,
+    personalArchiveStatus,
+    personalArchiveError,
+    fetchPersonalArchive,
+    currentUser,
+    tables,
+  } = useGameStore();
   const navigate = useNavigate();
   const [internalOpen, setInternalOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -53,50 +59,61 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, []);
 
-  // Filter player's personal records across all tables
-  const playerRecords = useMemo(() => {
-    if (!currentUser) return [];
-    return gameRecords.filter(r => {
-      return (r.seatResults || []).some(sr => sr.userId === currentUser.id);
-    });
-  }, [gameRecords, currentUser]);
+  useEffect(() => {
+    if (isOpen) {
+      fetchPersonalArchive(true).catch(() => {});
+    }
+  }, [isOpen, fetchPersonalArchive]);
 
-  // Aggregate personal stats: cross-table, distinguishing regular and tournament
+  const playerRecords = personalArchive.records;
+
+  // Aggregate personal stats strictly from the persistent cross-room archive
   const stats = useMemo(() => {
-    let regularRounds = 0;
-    let regularWins = 0;
-    let regularNet = 0;
-    let regularBlackjacks = 0;
-    let regularDoubles = 0;
-    let regularSplits = 0;
-    let regularSideBetHands = 0;
-    let regularSideBetWins = 0;
-    let regularSideBetNet = 0;
-    let regularSideBetGrossWin = 0;
-    let regularPairWins = 0;
-    let regularPlus3Wins = 0;
-    let bestSingleWin = 0;
+    const legacy = personalArchive.legacyAggregates;
 
-    let tournamentRounds = 0;
-    let tournamentWins = 0;
-    let tournamentNet = 0;
-    let tournamentBlackjacks = 0;
-    let tournamentSideBetHands = 0;
-    let tournamentSideBetWins = 0;
-    let tournamentSideBetNet = 0;
-    let tournamentSideBetGrossWin = 0;
-    let tournamentPairWins = 0;
-    let tournamentPlus3Wins = 0;
+    let regularRounds = legacy.regularRounds;
+    let regularWins = legacy.regularWins;
+    let regularNet = legacy.regularNet;
+    let regularBlackjacks = legacy.regularBlackjacks;
+    let regularDoubles = legacy.regularDoubles;
+    let regularSplits = legacy.regularSplits;
+    let regularSideBetHands = legacy.regularSideBetHands;
+    let regularSideBetWins = legacy.regularSideBetWins;
+    let regularSideBetNet = legacy.regularSideBetNet;
+    let regularSideBetGrossWin = legacy.regularSideBetGrossWin;
+    let regularPairWins = legacy.regularPairWins;
+    let regularPlus3Wins = legacy.regularPlus3Wins;
+    let bestSingleWin = legacy.bestSingleWin;
+
+    let tournamentRounds = legacy.tournamentRounds;
+    let tournamentWins = legacy.tournamentWins;
+    let tournamentNet = legacy.tournamentNet;
+    let tournamentBlackjacks = legacy.tournamentBlackjacks;
+    let tournamentSideBetHands = legacy.tournamentSideBetHands;
+    let tournamentSideBetWins = legacy.tournamentSideBetWins;
+    let tournamentSideBetNet = legacy.tournamentSideBetNet;
+    let tournamentSideBetGrossWin = legacy.tournamentSideBetGrossWin;
+    let tournamentPairWins = legacy.tournamentPairWins;
+    let tournamentPlus3Wins = legacy.tournamentPlus3Wins;
 
     for (const record of playerRecords) {
-      const targetTable = tables[record.tableId];
-      const isTournament = targetTable?.settings.mode === 'tournament';
-      const mySeats = (record.seatResults || []).filter(sr => sr.userId === currentUser?.id);
+      // Legacy summary rows (archive_*) are already accounted for in legacyAggregates
+      if (record.id.startsWith('archive_')) continue;
+
+      const isTournament = record.tableMode === 'tournament';
+      const minBetRef = record.tableMinBet || 10;
+      const mySeats = (record.seatResults || []).filter((sr) =>
+        currentUser?.id
+          ? sr.userId === currentUser.id || sr.userId === 'me'
+          : sr.userId === 'me'
+      );
 
       for (const seat of mySeats) {
         const net = seat.net || 0;
-        const isWin = seat.action.includes('won') || seat.action.includes('blackjack') || net > 0;
-        const isBJ = seat.action.includes('blackjack');
+        const actionLower = (seat.action || '').toLowerCase();
+        const isWin =
+          actionLower.includes('won') || actionLower.includes('blackjack') || net > 0;
+        const isBJ = actionLower.includes('blackjack');
 
         const sbWager = Number(seat.sideBet || 0);
         const sbWin = Number(seat.sideBetWin || 0);
@@ -125,7 +142,13 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
           regularRounds += 1;
           if (isWin) regularWins += 1;
           if (isBJ) regularBlackjacks += 1;
-          if (seat.action.includes('double') || seat.bet > (targetTable?.settings.minBet || 10) * 1.5) regularDoubles += 1;
+          if (
+            seat.isDouble ||
+            actionLower.includes('double') ||
+            seat.bet > minBetRef * 1.5
+          ) {
+            regularDoubles += 1;
+          }
           if (seat.isSplit) regularSplits += 1;
           regularNet += net;
           if (hasSb) {
@@ -140,28 +163,9 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
       }
     }
 
-    // Check tournament history from tables for tournament placement wins
-    let tournamentsEntered = 0;
-    let tournamentsWon = 0;
-    let tournamentPrizeCoinsWon = 0;
-
-    for (const t of Object.values(tables)) {
-      if (t.settings.mode === 'tournament' && t.tournamentHistory) {
-        for (const th of t.tournamentHistory) {
-          const myIndex = th.winners.findIndex(w => w.userId === currentUser?.id);
-          if (myIndex !== -1) {
-            const myWin = th.winners[myIndex];
-            tournamentsEntered += 1;
-            tournamentPrizeCoinsWon += (myWin.prizeCoins || 0);
-            if (myIndex === 0) tournamentsWon += 1;
-          }
-        }
-      }
-      // Also check if currently seated in an active tournament
-      if (t.settings.mode === 'tournament' && t.seats.some(s => s.userId === currentUser?.id)) {
-        tournamentsEntered = Math.max(tournamentsEntered, 1);
-      }
-    }
+    const tournamentsEntered = personalArchive.tournamentsEntered;
+    const tournamentsWon = personalArchive.tournamentsWon;
+    const tournamentPrizeCoinsWon = personalArchive.tournamentPrizeCoinsWon;
 
     const totalRounds = regularRounds + tournamentRounds;
     const totalWins = regularWins + tournamentWins;
@@ -213,19 +217,19 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
         sideBetGrossWin: tournamentSideBetGrossWin,
         pairWins: tournamentPairWins,
         plus3Wins: tournamentPlus3Wins,
-      }
+      },
     };
-  }, [playerRecords, tables, currentUser]);
+  }, [personalArchive, playerRecords, currentUser]);
 
-  // Filtered recent game records
+  // Filtered recent game records from persistent archive
   const filteredRecords = useMemo(() => {
-    return playerRecords.filter(r => {
-      const isTournament = tables[r.tableId]?.settings.mode === 'tournament';
+    return playerRecords.filter((r) => {
+      const isTournament = r.tableMode === 'tournament';
       if (activeTab === 'regular') return !isTournament;
       if (activeTab === 'tournament') return isTournament;
       return true;
     });
-  }, [playerRecords, tables, activeTab]);
+  }, [playerRecords, activeTab]);
 
   const handleJoinTable = (targetTableId: string) => {
     navigate(`/t/${targetTableId}`);
@@ -236,15 +240,15 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
     <>
       {/* Floating My Stats Trigger Button */}
       {!hideFloatingTrigger && (
-        <div className="fixed right-0 top-[56%] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
+        <div className="fixed right-0 top-[52%] md:top-[56%] -translate-y-1/2 z-[90] flex flex-col gap-2 pointer-events-auto">
           <button
             type="button"
             onClick={handleOpen}
             title="My Stats"
-            className="bg-zinc-950 border-y-2 border-l-2 border-[#d4af37] rounded-l-2xl p-2 md:p-2.5 pr-2.5 md:pr-3.5 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:-translate-x-1 cursor-pointer flex flex-col items-center group relative"
+            className="bg-zinc-950 border-y-2 border-l-2 border-[#d4af37] rounded-l-2xl p-1.5 md:p-2.5 pr-2 md:pr-3.5 shadow-[0_0_15px_rgba(212,175,55,0.35)] transition-all hover:-translate-x-1 cursor-pointer flex flex-col items-center group relative"
           >
             <User className="w-4 h-4 md:w-5 md:h-5 text-[#ffd86b] group-hover:scale-110 transition-transform" />
-            <span className="text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">
+            <span className="text-[8px] md:text-[9px] font-bold uppercase tracking-widest text-[#f5e6c8] mt-0.5">
               Stats
             </span>
           </button>
@@ -293,9 +297,25 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
                     </h2>
                   </div>
                 </div>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
-                  Cross-Table
-                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => fetchPersonalArchive(true).catch(() => {})}
+                    disabled={personalArchiveStatus === 'loading'}
+                    title="Refresh Archive"
+                    className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw
+                      className={cn(
+                        'w-3.5 h-3.5',
+                        personalArchiveStatus === 'loading' && 'animate-spin'
+                      )}
+                    />
+                  </button>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
+                    All-Time Archive
+                  </span>
+                </div>
               </div>
 
               {/* Player Identity Card */}
@@ -380,6 +400,21 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
 
               {/* Scrollable Content */}
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                {personalArchiveStatus === 'error' && personalArchiveError && (
+                  <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-between gap-2 text-xs text-rose-200">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                      <span className="truncate">{personalArchiveError}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => fetchPersonalArchive(true).catch(() => {})}
+                      className="px-2 py-1 rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-100 font-semibold shrink-0 cursor-pointer"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
                 {/* 1. Aggregate Stats Metrics Cards */}
                 {activeTab === 'all' && (
                   <div className="grid grid-cols-2 gap-2.5">
@@ -593,16 +628,28 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
                   </div>
 
                   <div className="space-y-2">
-                    {filteredRecords.length === 0 ? (
+                    {personalArchiveStatus === 'loading' && filteredRecords.length === 0 ? (
                       <div className="p-6 rounded-xl bg-white/[0.02] border border-white/5 text-center text-xs text-slate-400 space-y-1">
-                        <p className="font-semibold text-slate-300">No round history recorded yet.</p>
-                        <p>Play hands at any table to build your cross-table stats.</p>
+                        <p className="font-semibold text-slate-300">Loading persistent archive...</p>
+                        <p>Fetching your career stats across all rooms & releases.</p>
+                      </div>
+                    ) : filteredRecords.length === 0 ? (
+                      <div className="p-6 rounded-xl bg-white/[0.02] border border-white/5 text-center text-xs text-slate-400 space-y-1">
+                        <p className="font-semibold text-slate-300">No archived round history yet.</p>
+                        <p>Completed rounds persist automatically across rooms and versions.</p>
                       </div>
                     ) : (
-                      filteredRecords.slice(0, 30).map((record) => {
-                        const targetTable = tables[record.tableId];
-                        const isTournament = targetTable?.settings.mode === 'tournament';
-                        const mySeats = (record.seatResults || []).filter(sr => sr.userId === currentUser?.id);
+                      filteredRecords.slice(0, 50).map((record) => {
+                        const liveTable = tables[record.tableId];
+                        const targetTable = liveTable && liveTable.status !== 'closed' ? liveTable : undefined;
+                        const isTournament =
+                          record.tableMode === 'tournament' ||
+                          targetTable?.settings.mode === 'tournament';
+                        const mySeats = (record.seatResults || []).filter((sr) =>
+                          currentUser?.id
+                            ? sr.userId === currentUser.id || sr.userId === 'me'
+                            : sr.userId === 'me'
+                        );
                         const mySeat = mySeats[0];
                         const net = mySeats.length > 0
                           ? mySeats.reduce((sum, s) => sum + (s.net || 0), 0)
@@ -700,8 +747,9 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
                                     <ChevronRight className="w-3 h-3 shrink-0 opacity-60" />
                                   </button>
                                 ) : (
-                                  <span className="text-xs text-slate-400 truncate">
-                                    Table #{record.tableId.substring(record.tableId.length - 4)}
+                                  <span className="text-xs text-slate-400 truncate max-w-[130px]">
+                                    {record.tableName ||
+                                      `Table #${record.tableId.substring(Math.max(0, record.tableId.length - 4))}`}
                                   </span>
                                 )}
                               </div>
@@ -760,7 +808,7 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
               {/* Footer */}
               <div className="p-3 bg-[#0c120e] border-t border-white/10 text-center shrink-0">
                 <p className="text-[10px] text-slate-400 font-mono">
-                  Personal records auto-synced across all regular & tournament tables
+                  Persistent career archive synced across rooms & releases
                 </p>
               </div>
             </motion.div>

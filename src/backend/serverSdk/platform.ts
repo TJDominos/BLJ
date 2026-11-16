@@ -93,14 +93,14 @@ export class PlatformClient {
     };
   }
 
-  async getPlayers(): Promise<
-    Array<{
-      playerId: string;
-      joinedAt: number;
-      displayName?: string | null;
-      avatarUrl?: string | null;
-    }>
-  > {
+  async getPlayers(): Promise<Array<{
+    playerId: string;
+    joinedAt: number;
+    displayName?: string | null;
+    avatarUrl?: string | null;
+    /** Whether this player owns the game for the current room; metadata only, not authorization evidence. */
+    isGameCreator?: boolean;
+  }>> {
     const response = await this.customFetch(this.resolveUrl("platform.players", "/"), {
       method: "GET",
     });

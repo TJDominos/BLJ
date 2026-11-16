@@ -39,19 +39,19 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({ card, index, globalDel
   const sizeClasses = {
     sm: "w-[40px] h-[60px] sm:w-[50px] sm:h-[75px] md:w-[60px] md:h-[90px] p-1 sm:p-1.5 -ml-[18px] sm:-ml-[25px]",
     md: "w-[42px] h-[63px] sm:w-[50px] sm:h-[75px] md:w-[60px] md:h-[90px] lg:w-[68px] lg:h-[102px] p-1 sm:p-1.5 md:p-2 -ml-[19px] sm:-ml-[25px] md:-ml-[30px]",
-    lg: "w-[60px] h-[88px] sm:w-[68px] sm:h-[100px] md:w-[74px] md:h-[110px] lg:w-[82px] lg:h-[122px] p-1.5 sm:p-2 md:p-2.5 lg:p-3 -ml-[26px] sm:-ml-[30px] md:-ml-[35px] lg:-ml-[40px]"
+    lg: "w-[52px] h-[76px] sm:w-[68px] sm:h-[100px] md:w-[74px] md:h-[110px] lg:w-[82px] lg:h-[122px] p-1 sm:p-2 md:p-2.5 lg:p-3 -ml-[22px] sm:-ml-[30px] md:-ml-[35px] lg:-ml-[40px]"
   };
 
   const textClasses = {
     sm: "text-[12px] sm:text-[14px]",
     md: "text-[13px] sm:text-[14px] md:text-[18px] lg:text-[20px]",
-    lg: "text-[17px] sm:text-[19px] md:text-[21px] lg:text-[24px]"
+    lg: "text-[15px] sm:text-[19px] md:text-[21px] lg:text-[24px]"
   };
 
   const suitClasses = {
     sm: "text-[22px] sm:text-[32px]",
     md: "text-[24px] sm:text-[32px] md:text-[40px] lg:text-[48px]",
-    lg: "text-[36px] sm:text-[42px] md:text-[48px] lg:text-[56px]"
+    lg: "text-[30px] sm:text-[42px] md:text-[48px] lg:text-[56px]"
   };
 
   return (

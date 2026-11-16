@@ -131,7 +131,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function copyJson(value: unknown, ancestors = new Set<object>()): AgentPlayerJsonValue {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value as AgentPlayerJsonValue;
+  if (value === null) return null;
+  if (typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value !== "object" || ancestors.has(value)) {
     throw new TypeError("Agent player data must be finite JSON without cycles.");
@@ -360,15 +361,15 @@ export function validateAgentActionReceipt(value: unknown): AgentActionReceipt {
   }
   return {
     protocolVersion: 1,
-    actionId: value.actionId as string,
-    roomId: value.roomId as string,
-    matchId: value.matchId as string,
-    playerId: value.playerId as string,
-    controllerEpoch: value.controllerEpoch as number,
-    expectedTick: value.expectedTick as number,
+    actionId: value.actionId,
+    roomId: value.roomId,
+    matchId: value.matchId,
+    playerId: value.playerId,
+    controllerEpoch: value.controllerEpoch,
+    expectedTick: value.expectedTick,
     status: value.status as AgentActionReceiptStatus,
-    ...(value.committedTick === undefined ? {} : { committedTick: value.committedTick as number }),
-    ...(value.code === undefined ? {} : { code: value.code as string }),
+    ...(typeof value.committedTick === "number" ? { committedTick: value.committedTick } : {}),
+    ...(typeof value.code === "string" ? { code: value.code } : {}),
   };
 }
 
@@ -389,7 +390,11 @@ export function validateAgentSkillDecision(value: unknown): AgentSkillDecision {
   }
   if (value.kind === "wait"
     && (value.resumeAt === null || safeInteger(value.resumeAt, 0))) {
-    return { kind: "wait", resumeAt: value.resumeAt as number | null, memory };
+    return {
+      kind: "wait",
+      resumeAt: typeof value.resumeAt === "number" ? value.resumeAt : null,
+      memory,
+    };
   }
   throw new TypeError("Invalid Agent Skill decision.");
 }

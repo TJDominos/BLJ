@@ -310,7 +310,7 @@ function GameLayout() {
 
       <div
         className={`relative z-10 w-full h-full max-w-[1280px] ${
-          isFullscreen ? 'max-h-[960px]' : 'max-h-[900px]'
+          isFullscreen ? 'sm:max-h-[960px]' : 'sm:max-h-[900px]'
         } mx-auto my-auto flex flex-col overflow-hidden shadow-2xl`}
       >
         {closedRedirectMessage && (

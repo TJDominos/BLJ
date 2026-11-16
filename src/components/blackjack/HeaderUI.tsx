@@ -20,8 +20,8 @@ export function HeaderUI({
 }) {
   return (
     <div className="w-full h-[52px] sm:h-[60px] bg-[#1e2025] shadow flex items-center justify-center z-50 shrink-0 border-b border-white/5 top-0 sticky">
-      <div className="w-full max-w-[1024px] h-full px-1 sm:px-4 flex items-center justify-between relative">
-        <div className="flex items-center gap-0 sm:gap-2 relative z-10 flex-1">
+      <div className="w-full max-w-[1024px] h-full px-3 sm:px-4 flex items-center justify-between relative gap-2">
+        <div className="flex items-center gap-0 sm:gap-2 relative z-10 w-10 sm:flex-1 shrink-0">
           {!hideLeaveButton && (
             <button 
               onClick={onLeave}
@@ -32,10 +32,10 @@ export function HeaderUI({
             </button>
           )}
         </div>
-        <div className="flex items-center gap-2 sm:gap-4 justify-center z-0 flex-1 shrink-0 px-2">
+        <div className="flex items-center gap-2 sm:gap-4 justify-center z-0 flex-1 min-w-0 px-1 sm:px-2">
           <h1
             onClick={onLeave}
-            className="text-sm sm:text-xl font-bold text-white tracking-wider whitespace-nowrap cursor-pointer hover:text-[#f0d078] transition-colors"
+            className="text-sm sm:text-xl font-bold text-white tracking-wider whitespace-nowrap cursor-pointer hover:text-[#f0d078] transition-colors truncate"
             title="Back to Royal BlackJack Home"
           >
             ROYAL BLACKJACK
@@ -46,7 +46,7 @@ export function HeaderUI({
              </div>
           )}
         </div>
-        <div className="flex items-center gap-0 sm:gap-2 relative z-10 flex-1 justify-end">
+        <div className="flex items-center gap-0 sm:gap-2 relative z-10 w-10 sm:flex-1 shrink-0 justify-end">
           <button className="w-10 h-10 sm:w-10 sm:h-10 flex items-center justify-center text-white/50 hover:text-white transition-colors rounded-full hover:bg-white/5 relative">
             <Bell className="w-5 h-5 sm:w-5 sm:h-5" />
             <span className="absolute top-[10px] right-[10px] sm:top-[10px] sm:right-[10px] w-1.5 h-1.5 bg-red-500 rounded-full border border-[#1e2025]"></span>

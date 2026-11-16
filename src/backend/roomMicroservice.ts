@@ -19,16 +19,15 @@ import { royalBlackjackGameServer } from "./royalBlackjackRoomServer";
  * - POST /onCommand
  */
 const port = Number(process.env.PORT) || 8080;
-const host = process.env.HOST || "0.0.0.0";
-const gameId =
-  process.env.RANDSEED_GAME_ID ||
-  process.env.GAME_ID ||
-  process.env.VITE_RANDSEED_GAME_ID ||
-  undefined;
+if (!process.env.RANDSEED_GAME_ID && process.env.GAME_ID) {
+  process.env.RANDSEED_GAME_ID = process.env.GAME_ID;
+}
+const gameId = process.env.RANDSEED_GAME_ID || undefined;
 
 createGameServer(royalBlackjackGameServer, port, {
   ...(gameId ? { gameId } : {}),
-  host,
 });
 
-console.log(`[RandSeed Wire Protocol] Royal BlackJack Room Server (gameId: ${gameId || "dynamic"}) listening on http://${host}:${port}`);
+console.log(
+  `[RandSeed Wire Protocol] Royal BlackJack Room Server (gameId: ${gameId || "dynamic"}) listening on port ${port}`
+);

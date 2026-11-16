@@ -16,11 +16,14 @@ export type JsonValue =
 export interface GameManifest {
   title: string;
   version: string;
+  /** Minimum assigned players required to start a match; at least 1 (a zero-player start is unsupported). */
   minPlayers: number;
+  /** Maximum player-seat capacity, at least minPlayers; the room may start before it is full. */
   maxPlayers: number;
   tickRateHz: number;
   persistentTable: boolean;
   optionsSchema?: Record<string, unknown> | boolean;
+  playerViewMode?: "private";
   resultDefinition?: GameResultDefinition;
 }
 
@@ -86,7 +89,12 @@ export interface GameResultEvent {
 }
 
 export interface MatchOptions {
+  /** Legacy numeric seed retained for Mulberry32 compatibility. */
   seed?: number;
+  /** Authoritative 32-byte match root seed encoded as 64 lowercase hex characters (`ChaCha20Rng`). */
+  randomSeed?: string;
+  /** Optional non-negative safe-integer index of `randomSeed` in the on-chain `random_oracle` canister. */
+  randomSeedIndex?: number;
   [key: string]: unknown;
 }
 
@@ -118,7 +126,7 @@ export interface GameActionResult {
 
 export interface GameCommand<TData = unknown> {
   type: string;
-  data: TData;
+  data?: TData;
   issuer?: string;
   timestamp?: number;
 }
@@ -237,6 +245,8 @@ export interface PlatformPlayersResponse {
     joinedAt: number;
     displayName?: string | null;
     avatarUrl?: string | null;
+    /** Whether this player owns the game for the current room; metadata only, not authorization evidence. */
+    isGameCreator?: boolean;
   }>;
 }
 
