@@ -19,7 +19,7 @@ import {
   type RoomMatch,
   type RoomPlayer,
   type RoomSnapshot,
-  type RuntimePlayerProfile,
+  type RuntimeViewportDeclaration,
 } from "@randseed/game-sdk";
 import { useUIStore } from "@/store/uiStore";
 import { soundManager } from "@/lib/sounds";
@@ -29,7 +29,7 @@ export type {
   RoomMatch,
   RoomPlayer,
   RoomSnapshot,
-  RuntimePlayerProfile,
+  RuntimeViewportDeclaration,
   ArchiveHistoryEntry,
   ArchiveHistoryPage,
   MatchReplayResult,
@@ -37,6 +37,22 @@ export type {
 
 export const DESIGN_VIEWPORT_WIDTH = MAX_RUNTIME_FRAME_WIDTH; // 1280
 export const DESIGN_VIEWPORT_HEIGHT = 720;
+
+export const DEFAULT_RUNTIME_VIEWPORT: RuntimeViewportDeclaration = {
+  designWidth: DESIGN_VIEWPORT_WIDTH,
+  designHeight: DESIGN_VIEWPORT_HEIGHT,
+  resizeMode: "responsive",
+};
+
+export function formatOpaquePlayerId(playerId: string): string {
+  const trimmed = (playerId || "").trim();
+  if (!trimmed) return "Player";
+  if (trimmed.startsWith("bot_")) return trimmed;
+  if (trimmed.length <= 12 && !/^[0-9a-f-]{10,}$/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `Player #${trimmed.slice(-4).toUpperCase()}`;
+}
 
 function safeGetRandseedGameId(): string {
   try {
@@ -62,7 +78,6 @@ let runtimeClientInstance: RuntimeClient | null = null;
 let roomClientInstance: RoomClient | null = null;
 let roomConnectionStatus: RoomConnectionStatus = "idle";
 let roomConnectionError: string | null = null;
-let cachedPlayerProfile: RuntimePlayerProfile | null = null;
 let cachedRoomPlayers: RoomPlayer[] = [];
 let lastAgentPlayerView: AgentPlayerView | null = null;
 let lastDeliveredSnapshotKey: string | null = null;
@@ -77,7 +92,6 @@ let snapshotListener:
   | null = null;
 
 let playersChangedListener: ((players: RoomPlayer[]) => void) | null = null;
-let profileListeners: Array<(profile: RuntimePlayerProfile) => void> = [];
 let statusListeners: Array<(status: RoomConnectionStatus, error: string | null) => void> = [];
 
 function notifyRoomStatusChange(nextStatus: RoomConnectionStatus, errorMessage: string | null = null) {
@@ -153,6 +167,10 @@ function formatRoomErrorMessage(err: unknown, fallback: string): string {
         return "Online room capability is unavailable on this host.";
       case "INVALID_GAME_STATE":
         return "Received an invalid game state from the room host.";
+      case "INVALID_ROOM_RESPONSE":
+        return "Received an invalid room protocol response.";
+      case "SECURE_RANDOM_UNAVAILABLE":
+        return "Browser secure random generator is unavailable.";
       default:
         if (err.message) return err.message;
     }
@@ -191,29 +209,13 @@ function extractSnapshotState(
   return validated as Record<string, unknown>;
 }
 
-export function getRandseedPlayerProfile(): RuntimePlayerProfile | null {
-  return cachedPlayerProfile;
-}
-
-export function onRandseedProfileUpdate(
-  listener: (profile: RuntimePlayerProfile) => void
-): () => void {
-  profileListeners.push(listener);
-  if (cachedPlayerProfile) {
-    listener(cachedPlayerProfile);
-  }
-  return () => {
-    profileListeners = profileListeners.filter((l) => l !== listener);
-  };
-}
-
 export function getRandseedOnlinePlayers(): RoomPlayer[] {
   return readSafeRoomPlayers(roomClientInstance);
 }
 
 /**
- * Initialize RandSeed RuntimeClient (@randseed/game-sdk@0.5.0) for shell viewport,
- * player profile, room session refresh, fullscreen & audio mute bridging.
+ * Initialize RandSeed RuntimeClient (@randseed/game-sdk@0.7.0) for responsive shell viewport,
+ * room session refresh, fullscreen & audio mute bridging.
  */
 export async function initRandseedRuntime(): Promise<RuntimeClient | null> {
   if (typeof window === "undefined") return null;
@@ -223,7 +225,9 @@ export async function initRandseedRuntime(): Promise<RuntimeClient | null> {
     const hostOrigin = safeGetRandseedHostOrigin();
     const client = new RuntimeClient({
       ...(hostOrigin ? { hostOrigin } : {}),
+      viewport: DEFAULT_RUNTIME_VIEWPORT,
       readinessMode: "game",
+      timeoutMs: 2500,
     });
 
     runtimeClientInstance = client;
@@ -241,25 +245,11 @@ export async function initRandseedRuntime(): Promise<RuntimeClient | null> {
       soundManager.setMuted(muted);
     }
 
-    const capabilities = client.getCapabilities();
-    if (capabilities.includes("player.getProfile")) {
-      client.player
-        .getProfile()
-        .then((profile) => {
-          if (profile && (profile.displayName || profile.avatarUrl)) {
-            cachedPlayerProfile = profile;
-            for (const listener of profileListeners) {
-              listener(profile);
-            }
-          }
-        })
-        .catch(() => {});
-    }
-
     client.markReady();
     return client;
   } catch {
     // Running outside of the Randseed Player Shell
+    runtimeClientInstance = null;
     return null;
   }
 }
@@ -306,7 +296,7 @@ export function disconnectRandseedRoom(): void {
 }
 
 /**
- * Connect to the full-stack RandSeed Room backend via RoomClient (@randseed/game-sdk@0.5.0).
+ * Connect to the full-stack RandSeed Room backend via RoomClient (@randseed/game-sdk@0.7.0).
  */
 export async function matchRandseedRoom(
   onSnapshotUpdate?: (

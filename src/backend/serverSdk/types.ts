@@ -24,6 +24,8 @@ export interface GameManifest {
   persistentTable: boolean;
   optionsSchema?: Record<string, unknown> | boolean;
   playerViewMode?: "private";
+  /** Optional explicit v1 declaration; omitted means the room-host v1 default. */
+  playerViewSchemaVersion?: 1;
   resultDefinition?: GameResultDefinition;
 }
 
@@ -209,19 +211,23 @@ export interface GameServer<TState = unknown, TInput = unknown, TCommand = unkno
   tick(
     ctx: TickContext<TInput, TCommand>,
     state: TState,
+    players?: readonly string[],
   ): Promise<TickResult<TState>> | TickResult<TState>;
   onPlayerJoin(
     playerId: string,
     state: TState,
+    players?: readonly string[],
   ): Promise<PlayerEventResult<TState>> | PlayerEventResult<TState>;
   onPlayerLeave(
     playerId: string,
     state: TState,
+    players?: readonly string[],
   ): Promise<PlayerEventResult<TState>> | PlayerEventResult<TState>;
   isGameOver(state: TState): Promise<GameResult> | GameResult;
   onCommand?(
     cmd: GameCommand<TCommand>,
     state: TState,
+    players?: readonly string[],
   ): Promise<CommandResult<TState>> | CommandResult<TState>;
 }
 
@@ -240,14 +246,7 @@ export interface PlatformSendResponse {
 }
 
 export interface PlatformPlayersResponse {
-  players: Array<{
-    playerId: string;
-    joinedAt: number;
-    displayName?: string | null;
-    avatarUrl?: string | null;
-    /** Whether this player owns the game for the current room; metadata only, not authorization evidence. */
-    isGameCreator?: boolean;
-  }>;
+  players: Array<{ playerId: string; joinedAt: number }>;
 }
 
 export interface PlatformKvResponse<T = unknown> {

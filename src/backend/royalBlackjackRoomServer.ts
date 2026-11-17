@@ -4,8 +4,10 @@ import {
   isValidSeedHex,
   SdkProtocolError,
   PlatformClient,
+  PlatformDataError,
   createAgentObservation,
   type ChaCha20State,
+  type GameDataSchema,
   type AgentObservation,
   type AgentGameCapabilities,
   type AgentPlayerContract,
@@ -73,16 +75,32 @@ export function resolveRoomMaxPlayers(): number {
   return DEFAULT_ROOM_MAX_PLAYERS;
 }
 
-function computeRoomJoinable(state: RoyalBlackjackRoomState): boolean {
-  return !state.forceClose && (state.players?.length || 0) < resolveRoomMaxPlayers();
+function formatDefaultOpaquePlayerName(playerId: string): string {
+  const trimmed = (playerId || "").trim();
+  if (!trimmed) return "Player";
+  if (trimmed.startsWith("bot_")) return trimmed;
+  if (trimmed.length <= 12 && !/^[0-9a-f-]{10,}$/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `Player #${trimmed.slice(-4).toUpperCase()}`;
+}
+
+function computeRoomJoinable(
+  state: RoyalBlackjackRoomState,
+  rosterPlayers?: readonly string[]
+): boolean {
+  const activeCount = (rosterPlayers ?? state.players ?? []).length;
+  return !state.forceClose && activeCount < resolveRoomMaxPlayers();
 }
 
 export function buildRoomPlayerViews(
-  state: RoyalBlackjackRoomState
+  state: RoyalBlackjackRoomState,
+  rosterPlayers?: readonly string[]
 ): Record<string, Record<string, unknown>> {
   const projection = projectBlackjackRoomState(state);
   const views: Record<string, Record<string, unknown>> = {};
-  for (const pid of state.players || []) {
+  const targetRoster = rosterPlayers !== undefined ? rosterPlayers : state.players || [];
+  for (const pid of targetRoster) {
     if (!pid) continue;
     views[pid] = {
       ...(projection.publicState as Record<string, unknown>),
@@ -1475,9 +1493,58 @@ function reconcileOnlineRoomTables(state: RoyalBlackjackRoomState): void {
 
 /**
  * 服务端反向平台客户端 (RandSeed Server SDK PlatformClient)
- * 用于在 Room Durable Object 容器环境中向 http://platform.players、http://platform.db、http://platform.kv 发起反向调用
+ * 用于在固定运行时容器环境中向 http://platform.players、http://platform.data、http://platform.db、http://platform.kv 发起反向调用
  */
 export const randseedPlatformClient = new PlatformClient();
+
+export const PLAYER_STANDINGS_COLLECTION = "playerStandings";
+
+export const ROYAL_BLACKJACK_GAME_DATA_SCHEMA: GameDataSchema = {
+  version: 1,
+  fields: {
+    season: "number",
+    netProfit: "number",
+    handsPlayed: "number",
+    handsWon: "number",
+    blackjacks: "number",
+    walletCoins: "number",
+    updatedAtMs: "number",
+  },
+  indexes: ["netProfit", "handsWon", "updatedAtMs"],
+  compoundIndexes: [["season", "netProfit"]],
+};
+
+export interface BlackjackDurablePlayerStanding {
+  [key: string]: number;
+  season: number;
+  netProfit: number;
+  handsPlayed: number;
+  handsWon: number;
+  blackjacks: number;
+  walletCoins: number;
+  updatedAtMs: number;
+}
+
+let gameDataSchemaRegistered = false;
+let gameDataDisabled = false;
+
+export async function ensureBlackjackGameDataSchema(): Promise<boolean> {
+  if (gameDataDisabled) return false;
+  if (gameDataSchemaRegistered) return true;
+  try {
+    await randseedPlatformClient.data.registerSchema(
+      PLAYER_STANDINGS_COLLECTION,
+      ROYAL_BLACKJACK_GAME_DATA_SCHEMA
+    );
+    gameDataSchemaRegistered = true;
+    return true;
+  } catch (err) {
+    if (err instanceof PlatformDataError && !err.retryable) {
+      gameDataDisabled = true;
+    }
+    return false;
+  }
+}
 
 export interface AgentLegalActionDescriptor {
   action:
@@ -2767,19 +2834,17 @@ export const royalBlackjackGameServer: GameServer<
     const maxPlayers = resolveRoomMaxPlayers();
     return {
       title: "Royal BlackJack",
-      version: ROYAL_BLACKJACK_RULES_VERSION,
+      version: "1.2.0",
       minPlayers: 1,
       maxPlayers,
       tickRateHz: 5,
       persistentTable: true,
       playerViewMode: "private",
+      playerViewSchemaVersion: 1,
       resultDefinition: ROYAL_BLACKJACK_RESULT_DEFINITION,
       optionsSchema: {
         type: "object",
         properties: {
-          randomSeed: { type: "string", pattern: "^[0-9a-f]{64}$" },
-          randomSeedIndex: { type: "integer", minimum: 0 },
-          seed: { type: "number" },
           mode: { type: "string", enum: ["regular", "tournament"] },
           minBet: { type: "number" },
           maxBet: { type: "number" },
@@ -2885,8 +2950,8 @@ export const royalBlackjackGameServer: GameServer<
       if (mode === "regular" && (typeof balances[pid] !== "number" || balances[pid] <= 0)) {
         balances[pid] = walletCoins[pid];
       }
-      if (!playerNames[pid]) {
-        playerNames[pid] = pid;
+      if (!playerNames[pid] || playerNames[pid] === pid) {
+        playerNames[pid] = formatDefaultOpaquePlayerName(pid);
       }
     }
 
@@ -3009,8 +3074,8 @@ export const royalBlackjackGameServer: GameServer<
 
     return sanitizeJson({
       state,
-      joinable: computeRoomJoinable(state),
-      playerViews: buildRoomPlayerViews(state) as any,
+      joinable: computeRoomJoinable(state, config.players),
+      playerViews: buildRoomPlayerViews(state, config.players) as any,
       broadcasts: [
         {
           type: "match:initialized",
@@ -3023,7 +3088,8 @@ export const royalBlackjackGameServer: GameServer<
 
   tick(
     ctx: TickContext<BlackjackPlayerInput, BlackjackHostCommand>,
-    prevState: RoyalBlackjackRoomState
+    prevState: RoyalBlackjackRoomState,
+    players?: readonly string[]
   ): TickResult<RoyalBlackjackRoomState> {
     const state: RoyalBlackjackRoomState = JSON.parse(JSON.stringify(prevState));
     state.elapsedSeconds = ctx.elapsedSeconds;
@@ -3210,10 +3276,14 @@ export const royalBlackjackGameServer: GameServer<
       }
     }
 
+    if (players !== undefined) {
+      state.players = [...players];
+    }
+
     return sanitizeJson({
       state,
-      joinable: computeRoomJoinable(state),
-      playerViews: buildRoomPlayerViews(state) as any,
+      joinable: computeRoomJoinable(state, players),
+      playerViews: buildRoomPlayerViews(state, players) as any,
       broadcasts,
       persist:
         ctx.inputs.length > 0 ||
@@ -3228,19 +3298,25 @@ export const royalBlackjackGameServer: GameServer<
 
   onPlayerJoin(
     playerId: string,
-    prevState: RoyalBlackjackRoomState
+    prevState: RoyalBlackjackRoomState,
+    players?: readonly string[]
   ): PlayerEventResult<RoyalBlackjackRoomState> {
     const state: RoyalBlackjackRoomState = JSON.parse(JSON.stringify(prevState));
     if (state.disconnectedAtElapsedSec?.[playerId] !== undefined) {
       delete state.disconnectedAtElapsedSec[playerId];
     }
-    if (!state.players.includes(playerId)) {
+    if (players !== undefined) {
+      state.players = [...players];
+      if (!state.players.includes(playerId)) {
+        state.players.push(playerId);
+      }
+    } else if (!state.players.includes(playerId)) {
       state.players.push(playerId);
     }
     if (!state.playerNames) state.playerNames = {};
     if (!state.playerAvatars) state.playerAvatars = {};
-    if (!state.playerNames[playerId]) {
-      state.playerNames[playerId] = playerId;
+    if (!state.playerNames[playerId] || state.playerNames[playerId] === playerId) {
+      state.playerNames[playerId] = formatDefaultOpaquePlayerName(playerId);
     }
     if (typeof state.walletCoins[playerId] !== "number" || state.walletCoins[playerId] <= 0) {
       state.walletCoins[playerId] = DEFAULT_GAME_COINS;
@@ -3254,29 +3330,33 @@ export const royalBlackjackGameServer: GameServer<
     }
     return sanitizeJson({
       state,
-      joinable: computeRoomJoinable(state),
-      playerViews: buildRoomPlayerViews(state) as any,
+      joinable: computeRoomJoinable(state, players),
+      playerViews: buildRoomPlayerViews(state, players) as any,
       broadcasts: [{ type: "player:joined", playerId }],
     });
   },
 
   onPlayerLeave(
     playerId: string,
-    prevState: RoyalBlackjackRoomState
+    prevState: RoyalBlackjackRoomState,
+    players?: readonly string[]
   ): PlayerEventResult<RoyalBlackjackRoomState> {
     const state: RoyalBlackjackRoomState = JSON.parse(JSON.stringify(prevState));
     if (!state.disconnectedAtElapsedSec) {
       state.disconnectedAtElapsedSec = {};
     }
     // 默认等待 10s：将玩家从在线活跃名单中移除以匹配平台连接 Roster，但在 10s 宽限期内保留所有在座位置与牌局手牌
-    state.players = (state.players || []).filter((p) => p !== playerId);
+    state.players =
+      players !== undefined
+        ? players.filter((p) => p !== playerId)
+        : (state.players || []).filter((p) => p !== playerId);
     if (state.disconnectedAtElapsedSec[playerId] === undefined) {
       state.disconnectedAtElapsedSec[playerId] = state.elapsedSeconds;
     }
     return sanitizeJson({
       state,
-      joinable: computeRoomJoinable(state),
-      playerViews: buildRoomPlayerViews(state) as any,
+      joinable: computeRoomJoinable(state, players),
+      playerViews: buildRoomPlayerViews(state, players) as any,
       broadcasts: [
         {
           type: "player:disconnected_wait",
@@ -3406,9 +3486,13 @@ export const royalBlackjackGameServer: GameServer<
 
   onCommand(
     cmd: GameCommand<BlackjackHostCommand>,
-    prevState: RoyalBlackjackRoomState
+    prevState: RoyalBlackjackRoomState,
+    players?: readonly string[]
   ): CommandResult<RoyalBlackjackRoomState> {
     const state: RoyalBlackjackRoomState = JSON.parse(JSON.stringify(prevState));
+    if (players !== undefined) {
+      state.players = [...players];
+    }
     const broadcasts: unknown[] = [];
     const target = resolveTableTarget(state, cmd.data?.tableId);
 
@@ -3430,8 +3514,8 @@ export const royalBlackjackGameServer: GameServer<
 
     return sanitizeJson({
       state,
-      joinable: computeRoomJoinable(state),
-      playerViews: buildRoomPlayerViews(state) as any,
+      joinable: computeRoomJoinable(state, players),
+      playerViews: buildRoomPlayerViews(state, players) as any,
       broadcasts,
     });
   },

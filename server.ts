@@ -26,12 +26,10 @@ import {
   sanitizeTablesMapForClient,
 } from "./src/backend/platformContract";
 
-const RANDSEED_GAME_ID = process.env.RANDSEED_GAME_ID || process.env.GAME_ID || "";
-if (!RANDSEED_GAME_ID) {
-  console.warn(
-    "[RandSeed Server] Missing RANDSEED_GAME_ID or GAME_ID environment variable. Room match endpoints will require gameId to be supplied."
-  );
-}
+const RANDSEED_GAME_ID = (process.env.RANDSEED_GAME_ID || process.env.GAME_ID || "").trim();
+const LOCAL_PREVIEW_GAME_ID = /^[A-Za-z0-9_-]{1,64}$/.test(RANDSEED_GAME_ID)
+  ? RANDSEED_GAME_ID
+  : "royal-blackjack-preview";
 const CREATOR_SECRET = process.env.CREATOR_SECRET || process.env.PUBLISHER_SECRET || "royal-blackjack-publisher";
 const CREATOR_EMAIL = (process.env.CREATOR_EMAIL || process.env.PUBLISHER_EMAIL || "SnS.Bruce@gmail.com").toLowerCase();
 
@@ -262,7 +260,7 @@ async function startServer() {
     if (typeof reqAny?.query?.gameId === "string" && reqAny.query.gameId.trim()) {
       return reqAny.query.gameId.trim();
     }
-    return "";
+    return LOCAL_PREVIEW_GAME_ID;
   };
 
   const buildRoomScope = (gameId: string) => ({
@@ -656,21 +654,10 @@ async function startServer() {
     viewerPlayerId?: string
   ) => {
     const playerIds: string[] = Array.isArray(inst.state?.players) ? inst.state.players : [];
-    const players = playerIds.slice(0, 100).map((pid) => {
-      const displayName = sanitizeSdkDisplayName(
-        inst.state?.playerNames?.[pid] || usersDb[pid]?.name || pid
-      );
-      const avatarUrl = sanitizeSdkAvatarUrl(
-        inst.state?.playerAvatars?.[pid] || usersDb[pid]?.avatar
-      );
-      const joinedAt = inst.playerJoinedAt.get(pid) ?? inst.startedAtMs;
-      return {
-        playerId: pid,
-        joinedAt,
-        ...(displayName ? { displayName } : {}),
-        ...(avatarUrl ? { avatarUrl } : {}),
-      };
-    });
+    const players = playerIds.slice(0, 100).map((pid) => ({
+      playerId: pid,
+      joinedAt: inst.playerJoinedAt.get(pid) ?? inst.startedAtMs,
+    }));
     const authoritativePlayerView =
       viewerPlayerId && inst.playerViews && inst.playerViews[viewerPlayerId]
         ? inst.playerViews[viewerPlayerId]
@@ -785,7 +772,12 @@ async function startServer() {
           }
         }
         inst.state.elapsedSeconds = getElapsedSeconds(inst);
-        const joinRes = await royalBlackjackGameServer.onPlayerJoin(playerId, inst.state);
+        const nextRoster = Array.from(new Set([...(inst.state.players || []), playerId]));
+        const joinRes = await royalBlackjackGameServer.onPlayerJoin(
+          playerId,
+          inst.state,
+          nextRoster
+        );
         inst.state = joinRes.state;
         inst.playerViews = joinRes.playerViews as Record<string, any> | undefined;
         inst.broadcasts = joinRes.broadcasts || [];
@@ -890,13 +882,15 @@ async function startServer() {
           continue;
         }
         inst.tick += 1;
+        const activeRoster: string[] = Array.isArray(inst.state?.players) ? inst.state.players : [];
         const tickRes = await royalBlackjackGameServer.tick(
           {
             tick: inst.tick,
             elapsedSeconds: getElapsedSeconds(inst),
             inputs: [],
           },
-          inst.state
+          inst.state,
+          activeRoster
         );
         await processRoomTickOutcome(inst, tickRes);
         broadcastRoomSnapshot(inst);
@@ -1034,13 +1028,15 @@ async function startServer() {
           : inst.tick;
       const actionId = typeof req.body?.actionId === "string" ? req.body.actionId : undefined;
       inst.tick = Math.max(inst.tick + 1, expectedTick + 1);
+      const activeRoster: string[] = Array.isArray(inst.state?.players) ? inst.state.players : [];
       const tickRes = await royalBlackjackGameServer.tick(
         {
           tick: inst.tick,
           elapsedSeconds: getElapsedSeconds(inst),
           inputs: [{ playerId, data: req.body?.data, ...(actionId ? { actionId } : {}) }],
         },
-        inst.state
+        inst.state,
+        activeRoster
       );
       await processRoomTickOutcome(inst, tickRes);
 
@@ -1102,13 +1098,15 @@ async function startServer() {
       const rolled = await rolloverToNextMatchIfNeeded(inst);
       if (!rolled) {
         inst.tick += 1;
+        const activeRoster: string[] = Array.isArray(inst.state?.players) ? inst.state.players : [];
         const tickRes = await royalBlackjackGameServer.tick(
           {
             tick: inst.tick,
             elapsedSeconds: getElapsedSeconds(inst),
             inputs: [{ playerId: resolved.playerId, data: { action: "ready_next" } }],
           },
-          inst.state
+          inst.state,
+          activeRoster
         );
         await processRoomTickOutcome(inst, tickRes);
       }
@@ -1591,6 +1589,16 @@ async function startServer() {
     });
   });
 
+  const injectPreviewGameIdMeta = (html: string): string => {
+    if (/<meta\s+name=["']randseed-game-id["']/i.test(html)) {
+      return html;
+    }
+    return html.replace(
+      /<head\b[^>]*>/i,
+      (headTag) => `${headTag}\n    <meta name="randseed-game-id" content="${LOCAL_PREVIEW_GAME_ID}" />`
+    );
+  };
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
@@ -1598,13 +1606,46 @@ async function startServer() {
       server: { middlewareMode: true },
       appType: "spa",
     });
+    app.use(async (req, res, next) => {
+      if (
+        req.method === "GET" &&
+        !req.path.startsWith("/api") &&
+        !req.path.startsWith("/@") &&
+        !req.path.startsWith("/src/") &&
+        !req.path.startsWith("/node_modules/") &&
+        (req.path === "/" || req.path === "/index.html" || !path.extname(req.path)) &&
+        String(req.headers.accept || "").includes("text/html")
+      ) {
+        try {
+          const rawHtml = fs.readFileSync(path.join(process.cwd(), "index.html"), "utf8");
+          const transformed = await vite.transformIndexHtml(
+            req.originalUrl,
+            injectPreviewGameIdMeta(rawHtml)
+          );
+          res.status(200).setHeader("Content-Type", "text/html; charset=utf-8").end(transformed);
+          return;
+        } catch (err) {
+          next(err);
+          return;
+        }
+      }
+      next();
+    });
     app.use(vite.middlewares);
   } else {
     // Production static serving
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, { index: false }));
     app.get("*", (_req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+      try {
+        const rawHtml = fs.readFileSync(path.join(distPath, "index.html"), "utf8");
+        res
+          .status(200)
+          .setHeader("Content-Type", "text/html; charset=utf-8")
+          .end(injectPreviewGameIdMeta(rawHtml));
+      } catch {
+        res.sendFile(path.join(distPath, "index.html"));
+      }
     });
   }
 
@@ -1660,7 +1701,14 @@ async function startServer() {
         if (!stillHasOpenSocket) {
           try {
             inst.state.elapsedSeconds = getElapsedSeconds(inst);
-            const leaveRes = await royalBlackjackGameServer.onPlayerLeave(playerId, inst.state);
+            const remainingRoster = (Array.isArray(inst.state?.players) ? inst.state.players : []).filter(
+              (p: string) => p !== playerId
+            );
+            const leaveRes = await royalBlackjackGameServer.onPlayerLeave(
+              playerId,
+              inst.state,
+              remainingRoster
+            );
             inst.state = leaveRes.state;
             inst.playerViews = leaveRes.playerViews as Record<string, any> | undefined;
             inst.broadcasts = leaveRes.broadcasts || [];
@@ -1731,13 +1779,17 @@ async function startServer() {
                     : inst.tick;
                 const wsActionId = typeof msg.actionId === "string" ? msg.actionId : undefined;
                 inst.tick = Math.max(inst.tick + 1, wsExpectedTick + 1);
+                const activeRoster: string[] = Array.isArray(inst.state?.players)
+                  ? inst.state.players
+                  : [];
                 const tickRes = await royalBlackjackGameServer.tick(
                   {
                     tick: inst.tick,
                     elapsedSeconds: getElapsedSeconds(inst),
                     inputs: [{ playerId, data: msg.data, ...(wsActionId ? { actionId: wsActionId } : {}) }],
                   },
-                  inst.state
+                  inst.state,
+                  activeRoster
                 );
                 await processRoomTickOutcome(inst, tickRes);
                 const receipts =
@@ -1792,7 +1844,7 @@ async function startServer() {
   });
 
   httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`Royal BlackJack Server (gameId: ${RANDSEED_GAME_ID}) running on http://localhost:${PORT}`);
+    console.log(`Royal BlackJack Server (gameId: ${LOCAL_PREVIEW_GAME_ID}) running on http://localhost:${PORT}`);
   });
 }
 

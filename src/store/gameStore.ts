@@ -3,9 +3,8 @@ import { ROYAL_BLACKJACK_RULES_VERSION } from '../backend/platformContract';
 import {
   RANDSEED_GAME_ID,
   GAME_SLUG,
+  formatOpaquePlayerId,
   initRandseedRuntime,
-  getRandseedPlayerProfile,
-  onRandseedProfileUpdate,
   onRandseedRoomStatusChange,
   getRandseedOnlinePlayers,
   isRandseedRoomConnected,
@@ -1191,14 +1190,11 @@ function buildOnlinePlayersList(
     const isMe = currentUser?.id === uid;
     const tableInfo = findPlayerTableInfo(uid);
     const resolvedName =
-      (typeof rp.displayName === 'string' && rp.displayName.trim()) ||
       (isMe && currentUser?.name && currentUser.name !== 'Player' ? currentUser.name : '') ||
-      stateNames[uid] ||
+      (stateNames[uid] && stateNames[uid] !== uid ? stateNames[uid] : '') ||
       tableInfo?.seatName ||
-      (isMe ? currentUser?.name : '') ||
-      uid;
+      formatOpaquePlayerId(uid);
     const resolvedAvatar =
-      (typeof rp.avatarUrl === 'string' && rp.avatarUrl.trim()) ||
       (isMe ? currentUser?.avatar : undefined) ||
       stateAvatars[uid] ||
       tableInfo?.seatAvatar ||
@@ -1407,7 +1403,6 @@ export const useGameStore = create<GameStore>((set, get) => {
       return;
     }
 
-    const sdkProfile = getRandseedPlayerProfile();
     const sdkPlayers = roomPlayers ?? getRandseedOnlinePlayers();
 
     if (!roomState.playerNames || typeof roomState.playerNames !== 'object') {
@@ -1415,15 +1410,6 @@ export const useGameStore = create<GameStore>((set, get) => {
     }
     if (!roomState.playerAvatars || typeof roomState.playerAvatars !== 'object') {
       roomState.playerAvatars = {};
-    }
-    for (const rp of sdkPlayers) {
-      if (!rp?.playerId) continue;
-      if (rp.displayName) {
-        roomState.playerNames[rp.playerId] = rp.displayName;
-      }
-      if (rp.avatarUrl) {
-        roomState.playerAvatars[rp.playerId] = rp.avatarUrl;
-      }
     }
 
     latestOnlineRoomState = roomState;
@@ -1442,21 +1428,14 @@ export const useGameStore = create<GameStore>((set, get) => {
       return;
     }
 
-    const myRoomPlayer = sdkPlayers.find((p) => p.playerId === resolvedId);
-
     const resolvedName =
-      sdkProfile?.displayName ||
-      myRoomPlayer?.displayName ||
       (roomState.playerNames?.[resolvedId] && roomState.playerNames[resolvedId] !== resolvedId
         ? roomState.playerNames[resolvedId]
         : '') ||
       (current?.name && current.name !== 'Player' ? current.name : '') ||
-      roomState.playerNames?.[resolvedId] ||
-      'Player';
+      formatOpaquePlayerId(resolvedId);
 
     const resolvedAvatar =
-      sdkProfile?.avatarUrl ||
-      myRoomPlayer?.avatarUrl ||
       roomState.playerAvatars?.[resolvedId] ||
       current?.avatar ||
       undefined;
@@ -1599,16 +1578,9 @@ export const useGameStore = create<GameStore>((set, get) => {
     );
 
     if (res?.allocation) {
-      const latestProfile = getRandseedPlayerProfile();
-      const syncName =
-        latestProfile?.displayName ||
-        get().currentUser?.name ||
-        fallbackName;
-      const syncAvatar =
-        latestProfile?.avatarUrl ||
-        get().currentUser?.avatar ||
-        fallbackAvatar;
-      if (syncName && syncName !== 'Player') {
+      const syncName = get().currentUser?.name || fallbackName;
+      const syncAvatar = get().currentUser?.avatar || fallbackAvatar;
+      if (syncName && syncName !== 'Player' && !syncName.startsWith('Player #')) {
         sendRandseedRoomAction({
           action: 'sync_profile',
           name: syncName,
@@ -1688,47 +1660,11 @@ export const useGameStore = create<GameStore>((set, get) => {
           onRandseedRoomStatusChange((status, error) => {
             set({ roomStatus: status, roomError: error });
           });
-
-          onRandseedProfileUpdate((profile) => {
-            const cur = get().currentUser;
-            const nextName = profile.displayName || cur?.name || 'Player';
-            const nextAvatar = profile.avatarUrl || cur?.avatar;
-            if (isRandseedRoomConnected()) {
-              sendRandseedRoomAction({
-                action: 'sync_profile',
-                name: nextName,
-                ...(nextAvatar ? { avatar: nextAvatar } : {}),
-              }).catch(() => {});
-            }
-            if (!cur) return;
-            if (nextName === cur.name && nextAvatar === cur.avatar) return;
-            const updatedUser: User = {
-              ...cur,
-              name: nextName,
-              avatar: nextAvatar,
-            };
-            set((state) => ({
-              currentUser: updatedUser,
-              onlinePlayers: buildOnlinePlayersList(
-                state.tables,
-                updatedUser,
-                undefined,
-                latestOnlineRoomState
-              ),
-            }));
-          });
         }
 
         await initRandseedRuntime().catch(() => null);
-        const sdkProfile = getRandseedPlayerProfile();
-        const effectiveName =
-          sdkProfile?.displayName ||
-          (name && name !== 'Player' ? name : '') ||
-          'Player';
-        const effectiveAvatar =
-          sdkProfile?.avatarUrl ||
-          avatar ||
-          undefined;
+        const effectiveName = (name && name !== 'Player' ? name : '') || 'Player';
+        const effectiveAvatar = avatar || undefined;
 
         await connectAndSyncRoom(effectiveName, effectiveAvatar);
       })().finally(() => {
@@ -1739,12 +1675,8 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     reconnectRoom: async () => {
-      const sdkProfile = getRandseedPlayerProfile();
       const cur = get().currentUser;
-      await connectAndSyncRoom(
-        sdkProfile?.displayName || cur?.name || 'Player',
-        sdkProfile?.avatarUrl || cur?.avatar
-      );
+      await connectAndSyncRoom(cur?.name || 'Player', cur?.avatar);
     },
 
     syncStateFromServer: async () => {

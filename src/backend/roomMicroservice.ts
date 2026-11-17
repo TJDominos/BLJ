@@ -18,16 +18,19 @@ import { royalBlackjackGameServer } from "./royalBlackjackRoomServer";
  * - POST /isGameOver
  * - POST /onCommand
  */
-const port = Number(process.env.PORT) || 8080;
-if (!process.env.RANDSEED_GAME_ID && process.env.GAME_ID) {
-  process.env.RANDSEED_GAME_ID = process.env.GAME_ID;
+const port = Number(process.env.PORT ?? 8080);
+const fallbackGameId = (process.env.GAME_ID || "").trim();
+if (
+  process.env.RANDSEED_GAME_ID === undefined &&
+  /^[A-Za-z0-9_-]{1,64}$/.test(fallbackGameId)
+) {
+  process.env.RANDSEED_GAME_ID = fallbackGameId;
 }
-const gameId = process.env.RANDSEED_GAME_ID || undefined;
 
-createGameServer(royalBlackjackGameServer, port, {
-  ...(gameId ? { gameId } : {}),
+const server = createGameServer(royalBlackjackGameServer, port);
+
+server.once("listening", () => {
+  console.log(
+    `[RandSeed Wire Protocol] Royal BlackJack Room Server (gameId: ${process.env.RANDSEED_GAME_ID || "pending"}) listening on port ${port}`
+  );
 });
-
-console.log(
-  `[RandSeed Wire Protocol] Royal BlackJack Room Server (gameId: ${gameId || "dynamic"}) listening on port ${port}`
-);
