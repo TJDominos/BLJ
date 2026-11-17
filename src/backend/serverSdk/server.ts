@@ -267,18 +267,53 @@ function assertManifestRoster(config: MatchConfig, manifest: GameManifest): void
   }
 }
 
+function resolveHttpProjectionPlayers(
+  explicitPlayers: readonly string[] | undefined,
+  state: JsonValue,
+  manifest: GameManifest,
+  extraIncludeIds: readonly string[] = [],
+  excludePlayerId?: string,
+): string[] | undefined {
+  if (explicitPlayers !== undefined) {
+    return [...explicitPlayers];
+  }
+  if (manifest.playerViewMode !== "private") {
+    return undefined;
+  }
+  const derived: string[] = [];
+  const seen = new Set<string>();
+  if (isRecord(state) && Array.isArray(state.players)) {
+    for (const entry of state.players) {
+      if (
+        typeof entry === "string" &&
+        entry.trim().length > 0 &&
+        entry !== excludePlayerId &&
+        !seen.has(entry)
+      ) {
+        seen.add(entry);
+        derived.push(entry);
+      }
+    }
+  }
+  for (const extraId of extraIncludeIds) {
+    if (
+      typeof extraId === "string" &&
+      extraId.trim().length > 0 &&
+      extraId !== excludePlayerId &&
+      !seen.has(extraId)
+    ) {
+      seen.add(extraId);
+      derived.push(extraId);
+    }
+  }
+  return derived.slice(0, manifest.maxPlayers);
+}
+
 function requireProjectionRoster(
   players: readonly string[] | undefined,
   manifest: GameManifest,
   allowEmpty = false,
 ): void {
-  if (manifest.playerViewMode === "private" && players === undefined) {
-    throw new RequestError(
-      400,
-      "WRONG_ROSTER",
-      "Private player views require the active players roster in the request.",
-    );
-  }
   if (players !== undefined
     && ((!allowEmpty && players.length === 0) || players.length > manifest.maxPlayers)) {
     throw new RequestError(400, "WRONG_ROSTER", "players must satisfy the active game roster limits.");
@@ -470,12 +505,22 @@ export function createGameServer(
           && body.ctx.inputs.some(input => !body.players!.includes(input.playerId))) {
           throw new RequestError(400, "WRONG_ROSTER", "Every input playerId must belong to the active roster.");
         }
-        const callbackPlayers = body.players === undefined ? undefined : [...body.players];
-        const result = await callGame(() => game.tick(body.ctx, body.state, callbackPlayers));
+        const effectivePlayers = resolveHttpProjectionPlayers(
+          body.players,
+          body.state,
+          manifest,
+          body.ctx.inputs.map(input => input.playerId),
+        );
+        const result = await callGame(() => game.tick(body.ctx, body.state, effectivePlayers));
+        const validationPlayers =
+          effectivePlayers ??
+          (isRecord(result) && isRecord(result.playerViews)
+            ? Object.keys(result.playerViews)
+            : undefined);
         validateGameTickResult(
           result,
           body.ctx.inputs,
-          body.players,
+          validationPlayers,
           manifest.playerViewMode === "private",
         );
         sendJson(res, 200, result);
@@ -489,9 +534,19 @@ export function createGameServer(
         if (body.players !== undefined && !body.players.includes(body.playerId)) {
           throw new RequestError(400, "WRONG_ROSTER", "A joining player must be included in the resulting roster.");
         }
-        const callbackPlayers = body.players === undefined ? undefined : [...body.players];
-        const result = await callGame(() => game.onPlayerJoin(body.playerId, body.state, callbackPlayers));
-        validateGameStateResult(result, body.players, manifest.playerViewMode === "private");
+        const effectivePlayers = resolveHttpProjectionPlayers(
+          body.players,
+          body.state,
+          manifest,
+          [body.playerId],
+        );
+        const result = await callGame(() => game.onPlayerJoin(body.playerId, body.state, effectivePlayers));
+        const validationPlayers =
+          effectivePlayers ??
+          (isRecord(result) && isRecord(result.playerViews)
+            ? Object.keys(result.playerViews)
+            : undefined);
+        validateGameStateResult(result, validationPlayers, manifest.playerViewMode === "private");
         sendJson(res, 200, result);
         return;
       }
@@ -503,9 +558,20 @@ export function createGameServer(
         if (body.players !== undefined && body.players.includes(body.playerId)) {
           throw new RequestError(400, "WRONG_ROSTER", "A leaving player must be absent from the resulting roster.");
         }
-        const callbackPlayers = body.players === undefined ? undefined : [...body.players];
-        const result = await callGame(() => game.onPlayerLeave(body.playerId, body.state, callbackPlayers));
-        validateGameStateResult(result, body.players, manifest.playerViewMode === "private");
+        const effectivePlayers = resolveHttpProjectionPlayers(
+          body.players,
+          body.state,
+          manifest,
+          [],
+          body.playerId,
+        );
+        const result = await callGame(() => game.onPlayerLeave(body.playerId, body.state, effectivePlayers));
+        const validationPlayers =
+          effectivePlayers ??
+          (isRecord(result) && isRecord(result.playerViews)
+            ? Object.keys(result.playerViews)
+            : undefined);
+        validateGameStateResult(result, validationPlayers, manifest.playerViewMode === "private");
         sendJson(res, 200, result);
         return;
       }
@@ -531,9 +597,14 @@ export function createGameServer(
         const body = validateCommandRequest(await readJsonBody(req));
         const manifest = await getManifest();
         requireProjectionRoster(body.players, manifest, true);
-        const callbackPlayers = body.players === undefined ? undefined : [...body.players];
-        const result = await callGame(() => game.onCommand!(body.command, body.state, callbackPlayers));
-        validateGameStateResult(result, body.players, manifest.playerViewMode === "private");
+        const effectivePlayers = resolveHttpProjectionPlayers(body.players, body.state, manifest);
+        const result = await callGame(() => game.onCommand!(body.command, body.state, effectivePlayers));
+        const validationPlayers =
+          effectivePlayers ??
+          (isRecord(result) && isRecord(result.playerViews)
+            ? Object.keys(result.playerViews)
+            : undefined);
+        validateGameStateResult(result, validationPlayers, manifest.playerViewMode === "private");
         sendJson(res, 200, result);
         return;
       }
