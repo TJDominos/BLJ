@@ -446,8 +446,12 @@ class NodeStreamSession<TState = unknown> {
       const manifest = await invokeGame("manifest", () => this.game.manifest());
       validateStreamManifest(manifest);
 
-      const players = Object.hasOwn(message, "players") ? message.players : [];
-      if (!Object.hasOwn(message, "players")) {
+      let players: unknown;
+      if (Object.hasOwn(message, "players") && message.players !== undefined) {
+        players = message.players;
+      } else if (isRecord(message.state) && Array.isArray(message.state.players)) {
+        players = message.state.players;
+      } else {
         streamError("WRONG_ROSTER", "Hydrate requires the active players roster.");
       }
       validatePlayerRoster(players, true);
@@ -482,7 +486,19 @@ class NodeStreamSession<TState = unknown> {
         );
         lastViews = message.playerViews as Record<string, JsonValue>;
       } else if (privateViewsRequired && replay.length === 0) {
-        validateGameStateResult({ state: curState }, curPlayers, true);
+        if (typeof this.game.derivePlayerViews === "function") {
+          const derivedViews = await invokeGame("derivePlayerViews", () =>
+            this.game.derivePlayerViews!(structuredClone(curState), [...curPlayers]),
+          );
+          validateGameStateResult(
+            { state: curState, playerViews: derivedViews },
+            curPlayers,
+            true,
+          );
+          lastViews = derivedViews;
+        } else {
+          validateGameStateResult({ state: curState }, curPlayers, false);
+        }
       }
 
       const initialResult = { ...(await invokeGame("isGameOver", () => this.game.isGameOver(curState))) };
@@ -632,6 +648,14 @@ export function attachStreamUpgradeHandler(server: http.Server, game: GameServer
 
     activeSockets.add(socket);
     socket.on("close", () => activeSockets.delete(socket));
+    const netSocket = socket as Duplex & {
+      setTimeout?: (timeout: number) => void;
+      setNoDelay?: (noDelay?: boolean) => void;
+      setKeepAlive?: (enable?: boolean, initialDelay?: number) => void;
+    };
+    netSocket.setTimeout?.(0);
+    netSocket.setNoDelay?.(true);
+    netSocket.setKeepAlive?.(true, 15_000);
 
     const accept = crypto.createHash("sha1").update(key + WS_GUID).digest("base64");
     const durability = resolveStreamDurability(game);

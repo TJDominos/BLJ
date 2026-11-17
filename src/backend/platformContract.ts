@@ -203,7 +203,7 @@ function projectSingleSubTablePublic(
     tournament: ct.tournament || null,
     tournamentHistory: Array.isArray(ct.tournamentHistory) ? ct.tournamentHistory.slice(0, 10) : [],
     lastRoundSummary: ct.lastRoundSummary || null,
-    roundHistory: Array.isArray(ct.roundHistory) ? ct.roundHistory.slice(0, 20) : [],
+    roundHistory: Array.isArray(ct.roundHistory) ? ct.roundHistory.slice(0, 10) : [],
   };
 }
 
@@ -290,13 +290,16 @@ export function projectBlackjackRoomState(state: RoyalBlackjackRoomState): State
     tournament: state.tournament || null,
     tournamentHistory: Array.isArray(state.tournamentHistory) ? state.tournamentHistory.slice(0, 10) : [],
     lastRoundSummary: state.lastRoundSummary || null,
-    roundHistory: Array.isArray(state.roundHistory) ? state.roundHistory.slice(0, 20) : [],
+    roundHistory: Array.isArray(state.roundHistory) ? state.roundHistory.slice(0, 10) : [],
     customTables: publicCustomTables,
     players: state.players || [],
     playerNames,
     playerAvatars,
   };
 
+  const ownerSet = new Set<string>(
+    Array.isArray(state.ownerPlayerIds) ? state.ownerPlayerIds : []
+  );
   const privateStates: Record<string, unknown> = {};
   for (const pid of state.players) {
     const mySeats: Array<{
@@ -335,6 +338,7 @@ export function projectBlackjackRoomState(state: RoyalBlackjackRoomState): State
 
     privateStates[pid] = {
       playerId: pid,
+      isGameOwner: ownerSet.has(pid),
       balance: state.balances[pid] || 0,
       walletCoins: state.walletCoins[pid] || 0,
       mySeats,

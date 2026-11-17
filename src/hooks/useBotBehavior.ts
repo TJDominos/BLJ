@@ -3,8 +3,8 @@ import { Table } from '../store/gameStore';
 
 export function useBotBehavior(
   table: Table | undefined | null, 
-  hit: (tableId: string, seatIndex: number) => Promise<void>, 
-  stand: (tableId: string, seatIndex: number) => Promise<void>
+  hit: (tableId: string, seatIndex: number) => Promise<unknown>, 
+  stand: (tableId: string, seatIndex: number) => Promise<unknown>
 ) {
   useEffect(() => {
     if (table?.status === 'playing' && table.currentTurnIndex >= 0) {

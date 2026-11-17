@@ -33,33 +33,59 @@ const LOCAL_PREVIEW_GAME_ID = /^[A-Za-z0-9_-]{1,64}$/.test(RANDSEED_GAME_ID)
 const CREATOR_SECRET = process.env.CREATOR_SECRET || process.env.PUBLISHER_SECRET || "royal-blackjack-publisher";
 const CREATOR_EMAIL = (process.env.CREATOR_EMAIL || process.env.PUBLISHER_EMAIL || "SnS.Bruce@gmail.com").toLowerCase();
 
-function isAuthorizedCreator(req: express.Request): boolean {
-  const headerKey = req.headers["x-creator-key"] || req.headers["x-publisher-key"];
-  const userRoleHeader = req.headers["x-user-role"];
-  const authHeader = req.headers["authorization"];
+function getFirstHeader(
+  headers: http.IncomingHttpHeaders,
+  name: string
+): string | undefined {
+  const val = headers[name];
+  if (typeof val === "string") return val.trim();
+  if (Array.isArray(val) && typeof val[0] === "string") return val[0].trim();
+  return undefined;
+}
+
+function isAuthorizedCreator(req: express.Request | http.IncomingMessage): boolean {
+  const headers = req.headers || {};
+  const headerKey =
+    getFirstHeader(headers, "x-creator-key") ||
+    getFirstHeader(headers, "x-publisher-key");
+  const userRoleHeader = (
+    getFirstHeader(headers, "x-user-role") ||
+    getFirstHeader(headers, "x-randseed-role") ||
+    ""
+  ).toLowerCase();
+  const ownerFlagHeader = (
+    getFirstHeader(headers, "x-randseed-game-owner") ||
+    getFirstHeader(headers, "x-randseed-is-owner") ||
+    getFirstHeader(headers, "x-game-owner") ||
+    ""
+  ).toLowerCase();
+  const authHeader = getFirstHeader(headers, "authorization");
   const bearerToken =
-    typeof authHeader === "string" && authHeader.startsWith("Bearer ")
+    authHeader && authHeader.startsWith("Bearer ")
       ? authHeader.slice(7).trim()
       : undefined;
+  const reqQuery = "query" in req && req.query ? (req.query as Record<string, unknown>) : undefined;
   const queryKey =
-    typeof req.query.creatorKey === "string"
-      ? req.query.creatorKey
-      : typeof req.query.publisherKey === "string"
-      ? req.query.publisherKey
+    typeof reqQuery?.creatorKey === "string"
+      ? reqQuery.creatorKey
+      : typeof reqQuery?.publisherKey === "string"
+      ? reqQuery.publisherKey
       : undefined;
-  const headerEmail =
-    typeof req.headers["x-creator-email"] === "string"
-      ? req.headers["x-creator-email"].toLowerCase()
-      : typeof req.headers["x-publisher-email"] === "string"
-      ? req.headers["x-publisher-email"].toLowerCase()
-      : undefined;
+  const headerEmail = (
+    getFirstHeader(headers, "x-creator-email") ||
+    getFirstHeader(headers, "x-publisher-email") ||
+    ""
+  ).toLowerCase();
 
   if (
+    ownerFlagHeader === "true" ||
+    ownerFlagHeader === "1" ||
+    userRoleHeader === "owner" ||
+    userRoleHeader === "creator" ||
     headerKey === CREATOR_SECRET ||
     headerKey === "royal-blackjack-creator" ||
     bearerToken === CREATOR_SECRET ||
-    queryKey === CREATOR_SECRET ||
-    userRoleHeader === "creator"
+    queryKey === CREATOR_SECRET
   ) {
     return true;
   }
@@ -284,7 +310,7 @@ async function startServer() {
       broadcasts: any[];
       gameResult: any;
       matchStatsByPlayer: Record<string, Record<string, number>>;
-      sockets: Set<{ socket: Duplex; playerId: string }>;
+      sockets: Set<{ socket: Duplex; playerId: string; lastSeenMs: number }>;
       playerJoinedAt: Map<string, number>;
       observationGenerations: Map<string, number>;
     }
@@ -318,13 +344,37 @@ async function startServer() {
     return {};
   })();
 
-  const savePersistedWallets = () => {
+  let archiveDirReadyPromise: Promise<void> | null = null;
+  const ensureArchiveDirAsync = async () => {
+    if (!archiveDirReadyPromise) {
+      archiveDirReadyPromise = fs.promises.mkdir(ARCHIVE_DIR, { recursive: true }).then(() => {});
+    }
+    return archiveDirReadyPromise;
+  };
+
+  let walletWritePending = false;
+  let walletWriteInFlight = false;
+  const flushWalletsWrite = async () => {
+    if (walletWriteInFlight) {
+      walletWritePending = true;
+      return;
+    }
+    walletWriteInFlight = true;
     try {
-      fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
-      fs.writeFileSync(WALLETS_FILE, JSON.stringify(persistedPlayerWallets), "utf8");
+      do {
+        walletWritePending = false;
+        const payload = JSON.stringify(persistedPlayerWallets);
+        await ensureArchiveDirAsync();
+        await fs.promises.writeFile(WALLETS_FILE, payload, "utf8");
+      } while (walletWritePending);
     } catch {
       // Ignore disk write failure in read-only environments
+    } finally {
+      walletWriteInFlight = false;
     }
+  };
+  const savePersistedWallets = () => {
+    void flushWalletsWrite();
   };
 
   const syncRoomWalletsToPersistentStore = (state: any) => {
@@ -376,13 +426,29 @@ async function startServer() {
     return [];
   })();
 
-  const savePersistedArchive = () => {
+  let archiveWritePending = false;
+  let archiveWriteInFlight = false;
+  const flushArchiveWrite = async () => {
+    if (archiveWriteInFlight) {
+      archiveWritePending = true;
+      return;
+    }
+    archiveWriteInFlight = true;
     try {
-      fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
-      fs.writeFileSync(ARCHIVE_FILE, JSON.stringify(persistedMatchArchive), "utf8");
+      do {
+        archiveWritePending = false;
+        const payload = JSON.stringify(persistedMatchArchive);
+        await ensureArchiveDirAsync();
+        await fs.promises.writeFile(ARCHIVE_FILE, payload, "utf8");
+      } while (archiveWritePending);
     } catch {
       // Ignore disk write failure in read-only environments
+    } finally {
+      archiveWriteInFlight = false;
     }
+  };
+  const savePersistedArchive = () => {
+    void flushArchiveWrite();
   };
 
   const MAX_METRIC_KEYS = new Set(["best_single_win"]);
@@ -432,13 +498,63 @@ async function startServer() {
     }
   };
 
-  const persistCompletedMatchArchive = (
+  const buildMatchSummaryFromInst = (
     inst: NonNullable<ReturnType<typeof hostedRoomInstances.get>>
-  ) => {
-    const gameResult = inst.gameResult;
-    if (!gameResult?.over || !gameResult.summary) return;
+  ): Record<string, any> | null => {
+    if (inst.gameResult?.over && inst.gameResult.summary) {
+      return inst.gameResult.summary as Record<string, any>;
+    }
+    const state = inst.state;
+    if (!state) return null;
+    const settledRounds = Array.isArray(state.matchSettledRounds) ? state.matchSettledRounds : [];
+    const tournamentResults = Array.isArray(state.matchTournamentResults)
+      ? state.matchTournamentResults
+      : [];
+    if (settledRounds.length === 0 && tournamentResults.length === 0) return null;
 
-    const summary = gameResult.summary as Record<string, any>;
+    const matchNetByPlayer: Record<string, number> = {};
+    for (const r of settledRounds) {
+      for (const sr of r.seatResults || []) {
+        if (!sr?.userId) continue;
+        matchNetByPlayer[sr.userId] = (matchNetByPlayer[sr.userId] || 0) + (sr.net || 0);
+      }
+    }
+    let winnerPlayerId: string | undefined;
+    let bestMatchNet = 0;
+    for (const [pid, net] of Object.entries(matchNetByPlayer)) {
+      if (net > bestMatchNet) {
+        bestMatchNet = net;
+        winnerPlayerId = pid;
+      }
+    }
+    return {
+      ...(winnerPlayerId ? { winnerPlayerId } : {}),
+      scores: state.balances || {},
+      durationSeconds: state.elapsedSeconds ?? Math.max(0, Math.round((Date.now() - inst.startedAtMs) / 1000)),
+      customMetrics: {
+        roundsPlayed: state.roundsPlayed || 0,
+        ...(typeof state.randomSeedIndex === "number"
+          ? { randomSeedIndex: state.randomSeedIndex }
+          : {}),
+        ...(state.lastSettlementUnit ? { settlementUnit: state.lastSettlementUnit } : {}),
+        settledRounds,
+        tournamentResults,
+      },
+    };
+  };
+
+  const persistCompletedMatchArchive = (
+    inst: NonNullable<ReturnType<typeof hostedRoomInstances.get>>,
+    allowIncremental = false
+  ) => {
+    const summary =
+      inst.gameResult?.over && inst.gameResult.summary
+        ? (inst.gameResult.summary as Record<string, any>)
+        : allowIncremental
+        ? buildMatchSummaryFromInst(inst)
+        : null;
+    if (!summary) return;
+
     const customMetrics = (summary.customMetrics && typeof summary.customMetrics === "object"
       ? summary.customMetrics
       : {}) as Record<string, any>;
@@ -498,8 +614,8 @@ async function startServer() {
         summary.scores && typeof summary.scores === "object" && !Array.isArray(summary.scores)
           ? { ...(summary.scores as Record<string, number>) }
           : {},
-      summary: JSON.parse(JSON.stringify(summary)),
-      statsByPlayer: JSON.parse(JSON.stringify(inst.matchStatsByPlayer || {})),
+      summary: structuredClone(summary),
+      statsByPlayer: structuredClone(inst.matchStatsByPlayer || {}),
     };
 
     const existingIdx = persistedMatchArchive.findIndex(
@@ -531,7 +647,8 @@ async function startServer() {
     }
     inst.broadcasts = tickRes.broadcasts || [];
     syncRoomWalletsToPersistentStore(inst.state);
-    if (Array.isArray(tickRes.resultUnits) && tickRes.resultUnits.length > 0) {
+    const hasSettledUnits = Array.isArray(tickRes.resultUnits) && tickRes.resultUnits.length > 0;
+    if (hasSettledUnits) {
       accumulateResultUnitsIntoMatchStats(inst.matchStatsByPlayer, tickRes.resultUnits);
     }
     inst.gameResult = await royalBlackjackGameServer.isGameOver(inst.state);
@@ -539,7 +656,9 @@ async function startServer() {
       if (!inst.gameOverAtMs) {
         inst.gameOverAtMs = Date.now();
       }
-      persistCompletedMatchArchive(inst);
+      persistCompletedMatchArchive(inst, false);
+    } else if (hasSettledUnits) {
+      persistCompletedMatchArchive(inst, true);
     }
   };
 
@@ -641,6 +760,14 @@ async function startServer() {
     return Buffer.concat([header, payload]);
   };
 
+  const encodeWsControlFrame = (opcode: number, payload: Buffer = Buffer.alloc(0)): Buffer => {
+    const body = payload.length > 125 ? payload.subarray(0, 125) : payload;
+    const header = Buffer.allocUnsafe(2);
+    header[0] = 0x80 | (opcode & 0x0f);
+    header[1] = body.length;
+    return body.length > 0 ? Buffer.concat([header, body]) : header;
+  };
+
   const buildRoomSnapshotFrame = (
     inst: NonNullable<ReturnType<typeof hostedRoomInstances.get>>,
     actionReceipts?: Array<{
@@ -712,7 +839,44 @@ async function startServer() {
     }
   };
 
-  const getOrCreateHostedRoom = async (roomId: string, playerId: string, gameId: string) => {
+  const applyPlayerProfileToRoomState = (
+    inst: NonNullable<ReturnType<typeof hostedRoomInstances.get>>,
+    playerId: string,
+    playerName?: string,
+    playerAvatar?: string
+  ): boolean => {
+    const cleanName = sanitizeSdkDisplayName(playerName);
+    const cleanAvatar = sanitizeSdkAvatarUrl(playerAvatar);
+    const usableName =
+      cleanName && cleanName !== "Player" && !cleanName.startsWith("Player #")
+        ? cleanName
+        : undefined;
+    let changed = false;
+
+    if (!inst.state.playerNames || typeof inst.state.playerNames !== "object") {
+      inst.state.playerNames = {};
+    }
+    if (!inst.state.playerAvatars || typeof inst.state.playerAvatars !== "object") {
+      inst.state.playerAvatars = {};
+    }
+    if (usableName && inst.state.playerNames[playerId] !== usableName) {
+      inst.state.playerNames[playerId] = usableName;
+      changed = true;
+    }
+    if (cleanAvatar && inst.state.playerAvatars[playerId] !== cleanAvatar) {
+      inst.state.playerAvatars[playerId] = cleanAvatar;
+      changed = true;
+    }
+    return changed;
+  };
+
+  const getOrCreateHostedRoom = async (
+    roomId: string,
+    playerId: string,
+    gameId: string,
+    playerName?: string,
+    playerAvatar?: string
+  ) => {
     if (!gameId) {
       throw new Error("RANDSEED_GAME_ID is required from the server environment or request.");
     }
@@ -753,6 +917,14 @@ async function startServer() {
         playerJoinedAt: new Map([[playerId, nowMs]]),
         observationGenerations: new Map(),
       };
+      if (applyPlayerProfileToRoomState(inst, playerId, playerName, playerAvatar)) {
+        if (typeof royalBlackjackGameServer.derivePlayerViews === "function") {
+          inst.playerViews = royalBlackjackGameServer.derivePlayerViews(
+            inst.state,
+            inst.state.players
+          );
+        }
+      }
       syncRoomWalletsToPersistentStore(inst.state);
       hostedRoomInstances.set(roomId, inst);
     } else {
@@ -771,6 +943,7 @@ async function startServer() {
             inst.state.balances[playerId] = persistedPlayerWallets[playerId];
           }
         }
+        applyPlayerProfileToRoomState(inst, playerId, playerName, playerAvatar);
         inst.state.elapsedSeconds = getElapsedSeconds(inst);
         const nextRoster = Array.from(new Set([...(inst.state.players || []), playerId]));
         const joinRes = await royalBlackjackGameServer.onPlayerJoin(
@@ -782,6 +955,14 @@ async function startServer() {
         inst.playerViews = joinRes.playerViews as Record<string, any> | undefined;
         inst.broadcasts = joinRes.broadcasts || [];
         syncRoomWalletsToPersistentStore(inst.state);
+        broadcastRoomSnapshot(inst);
+      } else if (applyPlayerProfileToRoomState(inst, playerId, playerName, playerAvatar)) {
+        if (typeof royalBlackjackGameServer.derivePlayerViews === "function") {
+          inst.playerViews = royalBlackjackGameServer.derivePlayerViews(
+            inst.state,
+            inst.state.players
+          );
+        }
         broadcastRoomSnapshot(inst);
       }
     }
@@ -836,7 +1017,7 @@ async function startServer() {
       playerId: (headerPlayerId || cookiePlayerId || fallbackId).trim(),
       name: headerName || cookieName || body?.name,
       avatar: headerAvatar || body?.avatar,
-      isCreator: "query" in req ? isAuthorizedCreator(req as express.Request) || Boolean(body?.isCreator) : false,
+      isCreator: isAuthorizedCreator(req),
     };
   };
 
@@ -861,15 +1042,53 @@ async function startServer() {
   });
 
   // Background tick loop for active rooms & rooms waiting on 10s disconnect grace timers
+  let backgroundLoopCycle = 0;
   setInterval(async () => {
+    backgroundLoopCycle++;
+    const nowMs = Date.now();
     for (const inst of hostedRoomInstances.values()) {
+      for (const client of [...inst.sockets]) {
+        if (client.socket.destroyed || !client.socket.writable) {
+          inst.sockets.delete(client);
+          continue;
+        }
+        if (nowMs - client.lastSeenMs > 12_000) {
+          try {
+            client.socket.destroy();
+          } catch {
+            // Ignore close failure
+          }
+          continue;
+        }
+        if (backgroundLoopCycle % 4 === 0) {
+          try {
+            client.socket.write(encodeWsControlFrame(0x09));
+          } catch {
+            // Destroy handled on next error/close
+          }
+        }
+      }
       const hasDisconnectedPlayers =
         Boolean(inst.state?.disconnectedAtElapsedSec) &&
         Object.keys(inst.state.disconnectedAtElapsedSec).length > 0;
       const pendingRollover =
         Boolean(inst.gameResult?.over) &&
         inst.gameResult?.nextMatchPolicy?.mode === "auto_next_match";
+      const hasActiveCustomTable =
+        inst.state?.customTables && typeof inst.state.customTables === "object"
+          ? Object.values(inst.state.customTables).some(
+              (ct: any) =>
+                ct &&
+                ct.status !== "closed" &&
+                (ct.phase === "playing" || ct.phase === "dealer_turn")
+            )
+          : false;
+      const hasActivePlayingTable =
+        inst.state?.phase === "playing" ||
+        inst.state?.phase === "dealer_turn" ||
+        hasActiveCustomTable;
       if (inst.sockets.size === 0 && !hasDisconnectedPlayers && !pendingRollover) continue;
+      if (!hasActivePlayingTable && !hasDisconnectedPlayers && !pendingRollover) continue;
       try {
         if (pendingRollover) {
           const timeoutMs = Number(inst.gameResult?.nextMatchPolicy?.timeoutMs ?? 3000);
@@ -929,7 +1148,13 @@ async function startServer() {
         `rs_player_id=${encodeURIComponent(playerId)}; Path=/; SameSite=Lax`
       );
       getOrCreateUser(playerId, resolved.name || "Player", Boolean(resolved.isCreator), resolved.avatar);
-      const inst = await getOrCreateHostedRoom(roomId, playerId, gameId);
+      const inst = await getOrCreateHostedRoom(
+        roomId,
+        playerId,
+        gameId,
+        resolved.name,
+        resolved.avatar
+      );
       const nextGeneration = (inst.observationGenerations.get(playerId) || 0) + 1;
       inst.observationGenerations.set(playerId, nextGeneration);
       const wantsObservationAck = req.headers["x-randseed-room-protocol"] === "observation-ack-v1";
@@ -989,7 +1214,13 @@ async function startServer() {
         return;
       }
       const resolved = resolveAuthenticatedPlatformPlayer(req);
-      const inst = await getOrCreateHostedRoom(req.params.roomId, resolved.playerId, gameId);
+      const inst = await getOrCreateHostedRoom(
+        req.params.roomId,
+        resolved.playerId,
+        gameId,
+        resolved.name,
+        resolved.avatar
+      );
       res.json({
         success: true,
         data: buildRoomSnapshotFrame(inst, undefined, resolved.playerId),
@@ -1012,7 +1243,17 @@ async function startServer() {
       }
       const resolved = resolveAuthenticatedPlatformPlayer(req);
       const playerId = resolved.playerId;
-      const inst = await getOrCreateHostedRoom(req.params.roomId, playerId, gameId);
+      const inst = await getOrCreateHostedRoom(
+        req.params.roomId,
+        playerId,
+        gameId,
+        resolved.name,
+        resolved.avatar
+      );
+      const nowSeenMs = Date.now();
+      for (const c of inst.sockets) {
+        if (c.playerId === playerId) c.lastSeenMs = nowSeenMs;
+      }
       if (typeof req.body?.matchId === "string" && req.body.matchId && req.body.matchId !== inst.matchId) {
         res.status(409).json({
           success: false,
@@ -1085,7 +1326,13 @@ async function startServer() {
         return;
       }
       const resolved = resolveAuthenticatedPlatformPlayer(req);
-      const inst = await getOrCreateHostedRoom(req.params.roomId, resolved.playerId, gameId);
+      const inst = await getOrCreateHostedRoom(
+        req.params.roomId,
+        resolved.playerId,
+        gameId,
+        resolved.name,
+        resolved.avatar
+      );
       if (typeof req.body?.matchId === "string" && req.body.matchId && req.body.matchId !== inst.matchId) {
         res.status(409).json({
           success: false,
@@ -1242,7 +1489,7 @@ async function startServer() {
   app.post("/api/game/session", async (req, res) => {
     try {
       const platformIdentity = resolveAuthenticatedPlatformPlayer(req);
-      const { userId, name = "Player", avatar, publisherKey, isCreator } = req.body || {};
+      const { userId, name = "Player", avatar, publisherKey } = req.body || {};
       const resolvedId =
         platformIdentity.playerId && platformIdentity.playerId !== "player_1"
           ? platformIdentity.playerId
@@ -1253,7 +1500,6 @@ async function startServer() {
       const resolvedAvatar = platformIdentity.avatar || avatar;
       const isCreatorAuth = Boolean(
         platformIdentity.isCreator ||
-          isCreator ||
           (publisherKey && (publisherKey === CREATOR_SECRET || publisherKey === "royal-blackjack-creator")) ||
           isAuthorizedCreator(req)
       );
@@ -1268,15 +1514,13 @@ async function startServer() {
         res.status(400).json({ error: "Server RANDSEED_GAME_ID or GAME_ID is not configured." });
         return;
       }
-      const inst = await getOrCreateHostedRoom("table_1", resolvedId, gameId);
-      if (!inst.state.playerNames) inst.state.playerNames = {};
-      if (!inst.state.playerAvatars) inst.state.playerAvatars = {};
-      if (resolvedName && resolvedName !== "Player") {
-        inst.state.playerNames[resolvedId] = resolvedName;
-      }
-      if (resolvedAvatar) {
-        inst.state.playerAvatars[resolvedId] = resolvedAvatar;
-      }
+      const inst = await getOrCreateHostedRoom(
+        "table_1",
+        resolvedId,
+        gameId,
+        resolvedName,
+        resolvedAvatar
+      );
       res.setHeader(
         "Set-Cookie",
         `rs_player_id=${encodeURIComponent(resolvedId)}; Path=/; SameSite=Lax`
@@ -1284,6 +1528,7 @@ async function startServer() {
       const snapFrame = buildRoomSnapshotFrame(inst, undefined, resolvedId);
       res.json({
         user,
+        isGameOwner: isCreatorAuth,
         roomSnapshot: snapFrame.state,
       });
     } catch (err: any) {
@@ -1547,6 +1792,89 @@ async function startServer() {
 
   // Game Runtime Overview (Game Stats: House tokens distributed, user counts, room overview)
   app.get("/api/stats", (req, res) => {
+    const ownerAuthorized = isAuthorizedCreator(req);
+    const liveInstances = Array.from(hostedRoomInstances.values());
+
+    if (liveInstances.length > 0) {
+      const rooms: Array<{
+        id: string;
+        name: string;
+        mode: string;
+        status: string;
+        roundsPlayed: number;
+        visits: number;
+        seatedPlayers: number;
+        maxSeats: number;
+      }> = [];
+      let totalRoundsPlayed = 0;
+      let totalVisits = 0;
+      let seatedPlayersCount = 0;
+      let tokensIssued = 0;
+      let tokensPaidOut = 0;
+      let totalRefillsCount = 0;
+      const knownUsers = new Set<string>(Object.keys(persistedPlayerWallets));
+
+      for (const inst of liveInstances) {
+        const s = inst.state || {};
+        if (Array.isArray(s.players)) {
+          for (const pid of s.players) {
+            if (typeof pid === "string" && !pid.startsWith("bot_")) knownUsers.add(pid);
+          }
+        }
+        tokensIssued += Number(s.totalTokensIssued) || 0;
+        tokensPaidOut += Number(s.totalTokensPaidOut) || 0;
+        totalRefillsCount += Number(s.totalRefillsCount) || 0;
+
+        const addRoomSummary = (tbl: any, id: string, defaultName: string) => {
+          if (!tbl || tbl.status === "closed") return;
+          const seatsArr: any[] = Array.isArray(tbl.seats) ? tbl.seats : [];
+          const seated = seatsArr.filter((seat) => Boolean(seat?.playerId || seat?.userId)).length;
+          const rounds = Number(tbl.roundsPlayed) || 0;
+          const visits = Number(tbl.visits) || 0;
+          totalRoundsPlayed += rounds;
+          totalVisits += visits;
+          seatedPlayersCount += seated;
+          rooms.push({
+            id,
+            name: typeof tbl.name === "string" && tbl.name ? tbl.name : defaultName,
+            mode: tbl.mode === "tournament" ? "tournament" : "regular",
+            status: tbl.status || "waiting",
+            roundsPlayed: rounds,
+            visits,
+            seatedPlayers: seated,
+            maxSeats: Number(tbl.maxSeats) || seatsArr.filter((seat) => !seat?.isSplitHand).length || 7,
+          });
+        };
+
+        addRoomSummary(s, inst.roomId === "table_1" ? "table_1" : inst.roomId, "Table #1");
+        if (s.customTables && typeof s.customTables === "object") {
+          for (const [cid, ct] of Object.entries(s.customTables)) {
+            addRoomSummary(ct, cid, cid);
+          }
+        }
+      }
+
+      const houseDistributedTokens = tokensIssued + tokensPaidOut;
+      res.json({
+        gameId: resolveServerGameId(req) || "royal-blackjack",
+        rulesVersion: ROYAL_BLACKJACK_RULES_VERSION,
+        uptimeSeconds: Math.floor(process.uptime()),
+        activeRoomsCount: rooms.length,
+        seatedPlayersCount,
+        totalRoundsPlayed,
+        totalVisits,
+        totalUsersCount: Math.max(knownUsers.size, Object.keys(usersDb).length),
+        houseDistributedTokens,
+        tokensIssued,
+        tokensPaidOut,
+        totalRefillsCount,
+        isCreator: ownerAuthorized,
+        isGameOwner: ownerAuthorized,
+        rooms,
+      });
+      return;
+    }
+
     reconcileSystemTables();
     const allTables = Object.values(tablesDb);
     const activeRooms = allTables.filter((t) => t.status !== "closed");
@@ -1563,7 +1891,7 @@ async function startServer() {
     const houseDistributedTokens = tokensIssued + tokensPaidOut;
 
     res.json({
-      gameId: "royal-blackjack",
+      gameId: resolveServerGameId(req) || "royal-blackjack",
       rulesVersion: ROYAL_BLACKJACK_RULES_VERSION,
       uptimeSeconds: Math.floor(process.uptime()),
       activeRoomsCount: activeRooms.length,
@@ -1575,7 +1903,8 @@ async function startServer() {
       tokensIssued,
       tokensPaidOut,
       totalRefillsCount: houseStats.totalRefillsCount,
-      isCreator: isAuthorizedCreator(req),
+      isCreator: ownerAuthorized,
+      isGameOwner: ownerAuthorized,
       rooms: activeRooms.map((r) => ({
         id: r.id,
         name: r.name,
@@ -1674,7 +2003,13 @@ async function startServer() {
       }
       const resolved = resolveAuthenticatedPlatformPlayer(req);
       const playerId = resolved.playerId;
-      const inst = await getOrCreateHostedRoom(roomId, playerId, gameId);
+      const inst = await getOrCreateHostedRoom(
+        roomId,
+        playerId,
+        gameId,
+        resolved.name,
+        resolved.avatar
+      );
 
       const accept = crypto.createHash("sha1").update(key.trim() + WS_GUID).digest("base64");
       socket.write(
@@ -1687,7 +2022,7 @@ async function startServer() {
         ].join("\r\n")
       );
 
-      const clientEntry = { socket, playerId };
+      const clientEntry = { socket, playerId, lastSeenMs: Date.now() };
       inst.sockets.add(clientEntry);
 
       let disconnected = false;
@@ -1757,10 +2092,23 @@ async function startServer() {
             }
           }
 
+          clientEntry.lastSeenMs = Date.now();
+
           if (opcode === 0x08) {
             socket.end();
             await handleWsDisconnect();
             return;
+          }
+
+          if (opcode === 0x09) {
+            if (!socket.destroyed && socket.writable) {
+              socket.write(encodeWsControlFrame(0x0a, payload));
+            }
+            continue;
+          }
+
+          if (opcode === 0x0a) {
+            continue;
           }
 
           if (opcode === 0x01) {

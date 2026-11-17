@@ -1,5 +1,5 @@
 import React from 'react';
-import { Minus, Plus } from 'lucide-react';
+import { Loader2, Minus, Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Table } from '@/store/gameStore';
 
@@ -26,6 +26,7 @@ interface DealControlHUDProps {
   onPlus3Plus: () => void;
 
   onDeal: () => void;
+  isDealing?: boolean;
   dealCountdown: number | null;
   isTournament: boolean;
   onSideBetsToggle: () => void;
@@ -54,6 +55,7 @@ export function DealControlHUD({
   onPlus3Minus,
   onPlus3Plus,
   onDeal,
+  isDealing = false,
   dealCountdown,
   isTournament,
   onSideBetsToggle,
@@ -136,17 +138,26 @@ export function DealControlHUD({
                 return (
                   <button 
                     onClick={onDeal}
+                    disabled={isDealing}
                     className={cn(
-                      "relative overflow-hidden min-w-[66px] sm:min-w-[104px] h-[34px] sm:h-[40px] bg-gradient-to-b from-[#28a19b] to-[#126b6f] text-white rounded-[12px] sm:rounded-[18px] px-2 font-black tracking-widest text-[11px] sm:text-[15px] uppercase transition-all shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border border-[#0d4f52] flex items-center justify-center shrink-0 group hover:from-[#2ebaba] hover:to-[#178287]",
-                      dealCountdown !== null ? "animate-pulse shadow-[0_0_15px_rgba(40,161,155,0.8)]" : "active:scale-95"
+                      "relative overflow-hidden min-w-[66px] sm:min-w-[104px] h-[34px] sm:h-[40px] bg-gradient-to-b from-[#28a19b] to-[#126b6f] text-white rounded-[12px] sm:rounded-[18px] px-2 font-black tracking-widest text-[11px] sm:text-[15px] uppercase transition-all shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border border-[#0d4f52] flex items-center justify-center shrink-0 group hover:from-[#2ebaba] hover:to-[#178287] disabled:opacity-75 disabled:cursor-wait",
+                      dealCountdown !== null && !isDealing ? "animate-pulse shadow-[0_0_15px_rgba(40,161,155,0.8)]" : "active:scale-95"
                     )}
                   >
-                    {dealCountdown !== null && (
+                    {dealCountdown !== null && !isDealing && (
                        <div className="absolute inset-x-0 bottom-0 h-1 bg-white/20">
                          <div className="h-full bg-white transition-all duration-1000 ease-linear" style={{ width: `${(dealCountdown / (table.settings.actionTimeLimit || 15)) * 100}%` }}></div>
                        </div>
                     )}
-                    <span className="drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] z-10 leading-none">{dealCountdown !== null ? dealCountdown : "Deal"}</span>
+                    <span className="drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] z-10 leading-none flex items-center gap-1">
+                      {isDealing ? (
+                        <Loader2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin" />
+                      ) : dealCountdown !== null ? (
+                        dealCountdown
+                      ) : (
+                        "Deal"
+                      )}
+                    </span>
                     <div className="absolute inset-0 bg-white opacity-0 group-hover:opacity-20 transition-opacity"></div>
                   </button>
                 );

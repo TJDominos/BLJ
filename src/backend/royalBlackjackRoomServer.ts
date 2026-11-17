@@ -98,6 +98,9 @@ export function buildRoomPlayerViews(
   rosterPlayers?: readonly string[]
 ): Record<string, Record<string, unknown>> {
   const projection = projectBlackjackRoomState(state);
+  const ownerSet = new Set<string>(
+    Array.isArray(state.ownerPlayerIds) ? state.ownerPlayerIds : []
+  );
   const views: Record<string, Record<string, unknown>> = {};
   const targetRoster = rosterPlayers !== undefined ? rosterPlayers : state.players || [];
   for (const pid of targetRoster) {
@@ -109,6 +112,7 @@ export function buildRoomPlayerViews(
         privateState:
           projection.privateStates[pid] || {
             playerId: pid,
+            isGameOwner: ownerSet.has(pid),
             balance: state.balances?.[pid] || 0,
             walletCoins: state.walletCoins?.[pid] || 0,
             mySeats: [],
@@ -119,6 +123,93 @@ export function buildRoomPlayerViews(
     };
   }
   return views;
+}
+
+const MAX_VIEW_CACHE_ROOMS = 24;
+const roomPlayerViewsCache = new Map<
+  string,
+  {
+    matchSeq: number;
+    viewRev: number;
+    rosterKey: string;
+    views: Record<string, Record<string, unknown>>;
+  }
+>();
+
+function buildCachedRoomPlayerViews(
+  state: RoyalBlackjackRoomState,
+  rosterPlayers?: readonly string[]
+): Record<string, Record<string, unknown>> {
+  const targetRoster = rosterPlayers !== undefined ? rosterPlayers : state.players || [];
+  const rosterKey = targetRoster.join(",");
+  const rev = typeof state.viewRev === "number" ? state.viewRev : 0;
+  const cacheKey = state.matchId || "default";
+
+  if (rev > 0) {
+    const cached = roomPlayerViewsCache.get(cacheKey);
+    if (
+      cached &&
+      cached.matchSeq === state.matchSeq &&
+      cached.viewRev === rev &&
+      cached.rosterKey === rosterKey
+    ) {
+      return cached.views;
+    }
+  }
+
+  const sanitizedViews = sanitizeJson(buildRoomPlayerViews(state, targetRoster));
+  if (rev > 0) {
+    if (!roomPlayerViewsCache.has(cacheKey) && roomPlayerViewsCache.size >= MAX_VIEW_CACHE_ROOMS) {
+      const oldestKey = roomPlayerViewsCache.keys().next().value;
+      if (oldestKey !== undefined) {
+        roomPlayerViewsCache.delete(oldestKey);
+      }
+    }
+    roomPlayerViewsCache.set(cacheKey, {
+      matchSeq: state.matchSeq,
+      viewRev: rev,
+      rosterKey,
+      views: sanitizedViews,
+    });
+  }
+  return sanitizedViews;
+}
+
+function resolveConfiguredOwnerPlayerIds(
+  opts?: Record<string, unknown>,
+  carryoverOwners?: string[]
+): string[] {
+  const set = new Set<string>();
+  const addRaw = (raw: unknown) => {
+    if (typeof raw === "string") {
+      for (const part of raw.split(",")) {
+        const trimmed = part.trim();
+        if (trimmed && trimmed.length <= 256) set.add(trimmed);
+      }
+    } else if (Array.isArray(raw)) {
+      for (const item of raw) {
+        if (typeof item === "string" && item.trim() && item.trim().length <= 256) {
+          set.add(item.trim());
+        }
+      }
+    }
+  };
+
+  if (typeof process !== "undefined" && process.env) {
+    addRaw(process.env.RANDSEED_GAME_OWNER_ID);
+    addRaw(process.env.GAME_OWNER_PLAYER_IDS);
+    addRaw(process.env.CREATOR_PLAYER_IDS);
+    addRaw(process.env.PUBLISHER_PLAYER_IDS);
+  }
+  if (opts) {
+    addRaw(opts.gameOwnerId);
+    addRaw(opts.gameOwnerIds);
+    addRaw(opts.ownerPlayerId);
+    addRaw(opts.ownerPlayerIds);
+    addRaw(opts.creatorPlayerId);
+  }
+  addRaw(carryoverOwners);
+  return Array.from(set);
 }
 
 /**
@@ -204,7 +295,17 @@ export type BlackjackPlayerInput =
   | {
       action: "place_bet";
       tableId?: string;
-      seatIndex: number;
+      seatIndex?: number;
+      seatIndices?: number[];
+      amount: number;
+      sideBets?: SideBets;
+      pairBet?: number;
+      plus3Bet?: number;
+    }
+  | {
+      action: "place_bets";
+      tableId?: string;
+      seatIndices: number[];
       amount: number;
       sideBets?: SideBets;
       pairBet?: number;
@@ -376,6 +477,7 @@ export interface BlackjackCarryover {
     status: HandStatus;
   } | null;
   settledSeats?: RoomSeatState[];
+  ownerPlayerIds?: string[];
 }
 
 /**
@@ -431,6 +533,8 @@ export interface RoyalBlackjackRoomState {
   totalTokensIssued?: number;
   totalTokensPaidOut?: number;
   totalRefillsCount?: number;
+  ownerPlayerIds?: string[];
+  viewRev?: number;
   forceClose: boolean;
 }
 
@@ -1151,12 +1255,15 @@ function runDealerAndSettle(
       if (!Array.isArray(rootState.matchTournamentResults)) {
         rootState.matchTournamentResults = [];
       }
-      rootState.matchTournamentResults.push({
-        tableId: getTargetTableId(target),
-        tableName: isSubTable(target) ? target.name : "Table #1",
-        record: tournamentRecord,
-        participantIds: Array.from(participantSet),
-      });
+      rootState.matchTournamentResults = [
+        ...rootState.matchTournamentResults,
+        {
+          tableId: getTargetTableId(target),
+          tableName: isSubTable(target) ? target.name : "Table #1",
+          record: tournamentRecord,
+          participantIds: Array.from(participantSet),
+        },
+      ].slice(-20);
 
       target.tournamentParticipants = [];
       target.prizePoolCoins = 0;
@@ -1246,8 +1353,45 @@ function runDealerAndSettle(
   });
 }
 
+function cleanJsonInPlace(value: unknown, seen?: Set<object>): unknown {
+  if (value === null) return null;
+  const t = typeof value;
+  if (t === "string" || t === "boolean") return value;
+  if (t === "number") {
+    const n = value as number;
+    if (!Number.isFinite(n)) return null;
+    return Object.is(n, -0) ? 0 : n;
+  }
+  if (t !== "object") return null;
+
+  const tracker = seen || new Set<object>();
+  const obj = value as object;
+  if (tracker.has(obj)) return null;
+  tracker.add(obj);
+
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      obj[i] = obj[i] === undefined ? null : cleanJsonInPlace(obj[i], tracker);
+    }
+    tracker.delete(obj);
+    return obj;
+  }
+
+  const rec = obj as Record<string, unknown>;
+  for (const key of Object.keys(rec)) {
+    const v = rec[key];
+    if (v === undefined || typeof v === "function" || typeof v === "symbol") {
+      delete rec[key];
+    } else {
+      rec[key] = cleanJsonInPlace(v, tracker);
+    }
+  }
+  tracker.delete(obj);
+  return rec;
+}
+
 function sanitizeJson<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value));
+  return cleanJsonInPlace(value) as T;
 }
 
 function sanitizeAvatarForState(raw: unknown): string | undefined {
@@ -1789,6 +1933,32 @@ function countActiveCustomTables(
   return count;
 }
 
+function extendActiveTurnGraceForPlayer(
+  state: RoyalBlackjackRoomState,
+  playerId: string
+): void {
+  const lagGraceSec =
+    typeof state.lagGraceSec === "number"
+      ? state.lagGraceSec
+      : DEFAULT_PLAYER_LAG_DISCONNECT_WAIT_SEC;
+  const targets: TableExecutionTarget[] = [
+    state,
+    ...Object.values(state.customTables || {}).filter((ct) => ct && ct.status !== "closed"),
+  ];
+  for (const target of targets) {
+    if (target.phase !== "playing" || target.currentTurnSeatIndex < 0) continue;
+    const activeSeat = target.seats[target.currentTurnSeatIndex];
+    if (activeSeat?.playerId === playerId && activeSeat.hand?.status === "playing") {
+      const minStartForFullGrace =
+        (state.elapsedSeconds || 0) - Math.max(0, target.actionTimeLimitSec || 20);
+      if (target.phaseStartElapsedSec < minStartForFullGrace) {
+        target.phaseStartElapsedSec = minStartForFullGrace;
+      }
+      void lagGraceSec;
+    }
+  }
+}
+
 function applyAuthoritativePlayerInput(
   state: RoyalBlackjackRoomState,
   ctx: TickContext<BlackjackPlayerInput, BlackjackHostCommand>,
@@ -1802,6 +1972,7 @@ function applyAuthoritativePlayerInput(
 
   if (state.disconnectedAtElapsedSec![playerId] !== undefined) {
     delete state.disconnectedAtElapsedSec![playerId];
+    extendActiveTurnGraceForPlayer(state, playerId);
   }
   if (!state.players.includes(playerId)) {
     state.players.push(playerId);
@@ -2241,8 +2412,9 @@ function applyAuthoritativePlayerInput(
       return { status: "rejected", code: "SEAT_TAKEN" };
     }
 
+    const alreadySeatedAtTarget = target.seats.some((s) => s.playerId === playerId);
     if (target.mode === "tournament" && target.tournament) {
-      if (target.seats.some((s) => s.playerId === playerId)) {
+      if (alreadySeatedAtTarget) {
         return { status: "rejected", code: "ALREADY_SEATED" };
       }
       const ticketPriceCoins = Math.max(0, target.tournament.ticketPrice || 100);
@@ -2275,6 +2447,9 @@ function applyAuthoritativePlayerInput(
       if (typeof target.balances[playerId] !== "number" || target.balances[playerId] <= 0) {
         target.balances[playerId] = state.walletCoins[playerId] || DEFAULT_GAME_COINS;
       }
+    }
+    if (!alreadySeatedAtTarget) {
+      target.visits = (target.visits ?? 1) + 1;
     }
     return { status: "applied" };
   }
@@ -2320,28 +2495,49 @@ function applyAuthoritativePlayerInput(
     return leftAny ? { status: "applied" } : { status: "rejected", code: "NOT_SEATED" };
   }
 
-  if (data.action === "place_bet") {
+  if (data.action === "place_bet" || data.action === "place_bets") {
     prepareNextBettingPhaseIfSettled(state, target);
     if (target.phase !== "betting") {
       return { status: "rejected", code: "INVALID_PHASE" };
     }
-    const seat = target.seats[data.seatIndex];
-    if (!seat) {
+
+    const rawSeatIndices: number[] =
+      data.action === "place_bets"
+        ? Array.isArray(data.seatIndices)
+          ? data.seatIndices
+          : []
+        : Array.isArray(data.seatIndices) && data.seatIndices.length > 0
+        ? data.seatIndices
+        : typeof data.seatIndex === "number"
+        ? [data.seatIndex]
+        : [];
+
+    const seatIndices = Array.from(
+      new Set(
+        rawSeatIndices
+          .map((idx) => Math.trunc(Number(idx)))
+          .filter((idx) => Number.isSafeInteger(idx) && idx >= 0)
+      )
+    );
+
+    if (seatIndices.length === 0) {
       return { status: "rejected", code: "INVALID_SEAT" };
     }
-    if (seat.playerId && seat.playerId !== playerId) {
-      return { status: "rejected", code: "SEAT_TAKEN" };
-    }
-    if (!seat.playerId && target.mode !== "regular") {
-      return { status: "rejected", code: "NOT_SEATED" };
-    }
 
-    const prevCost =
-      seat.playerId === playerId && seat.hand && seat.hand.bet > 0
-        ? seat.hand.bet +
-          (seat.hand.sideBets?.pair || 0) +
-          (seat.hand.sideBets?.twentyOnePlusThree || 0)
-        : 0;
+    const targetSeats: RoomSeatState[] = [];
+    for (const sIdx of seatIndices) {
+      const seat = target.seats[sIdx];
+      if (!seat) {
+        return { status: "rejected", code: "INVALID_SEAT" };
+      }
+      if (seat.playerId && seat.playerId !== playerId) {
+        return { status: "rejected", code: "SEAT_TAKEN" };
+      }
+      if (!seat.playerId && target.mode !== "regular") {
+        return { status: "rejected", code: "NOT_SEATED" };
+      }
+      targetSeats.push(seat);
+    }
 
     const betAmt = Math.max(
       target.minBet,
@@ -2352,48 +2548,65 @@ function applyAuthoritativePlayerInput(
       0,
       Number(data.sideBets?.twentyOnePlusThree ?? data.plus3Bet) || 0
     );
-    const sideBets: SideBets = {
-      pair: pairAmt,
-      twentyOnePlusThree: plus3Amt,
-    };
-    const totalCost = betAmt + sideBets.pair + sideBets.twentyOnePlusThree;
+    const singleSeatCost = betAmt + pairAmt + plus3Amt;
+    const totalNewCost = singleSeatCost * targetSeats.length;
+
+    let totalPrevCost = 0;
+    for (const seat of targetSeats) {
+      if (seat.playerId === playerId && seat.hand && seat.hand.bet > 0) {
+        totalPrevCost +=
+          seat.hand.bet +
+          (seat.hand.sideBets?.pair || 0) +
+          (seat.hand.sideBets?.twentyOnePlusThree || 0);
+      }
+    }
 
     if (target.mode === "regular") {
       target.balances[playerId] =
         state.walletCoins[playerId] ?? target.balances[playerId] ?? DEFAULT_GAME_COINS;
     }
     const baseBal = target.balances[playerId] || 0;
-    const effectiveAvail = baseBal + prevCost;
-    if (effectiveAvail < totalCost) {
+    const effectiveAvail = baseBal + totalPrevCost;
+    if (effectiveAvail < totalNewCost) {
       return { status: "rejected", code: "INSUFFICIENT_FUNDS" };
     }
 
-    if (!seat.playerId && target.mode === "regular") {
-      seat.playerId = playerId;
+    if (
+      totalPrevCost > 0 &&
+      isSubTable(target) &&
+      target.houseId !== "system" &&
+      target.mode === "regular"
+    ) {
+      target.liquidity = Math.max(0, target.liquidity - totalPrevCost);
     }
 
-    if (prevCost > 0 && isSubTable(target) && target.houseId !== "system" && target.mode === "regular") {
-      target.liquidity = Math.max(0, target.liquidity - prevCost);
-    }
-
-    target.balances[playerId] = effectiveAvail - totalCost;
+    target.balances[playerId] = effectiveAvail - totalNewCost;
     if (isSubTable(target) && target.houseId !== "system" && target.mode === "regular") {
-      target.liquidity += totalCost;
+      target.liquidity += totalNewCost;
     }
     if (target.mode === "regular") {
       syncPlayerRegularBalanceAcrossTables(state, playerId, target.balances[playerId]);
     }
-    seat.isReady = true;
-    seat.hand = {
-      cards: [],
-      bet: betAmt,
-      insuranceBet: 0,
-      sideBets,
-      sideBetPairWon: 0,
-      sideBetPlus3Won: 0,
-      status: "playing",
-      score: 0,
-    };
+
+    for (const seat of targetSeats) {
+      if (!seat.playerId && target.mode === "regular") {
+        seat.playerId = playerId;
+      }
+      seat.isReady = true;
+      seat.hand = {
+        cards: [],
+        bet: betAmt,
+        insuranceBet: 0,
+        sideBets: {
+          pair: pairAmt,
+          twentyOnePlusThree: plus3Amt,
+        },
+        sideBetPairWon: 0,
+        sideBetPlus3Won: 0,
+        status: "playing",
+        score: 0,
+      };
+    }
 
     const seatedCount = target.seats.filter((s) => s.playerId !== null).length;
     const readyCount = target.seats.filter((s) => s.playerId !== null && s.isReady).length;
@@ -2423,6 +2636,10 @@ function applyAuthoritativePlayerInput(
     if (target.mode === "regular") {
       for (const seat of target.seats) {
         if (seat.playerId && !seat.isReady) {
+          // 10秒断线/卡顿等待期内，服务端不踢出或清理在座玩家
+          if (state.disconnectedAtElapsedSec?.[seat.playerId] !== undefined) {
+            continue;
+          }
           seat.playerId = null;
           seat.hand = null;
         }
@@ -2837,7 +3054,7 @@ export const royalBlackjackGameServer: GameServer<
       version: "1.2.0",
       minPlayers: 1,
       maxPlayers,
-      tickRateHz: 5,
+      tickRateHz: 10,
       persistentTable: true,
       playerViewMode: "private",
       playerViewSchemaVersion: 1,
@@ -3069,13 +3286,16 @@ export const royalBlackjackGameServer: GameServer<
       totalTokensIssued,
       totalTokensPaidOut: carryover?.totalTokensPaidOut || 0,
       totalRefillsCount: carryover?.totalRefillsCount || 0,
+      ownerPlayerIds: resolveConfiguredOwnerPlayerIds(opts, carryover?.ownerPlayerIds),
+      viewRev: 1,
       forceClose: false,
     };
 
-    return sanitizeJson({
-      state,
-      joinable: computeRoomJoinable(state, config.players),
-      playerViews: buildRoomPlayerViews(state, config.players) as any,
+    const sanitizedState = sanitizeJson(state);
+    return {
+      state: sanitizedState,
+      joinable: computeRoomJoinable(sanitizedState, config.players),
+      playerViews: buildCachedRoomPlayerViews(sanitizedState, config.players) as any,
       broadcasts: [
         {
           type: "match:initialized",
@@ -3083,7 +3303,7 @@ export const royalBlackjackGameServer: GameServer<
           matchSeq: config.matchSeq,
         },
       ],
-    });
+    };
   },
 
   tick(
@@ -3091,13 +3311,104 @@ export const royalBlackjackGameServer: GameServer<
     prevState: RoyalBlackjackRoomState,
     players?: readonly string[]
   ): TickResult<RoyalBlackjackRoomState> {
-    const state: RoyalBlackjackRoomState = JSON.parse(JSON.stringify(prevState));
+    const disconnectGraceSecPrev =
+      typeof prevState.disconnectGraceSec === "number"
+        ? prevState.disconnectGraceSec
+        : DEFAULT_PLAYER_LAG_DISCONNECT_WAIT_SEC;
+    const lagGraceSecPrev =
+      typeof prevState.lagGraceSec === "number"
+        ? prevState.lagGraceSec
+        : DEFAULT_PLAYER_LAG_DISCONNECT_WAIT_SEC;
+
+    const canFastPathIdle = (() => {
+      if (ctx.inputs.length > 0 || (ctx.commands?.length ?? 0) > 0) return false;
+      if (typeof prevState.viewRev !== "number" || prevState.viewRev <= 0) return false;
+      if (players !== undefined) {
+        if (prevState.players.length !== players.length) return false;
+        for (let i = 0; i < players.length; i++) {
+          if (prevState.players[i] !== players[i]) return false;
+        }
+      }
+      const prevDisconnected = prevState.disconnectedAtElapsedSec || {};
+      for (const disconnectedAt of Object.values(prevDisconnected)) {
+        if (ctx.elapsedSeconds - disconnectedAt > disconnectGraceSecPrev) {
+          return false;
+        }
+      }
+
+      const checkActiveTurnTimedOut = (target: TableExecutionTarget): boolean => {
+        if (target.phase !== "playing") return false;
+        const activeSeat = target.seats[target.currentTurnSeatIndex];
+        if (!activeSeat || !activeSeat.hand || activeSeat.hand.status !== "playing") return false;
+        const activePid = activeSeat.playerId;
+        if (!activePid || activePid.startsWith("bot_")) return false;
+        const disconnectedAt = prevDisconnected[activePid];
+        const alreadyEvicted =
+          !prevState.players.includes(activePid) && disconnectedAt === undefined;
+        if (alreadyEvicted) return true;
+        if (disconnectedAt !== undefined) {
+          return ctx.elapsedSeconds - disconnectedAt > disconnectGraceSecPrev;
+        }
+        return ctx.elapsedSeconds - target.phaseStartElapsedSec > target.actionTimeLimitSec + lagGraceSecPrev;
+      };
+
+      if (checkActiveTurnTimedOut(prevState)) return false;
+
+      const nowMs = Math.max(1000, Math.round(ctx.elapsedSeconds * 1000));
+      let extraHasOpenSeat = false;
+      const customMap = prevState.customTables || {};
+      for (const ct of Object.values(customMap)) {
+        if (!ct || ct.status === "closed") continue;
+        if (checkActiveTurnTimedOut(ct)) return false;
+        if (ct.houseId === "system") {
+          if (ct.seats.some((s) => !s.playerId)) {
+            extraHasOpenSeat = true;
+          }
+          continue;
+        }
+        const hasSeated = ct.seats.some((s) => s.playerId !== null);
+        if (!hasSeated && ct.phase !== "playing" && ct.phase !== "dealer_turn") {
+          if (ct.emptySince === null || ct.emptySince === undefined) return false;
+          if (typeof ct.expiresAt === "number" && nowMs >= ct.expiresAt) return false;
+        } else if (ct.emptySince !== null && ct.emptySince !== undefined) {
+          return false;
+        }
+      }
+
+      const primaryHasOpenSeat = prevState.seats.some((s) => !s.playerId);
+      if (!primaryHasOpenSeat && !extraHasOpenSeat) return false;
+
+      return true;
+    })();
+
+    if (canFastPathIdle) {
+      const idleState: RoyalBlackjackRoomState = {
+        ...prevState,
+        elapsedSeconds: ctx.elapsedSeconds,
+      };
+      const hasPendingDisconnectTimers =
+        Object.keys(idleState.disconnectedAtElapsedSec || {}).length > 0;
+      return {
+        state: idleState,
+        joinable: computeRoomJoinable(idleState, players),
+        playerViews: buildCachedRoomPlayerViews(idleState, players) as any,
+        broadcasts: [],
+        persist:
+          (hasPendingDisconnectTimers && ctx.tick % 20 === 0) ||
+          ctx.tick % 100 === 0,
+      };
+    }
+
+    const state: RoyalBlackjackRoomState = structuredClone(prevState);
     state.elapsedSeconds = ctx.elapsedSeconds;
     if (!state.playerNames) state.playerNames = {};
     if (!state.playerAvatars) state.playerAvatars = {};
     if (!state.customTables) state.customTables = {};
     if (!state.unlockedTablesByPlayer) state.unlockedTablesByPlayer = {};
     if (!state.disconnectedAtElapsedSec) state.disconnectedAtElapsedSec = {};
+    if (!Array.isArray(state.ownerPlayerIds)) {
+      state.ownerPlayerIds = resolveConfiguredOwnerPlayerIds();
+    }
     if (typeof state.disconnectGraceSec !== "number") {
       state.disconnectGraceSec = DEFAULT_PLAYER_LAG_DISCONNECT_WAIT_SEC;
     }
@@ -3213,10 +3524,10 @@ export const royalBlackjackGameServer: GameServer<
       delete state.disconnectedAtElapsedSec[pid];
       state.players = state.players.filter((p) => p !== pid);
 
-      if (state.mode !== "tournament" && state.phase === "betting") {
+      if (state.mode !== "tournament" && (state.phase === "betting" || state.phase === "settled")) {
         for (const seat of state.seats) {
           if (seat.playerId === pid) {
-            if (seat.hand && seat.hand.bet > 0) {
+            if (seat.hand && seat.hand.bet > 0 && state.phase === "betting") {
               const refund =
                 seat.hand.bet +
                 (seat.hand.sideBets?.pair || 0) +
@@ -3233,10 +3544,10 @@ export const royalBlackjackGameServer: GameServer<
 
       if (state.customTables) {
         for (const ct of Object.values(state.customTables)) {
-          if (ct.mode !== "tournament" && ct.phase === "betting") {
+          if (ct.mode !== "tournament" && (ct.phase === "betting" || ct.phase === "settled")) {
             for (const seat of ct.seats) {
               if (seat.playerId === pid) {
-                if (seat.hand && seat.hand.bet > 0) {
+                if (seat.hand && seat.hand.bet > 0 && ct.phase === "betting") {
                   const refund =
                     seat.hand.bet +
                     (seat.hand.sideBets?.pair || 0) +
@@ -3280,20 +3591,26 @@ export const royalBlackjackGameServer: GameServer<
       state.players = [...players];
     }
 
-    return sanitizeJson({
-      state,
-      joinable: computeRoomJoinable(state, players),
-      playerViews: buildRoomPlayerViews(state, players) as any,
-      broadcasts,
+    state.viewRev = (state.viewRev || 0) + 1;
+    const sanitizedState = sanitizeJson(state);
+    const hasPendingDisconnectTimers =
+      Object.keys(sanitizedState.disconnectedAtElapsedSec || {}).length > 0;
+
+    return {
+      state: sanitizedState,
+      joinable: computeRoomJoinable(sanitizedState, players),
+      playerViews: buildCachedRoomPlayerViews(sanitizedState, players) as any,
+      broadcasts: sanitizeJson(broadcasts),
       persist:
         ctx.inputs.length > 0 ||
         (ctx.commands?.length ?? 0) > 0 ||
         broadcasts.length > 0 ||
         resultUnits.length > 0 ||
-        ctx.tick % 10 === 0,
-      ...(resultUnits.length > 0 ? { resultUnits } : {}),
-      ...(actionResults.length > 0 ? { actionResults } : {}),
-    });
+        (hasPendingDisconnectTimers && ctx.tick % 20 === 0) ||
+        ctx.tick % 100 === 0,
+      ...(resultUnits.length > 0 ? { resultUnits: sanitizeJson(resultUnits) } : {}),
+      ...(actionResults.length > 0 ? { actionResults: sanitizeJson(actionResults) } : {}),
+    };
   },
 
   onPlayerJoin(
@@ -3301,9 +3618,10 @@ export const royalBlackjackGameServer: GameServer<
     prevState: RoyalBlackjackRoomState,
     players?: readonly string[]
   ): PlayerEventResult<RoyalBlackjackRoomState> {
-    const state: RoyalBlackjackRoomState = JSON.parse(JSON.stringify(prevState));
+    const state: RoyalBlackjackRoomState = structuredClone(prevState);
     if (state.disconnectedAtElapsedSec?.[playerId] !== undefined) {
       delete state.disconnectedAtElapsedSec[playerId];
+      extendActiveTurnGraceForPlayer(state, playerId);
     }
     if (players !== undefined) {
       state.players = [...players];
@@ -3315,6 +3633,9 @@ export const royalBlackjackGameServer: GameServer<
     }
     if (!state.playerNames) state.playerNames = {};
     if (!state.playerAvatars) state.playerAvatars = {};
+    if (!Array.isArray(state.ownerPlayerIds)) {
+      state.ownerPlayerIds = resolveConfiguredOwnerPlayerIds();
+    }
     if (!state.playerNames[playerId] || state.playerNames[playerId] === playerId) {
       state.playerNames[playerId] = formatDefaultOpaquePlayerName(playerId);
     }
@@ -3328,12 +3649,14 @@ export const royalBlackjackGameServer: GameServer<
     ) {
       state.balances[playerId] = state.walletCoins[playerId];
     }
-    return sanitizeJson({
-      state,
-      joinable: computeRoomJoinable(state, players),
-      playerViews: buildRoomPlayerViews(state, players) as any,
+    state.viewRev = (state.viewRev || 0) + 1;
+    const sanitizedState = sanitizeJson(state);
+    return {
+      state: sanitizedState,
+      joinable: computeRoomJoinable(sanitizedState, players),
+      playerViews: buildCachedRoomPlayerViews(sanitizedState, players) as any,
       broadcasts: [{ type: "player:joined", playerId }],
-    });
+    };
   },
 
   onPlayerLeave(
@@ -3341,7 +3664,7 @@ export const royalBlackjackGameServer: GameServer<
     prevState: RoyalBlackjackRoomState,
     players?: readonly string[]
   ): PlayerEventResult<RoyalBlackjackRoomState> {
-    const state: RoyalBlackjackRoomState = JSON.parse(JSON.stringify(prevState));
+    const state: RoyalBlackjackRoomState = structuredClone(prevState);
     if (!state.disconnectedAtElapsedSec) {
       state.disconnectedAtElapsedSec = {};
     }
@@ -3353,46 +3676,49 @@ export const royalBlackjackGameServer: GameServer<
     if (state.disconnectedAtElapsedSec[playerId] === undefined) {
       state.disconnectedAtElapsedSec[playerId] = state.elapsedSeconds;
     }
-    return sanitizeJson({
-      state,
-      joinable: computeRoomJoinable(state, players),
-      playerViews: buildRoomPlayerViews(state, players) as any,
+    reconcileOnlineRoomTables(state);
+    state.viewRev = (state.viewRev || 0) + 1;
+    const sanitizedState = sanitizeJson(state);
+    return {
+      state: sanitizedState,
+      joinable: computeRoomJoinable(sanitizedState, players),
+      playerViews: buildCachedRoomPlayerViews(sanitizedState, players) as any,
       broadcasts: [
         {
           type: "player:disconnected_wait",
           playerId,
           waitSeconds:
-            typeof state.disconnectGraceSec === "number"
-              ? state.disconnectGraceSec
+            typeof sanitizedState.disconnectGraceSec === "number"
+              ? sanitizedState.disconnectGraceSec
               : DEFAULT_PLAYER_LAG_DISCONNECT_WAIT_SEC,
         },
       ],
-    });
+    };
   },
 
   isGameOver(state: RoyalBlackjackRoomState): GameResult {
-    const settledRounds = Array.isArray(state.matchSettledRounds) ? state.matchSettledRounds : [];
-    const tournamentResults = Array.isArray(state.matchTournamentResults)
-      ? state.matchTournamentResults
-      : [];
-
-    const matchNetByPlayer: Record<string, number> = {};
-    for (const r of settledRounds) {
-      for (const sr of r.seatResults || []) {
-        if (!sr.userId) continue;
-        matchNetByPlayer[sr.userId] = (matchNetByPlayer[sr.userId] || 0) + (sr.net || 0);
-      }
-    }
-    let winnerPlayerId: string | undefined;
-    let bestMatchNet = 0;
-    for (const [pid, net] of Object.entries(matchNetByPlayer)) {
-      if (net > bestMatchNet) {
-        bestMatchNet = net;
-        winnerPlayerId = pid;
-      }
-    }
-
     if (state.forceClose) {
+      const settledRounds = Array.isArray(state.matchSettledRounds) ? state.matchSettledRounds : [];
+      const tournamentResults = Array.isArray(state.matchTournamentResults)
+        ? state.matchTournamentResults
+        : [];
+
+      const matchNetByPlayer: Record<string, number> = {};
+      for (const r of settledRounds) {
+        for (const sr of r.seatResults || []) {
+          if (!sr.userId) continue;
+          matchNetByPlayer[sr.userId] = (matchNetByPlayer[sr.userId] || 0) + (sr.net || 0);
+        }
+      }
+      let winnerPlayerId: string | undefined;
+      let bestMatchNet = 0;
+      for (const [pid, net] of Object.entries(matchNetByPlayer)) {
+        if (net > bestMatchNet) {
+          bestMatchNet = net;
+          winnerPlayerId = pid;
+        }
+      }
+
       return sanitizeJson({
         over: true,
         summary: {
@@ -3416,71 +3742,8 @@ export const royalBlackjackGameServer: GameServer<
       });
     }
 
-    const activeCustomTables = Object.values(state.customTables || {}).filter(
-      (ct) => ct && ct.status !== "closed"
-    );
-    const anyTableActiveHand =
-      state.phase === "playing" ||
-      state.phase === "dealer_turn" ||
-      activeCustomTables.some((ct) => ct.phase === "playing" || ct.phase === "dealer_turn");
-
-    const anyTablePendingBet =
-      (state.phase === "betting" && state.seats.some((s) => s.isReady || s.hand !== null)) ||
-      activeCustomTables.some(
-        (ct) => ct.phase === "betting" && ct.seats.some((s) => s.isReady || s.hand !== null)
-      );
-
-    const hasPendingArchive = settledRounds.length > 0 || tournamentResults.length > 0;
-
-    if (!anyTableActiveHand && !anyTablePendingBet && hasPendingArchive) {
-      const carryover: BlackjackCarryover = {
-        balances: state.balances,
-        walletCoins: state.walletCoins,
-        roundsPlayed: state.roundsPlayed,
-        prizePoolCoins: state.prizePoolCoins,
-        tournamentHistory: state.tournamentHistory,
-        deck: state.deck,
-        discardCount: state.discardCount,
-        seatedPlayers: state.seats.map((s) => s.playerId),
-        playerNames: state.playerNames || {},
-        playerAvatars: state.playerAvatars || {},
-        lastRoundSummary: state.lastRoundSummary || null,
-        roundHistory: state.roundHistory || [],
-        customTables: state.customTables || {},
-        unlockedTablesByPlayer: state.unlockedTablesByPlayer || {},
-        visits: state.visits ?? 1,
-        totalTokensIssued: state.totalTokensIssued || 0,
-        totalTokensPaidOut: state.totalTokensPaidOut || 0,
-        totalRefillsCount: state.totalRefillsCount || 0,
-        settledPhase: state.phase === "settled" ? "settled" : "betting",
-        settledDealerHand: state.phase === "settled" ? state.dealerHand : null,
-        settledSeats: state.phase === "settled" ? state.seats : undefined,
-      };
-
-      return sanitizeJson({
-        over: true,
-        summary: {
-          ...(winnerPlayerId ? { winnerPlayerId } : {}),
-          scores: state.balances,
-          durationSeconds: state.elapsedSeconds,
-          customMetrics: {
-            roundsPlayed: state.roundsPlayed,
-            ...(typeof state.randomSeedIndex === "number"
-              ? { randomSeedIndex: state.randomSeedIndex }
-              : {}),
-            settlementUnit: state.lastSettlementUnit,
-            settledRounds,
-            tournamentResults,
-          },
-        },
-        nextMatchPolicy: {
-          mode: "auto_next_match",
-          timeoutMs: 0,
-          carryover: carryover as any,
-        },
-      });
-    }
-
+    // Persistent room tables emit per-hand resultUnits via tick() without terminating/re-initializing
+    // the match between hands, eliminating reconnects and match-rollover 409 conflicts.
     return { over: false };
   },
 
@@ -3489,7 +3752,7 @@ export const royalBlackjackGameServer: GameServer<
     prevState: RoyalBlackjackRoomState,
     players?: readonly string[]
   ): CommandResult<RoyalBlackjackRoomState> {
-    const state: RoyalBlackjackRoomState = JSON.parse(JSON.stringify(prevState));
+    const state: RoyalBlackjackRoomState = structuredClone(prevState);
     if (players !== undefined) {
       state.players = [...players];
     }
@@ -3512,11 +3775,20 @@ export const royalBlackjackGameServer: GameServer<
       target.maxBet = Math.max(target.minBet, Number(cmd.data.maxBet) || target.maxBet);
     }
 
-    return sanitizeJson({
-      state,
-      joinable: computeRoomJoinable(state, players),
-      playerViews: buildRoomPlayerViews(state, players) as any,
-      broadcasts,
-    });
+    state.viewRev = (state.viewRev || 0) + 1;
+    const sanitizedState = sanitizeJson(state);
+    return {
+      state: sanitizedState,
+      joinable: computeRoomJoinable(sanitizedState, players),
+      playerViews: buildCachedRoomPlayerViews(sanitizedState, players) as any,
+      broadcasts: sanitizeJson(broadcasts),
+    };
+  },
+
+  derivePlayerViews(
+    state: RoyalBlackjackRoomState,
+    players?: readonly string[]
+  ): Record<string, any> {
+    return buildCachedRoomPlayerViews(state, players);
   },
 };

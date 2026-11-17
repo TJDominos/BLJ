@@ -258,14 +258,17 @@ export interface OnlinePlayerEntry {
 
 const sessionStartedAtMs = Date.now();
 const MASKED_CARD: PlayingCard = { suit: 'spades', value: 'A', isHidden: true };
+const CACHED_MASKED_DECK: PlayingCard[] = Array.from({ length: 320 }, () => MASKED_CARD);
 
 // Authoritative online room state cache from RandSeed RoomClient
 let latestOnlineRoomState: Record<string, any> | null = null;
 let latestOnlineRoomId: string | null = null;
 let roomListenersRegistered = false;
 let loginInFlight: Promise<void> | null = null;
+let ownerStatusInFlight: Promise<boolean> | null = null;
 let archiveFetchInFlight: Promise<void> | null = null;
 let archiveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let archiveWarmupTimer: ReturnType<typeof setTimeout> | null = null;
 const seenSettledRoundIdsForArchive = new Set<string>();
 
 function createEmptyLegacyAggregates(): PersonalArchiveLegacyAggregates {
@@ -693,7 +696,7 @@ function unwrapOnlineRoomState(raw: Record<string, any> | null | undefined): Rec
     return {};
   }
 
-  let base: Record<string, any> = raw;
+  let base: Record<string, any> = { ...raw };
   if (raw.publicState && typeof raw.publicState === 'object' && !Array.isArray(raw.publicState)) {
     base = { ...raw, ...(raw.publicState as Record<string, any>) };
   } else if (raw.state && typeof raw.state === 'object' && !Array.isArray(raw.state)) {
@@ -948,7 +951,7 @@ function mapRoomStateToTable(
     ? {
         cards: Array.isArray(roomState.dealerHand.cards)
           ? roomState.dealerHand.cards.map((c: PlayingCard) =>
-              c.isHidden ? { ...MASKED_CARD } : c
+              c.isHidden ? MASKED_CARD : c
             )
           : [],
         bet: 0,
@@ -1020,7 +1023,10 @@ function mapRoomStateToTable(
     inviteLink: `/t/${tableId}`,
     status: resolvedStatus,
     dealerHand,
-    deck: Array.from({ length: Math.max(0, deckCount) }, () => ({ ...MASKED_CARD })),
+    deck:
+      deckCount <= CACHED_MASKED_DECK.length
+        ? CACHED_MASKED_DECK.slice(0, Math.max(0, deckCount))
+        : Array.from({ length: Math.max(0, deckCount) }, () => MASKED_CARD),
     discardCount: Number(roomState.discardCount) || 0,
     discardedCards: existing?.discardedCards || [],
     currentTurnIndex:
@@ -1212,34 +1218,37 @@ function buildOnlinePlayersList(
     });
   }
 
-  const statePlayerIds: string[] = Array.isArray(roomState?.players) ? roomState.players : [];
-  for (const rawId of statePlayerIds) {
-    if (typeof rawId !== 'string') continue;
-    const uid = rawId.trim();
-    if (!uid || uid.startsWith('bot_') || map.has(uid)) continue;
-    const isMe = currentUser?.id === uid;
-    const tableInfo = findPlayerTableInfo(uid);
-    const resolvedName =
-      (isMe && currentUser?.name && currentUser.name !== 'Player' ? currentUser.name : '') ||
-      stateNames[uid] ||
-      tableInfo?.seatName ||
-      (isMe ? currentUser?.name : '') ||
-      uid;
-    const resolvedAvatar =
-      (isMe ? currentUser?.avatar : undefined) ||
-      stateAvatars[uid] ||
-      tableInfo?.seatAvatar ||
-      undefined;
+  const hasLiveSdkRoster = Array.isArray(sdkPlayers) && sdkPlayers.length > 0;
+  if (!hasLiveSdkRoster) {
+    const statePlayerIds: string[] = Array.isArray(roomState?.players) ? roomState.players : [];
+    for (const rawId of statePlayerIds) {
+      if (typeof rawId !== 'string') continue;
+      const uid = rawId.trim();
+      if (!uid || uid.startsWith('bot_') || map.has(uid)) continue;
+      const isMe = currentUser?.id === uid;
+      const tableInfo = findPlayerTableInfo(uid);
+      const resolvedName =
+        (isMe && currentUser?.name && currentUser.name !== 'Player' ? currentUser.name : '') ||
+        (stateNames[uid] && stateNames[uid] !== uid ? stateNames[uid] : '') ||
+        tableInfo?.seatName ||
+        (isMe && currentUser?.name ? currentUser.name : '') ||
+        formatOpaquePlayerId(uid);
+      const resolvedAvatar =
+        (isMe ? currentUser?.avatar : undefined) ||
+        stateAvatars[uid] ||
+        tableInfo?.seatAvatar ||
+        undefined;
 
-    map.set(uid, {
-      userId: uid,
-      name: resolvedName,
-      avatar: resolvedAvatar,
-      tableId: tableInfo?.tableId,
-      tableName: tableInfo?.tableName,
-      isPlaying: tableInfo?.isPlaying ?? false,
-      isDisconnected: disconnectedSet.has(uid),
-    });
+      map.set(uid, {
+        userId: uid,
+        name: resolvedName,
+        avatar: resolvedAvatar,
+        tableId: tableInfo?.tableId,
+        tableName: tableInfo?.tableName,
+        isPlaying: tableInfo?.isPlaying ?? false,
+        isDisconnected: disconnectedSet.has(uid),
+      });
+    }
   }
 
   for (const t of Object.values(tables)) {
@@ -1256,13 +1265,16 @@ function buildOnlinePlayersList(
         }
         continue;
       }
+      if (hasLiveSdkRoster && !disconnectedSet.has(uid)) {
+        continue;
+      }
       const isMe = currentUser?.id === uid;
       const resolvedName =
         (isMe && currentUser?.name && currentUser.name !== 'Player' ? currentUser.name : '') ||
-        s.name ||
-        stateNames[uid] ||
-        (isMe ? currentUser?.name : '') ||
-        uid;
+        (s.name && s.name !== uid ? s.name : '') ||
+        (stateNames[uid] && stateNames[uid] !== uid ? stateNames[uid] : '') ||
+        (isMe && currentUser?.name ? currentUser.name : '') ||
+        formatOpaquePlayerId(uid);
       const resolvedAvatar =
         (isMe ? currentUser?.avatar : undefined) ||
         s.avatar ||
@@ -1329,7 +1341,8 @@ export function getRuntimeGameStats() {
     tokensIssued,
     tokensPaidOut,
     totalRefillsCount,
-    isCreator: true,
+    isCreator: Boolean(storeState.isGameOwner),
+    isGameOwner: Boolean(storeState.isGameOwner),
     rooms: activeRooms.map((r) => ({
       id: r.id,
       name: r.name,
@@ -1343,8 +1356,15 @@ export function getRuntimeGameStats() {
   };
 }
 
+export interface ActionOutcome {
+  ok: boolean;
+  code?: string;
+  error?: string;
+}
+
 interface GameStore {
   currentUser: User | null;
+  isGameOwner: boolean;
   tables: Record<string, Table>;
   activeTableId: string | null;
   gameRecords: GameRecord[];
@@ -1359,6 +1379,7 @@ interface GameStore {
   personalArchiveLastFetchedAt: number | null;
 
   fetchPersonalArchive: (force?: boolean) => Promise<void>;
+  fetchGameOwnerStatus: () => Promise<boolean>;
   login: (name: string, overrideUserId?: string, avatar?: string, isCreator?: boolean) => Promise<void>;
   reconnectRoom: () => Promise<void>;
   syncStateFromServer: () => Promise<void>;
@@ -1372,22 +1393,23 @@ interface GameStore {
   pauseTable: (tableId: string) => Promise<void>;
   resumeTable: (tableId: string) => Promise<void>;
   withdrawLiquidity: (tableId: string, amount: number) => Promise<void>;
-  joinTable: (tableId: string, seatIndex: number, currency?: 'Gcoin' | 'Bonus') => Promise<void>;
+  joinTable: (tableId: string, seatIndex: number, currency?: 'Gcoin' | 'Bonus') => Promise<ActionOutcome>;
   observeTable: (tableId: string) => void;
   recordVisit: (tableId: string) => Promise<void>;
-  leaveTable: (tableId: string, seatIndex?: number, isTimeout?: boolean) => Promise<void>;
-  unlockTableBalance: (tableId: string) => Promise<void>;
-  refillGameCoins: (tableId?: string) => Promise<void>;
-  placeBet: (tableId: string, seatIndex: number, amount: number, sideBets?: SideBets) => Promise<void>;
+  leaveTable: (tableId: string, seatIndex?: number, isTimeout?: boolean) => Promise<ActionOutcome>;
+  unlockTableBalance: (tableId: string) => Promise<ActionOutcome>;
+  refillGameCoins: (tableId?: string) => Promise<ActionOutcome>;
+  placeBet: (tableId: string, seatIndex: number, amount: number, sideBets?: SideBets) => Promise<ActionOutcome>;
+  placeBets: (tableId: string, seatIndices: number[], amount: number, sideBets?: SideBets) => Promise<ActionOutcome>;
   closeTable: (tableId: string) => Promise<void>;
 
-  startGame: (tableId: string) => Promise<void>;
-  hit: (tableId: string, seatIndex: number) => Promise<void>;
-  stand: (tableId: string, seatIndex: number) => Promise<void>;
-  doubleDown: (tableId: string, seatIndex: number) => Promise<void>;
-  split: (tableId: string, seatIndex: number) => Promise<void>;
-  buyInsurance: (tableId: string, seatIndex: number) => Promise<void>;
-  dealerPlay: (tableId: string) => Promise<void>;
+  startGame: (tableId: string) => Promise<ActionOutcome>;
+  hit: (tableId: string, seatIndex: number) => Promise<ActionOutcome>;
+  stand: (tableId: string, seatIndex: number) => Promise<ActionOutcome>;
+  doubleDown: (tableId: string, seatIndex: number) => Promise<ActionOutcome>;
+  split: (tableId: string, seatIndex: number) => Promise<ActionOutcome>;
+  buyInsurance: (tableId: string, seatIndex: number) => Promise<ActionOutcome>;
+  dealerPlay: (tableId: string) => Promise<ActionOutcome>;
   resolveGame: (tableId: string) => Promise<void>;
   addGameRecord: (record: GameRecord) => void;
 }
@@ -1405,12 +1427,14 @@ export const useGameStore = create<GameStore>((set, get) => {
 
     const sdkPlayers = roomPlayers ?? getRandseedOnlinePlayers();
 
-    if (!roomState.playerNames || typeof roomState.playerNames !== 'object') {
-      roomState.playerNames = {};
-    }
-    if (!roomState.playerAvatars || typeof roomState.playerAvatars !== 'object') {
-      roomState.playerAvatars = {};
-    }
+    roomState.playerNames =
+      roomState.playerNames && typeof roomState.playerNames === 'object'
+        ? { ...roomState.playerNames }
+        : {};
+    roomState.playerAvatars =
+      roomState.playerAvatars && typeof roomState.playerAvatars === 'object'
+        ? { ...roomState.playerAvatars }
+        : {};
 
     latestOnlineRoomState = roomState;
     if (allocation?.roomId) {
@@ -1454,14 +1478,17 @@ export const useGameStore = create<GameStore>((set, get) => {
         ? balMap[resolvedId]
         : current?.balance ?? DEFAULT_GAME_COINS;
 
+    const confirmedOwner = Boolean(
+      get().isGameOwner || roomState._privateState?.isGameOwner === true
+    );
     const syncedUser: User = {
       id: resolvedId,
       name: resolvedName,
       avatar: resolvedAvatar,
       balance: effectiveBalance,
       bonusBalance: current?.bonusBalance ?? 0,
-      role: current?.role || 'creator',
-      isCreator: current?.isCreator ?? true,
+      role: confirmedOwner ? 'creator' : 'player',
+      isCreator: confirmedOwner,
     };
 
     const nextTables = mapAllRoomTablesFromSnapshot(roomState, get().tables);
@@ -1515,6 +1542,7 @@ export const useGameStore = create<GameStore>((set, get) => {
 
     set({
       currentUser: syncedUser,
+      isGameOwner: confirmedOwner,
       tables: nextTables,
       gameRecords: updatedRecords,
       onlinePlayers,
@@ -1526,7 +1554,14 @@ export const useGameStore = create<GameStore>((set, get) => {
     });
 
     if (get().personalArchiveStatus === 'idle') {
-      get().fetchPersonalArchive().catch(() => {});
+      if (!archiveWarmupTimer) {
+        archiveWarmupTimer = setTimeout(() => {
+          archiveWarmupTimer = null;
+          if (get().personalArchiveStatus === 'idle') {
+            get().fetchPersonalArchive().catch(() => {});
+          }
+        }, 1000);
+      }
     } else if (detectedNewSettledRound) {
       if (archiveRefreshTimer) clearTimeout(archiveRefreshTimer);
       archiveRefreshTimer = setTimeout(() => {
@@ -1548,15 +1583,7 @@ export const useGameStore = create<GameStore>((set, get) => {
 
   const dispatchConfirmedOnlineAction = async (
     actionData: Record<string, any>
-  ): Promise<{ ok: boolean; error?: string }> => {
-    if (!isRandseedRoomConnected()) {
-      return {
-        ok: false,
-        error:
-          getRandseedRoomError() ||
-          'Online room is not connected. Please wait for connection and try again.',
-      };
-    }
+  ): Promise<ActionOutcome> => {
     return sendRandseedRoomActionConfirmed(actionData);
   };
 
@@ -1592,6 +1619,7 @@ export const useGameStore = create<GameStore>((set, get) => {
 
   return {
     currentUser: null,
+    isGameOwner: false,
     tables: {},
     activeTableId: null,
     gameRecords: [],
@@ -1604,6 +1632,74 @@ export const useGameStore = create<GameStore>((set, get) => {
     personalArchiveStatus: 'idle',
     personalArchiveError: null,
     personalArchiveLastFetchedAt: null,
+
+    fetchGameOwnerStatus: async () => {
+      if (ownerStatusInFlight) {
+        return ownerStatusInFlight;
+      }
+      ownerStatusInFlight = (async () => {
+        try {
+          const metaOwner =
+            typeof document !== 'undefined'
+              ? (
+                  document.querySelector('meta[name="randseed-game-owner"]')?.getAttribute('content') ||
+                  document.querySelector('meta[name="randseed-is-owner"]')?.getAttribute('content') ||
+                  ''
+                )
+                  .trim()
+                  .toLowerCase()
+              : '';
+          if (metaOwner === 'true' || metaOwner === '1') {
+            set((state) => ({
+              isGameOwner: true,
+              currentUser: state.currentUser
+                ? { ...state.currentUser, role: 'creator', isCreator: true }
+                : null,
+            }));
+            return true;
+          }
+
+          const statsUrl = new URL('./api/stats', window.location.href).href;
+          const res = await fetch(statsUrl, {
+            method: 'GET',
+            credentials: 'same-origin',
+            cache: 'no-store',
+          });
+          if (!res.ok) {
+            return Boolean(get().isGameOwner);
+          }
+          const contentType = (res.headers.get('content-type') || '').toLowerCase();
+          if (!contentType.includes('application/json')) {
+            return Boolean(get().isGameOwner);
+          }
+          const data = await res.json();
+          const apiConfirmedOwner = Boolean(
+            data && (data.isGameOwner === true || data.isCreator === true)
+          );
+          set((state) => {
+            const nextOwner = Boolean(
+              apiConfirmedOwner || latestOnlineRoomState?._privateState?.isGameOwner === true
+            );
+            return {
+              isGameOwner: nextOwner,
+              currentUser: state.currentUser
+                ? {
+                    ...state.currentUser,
+                    role: nextOwner ? 'creator' : 'player',
+                    isCreator: nextOwner,
+                  }
+                : null,
+            };
+          });
+          return Boolean(get().isGameOwner);
+        } catch {
+          return Boolean(get().isGameOwner);
+        } finally {
+          ownerStatusInFlight = null;
+        }
+      })();
+      return ownerStatusInFlight;
+    },
 
     fetchPersonalArchive: async (force = false) => {
       const state = get();
@@ -1624,7 +1720,10 @@ export const useGameStore = create<GameStore>((set, get) => {
           personalArchiveStatus: 'loading',
           personalArchiveError: null,
         });
-        const res = await fetchAllRandseedMatchHistory({ pageSize: 100, maxPages: 10 });
+        const res = await fetchAllRandseedMatchHistory({
+          pageSize: force ? 100 : 50,
+          maxPages: force ? 10 : 2,
+        });
         if (res.error) {
           set({
             personalArchiveStatus: 'error',
@@ -1662,7 +1761,10 @@ export const useGameStore = create<GameStore>((set, get) => {
           });
         }
 
-        await initRandseedRuntime().catch(() => null);
+        // Fire runtime initialization and owner check concurrently so neither blocks room connection
+        void initRandseedRuntime().catch(() => null);
+        void get().fetchGameOwnerStatus().catch(() => false);
+
         const effectiveName = (name && name !== 'Player' ? name : '') || 'Player';
         const effectiveAvatar = avatar || undefined;
 
@@ -1712,6 +1814,8 @@ export const useGameStore = create<GameStore>((set, get) => {
       const current = get().currentUser;
       if (!current) return;
       if (isCreator) {
+        const isOwner = await get().fetchGameOwnerStatus();
+        if (!isOwner) return;
         const nextName = creatorName || current.name || 'Creator';
         await dispatchOnlineAction({
           action: 'sync_profile',
@@ -1719,6 +1823,7 @@ export const useGameStore = create<GameStore>((set, get) => {
           ...(current.avatar ? { avatar: current.avatar } : {}),
         });
         set((state) => ({
+          isGameOwner: true,
           currentUser: state.currentUser
             ? { ...state.currentUser, name: nextName, role: 'creator', isCreator: true }
             : null,
@@ -1729,16 +1834,12 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     verifyPublisher: async () => {
-      set((state) => ({
-        currentUser: state.currentUser
-          ? { ...state.currentUser, role: 'creator', isCreator: true }
-          : null,
-      }));
-      return true;
+      return get().fetchGameOwnerStatus();
     },
 
     exitPublisherMode: () => {
       set((state) => ({
+        isGameOwner: false,
         currentUser: state.currentUser
           ? { ...state.currentUser, role: 'player', isCreator: false }
           : null,
@@ -1877,30 +1978,38 @@ export const useGameStore = create<GameStore>((set, get) => {
 
     joinTable: async (tableId, seatIndex, _currency = 'Gcoin') => {
       const user = get().currentUser;
-      if (!user) return;
+      if (!user) {
+        return {
+          ok: false,
+          code: 'NO_USER',
+          error: 'Player session is not ready yet. Please wait a moment and try again.',
+        };
+      }
 
-      const currentActiveId = get().activeTableId;
-      await dispatchOnlineAction({
+      const safeName = (user.name || 'Player').trim().slice(0, 120) || 'Player';
+      const safeAvatar =
+        typeof user.avatar === 'string' && user.avatar.length > 0 && user.avatar.length <= 4096
+          ? user.avatar
+          : undefined;
+
+      const res = await dispatchConfirmedOnlineAction({
         action: 'join_seat',
         tableId,
         seatIndex,
-        playerName: user.name,
-        ...(user.avatar ? { playerAvatar: user.avatar } : {}),
+        playerName: safeName,
+        ...(safeAvatar ? { playerAvatar: safeAvatar } : {}),
       });
 
-      if (currentActiveId !== tableId) {
-        get().recordVisit(tableId).catch(() => {});
+      if (res.ok) {
+        set({ activeTableId: tableId });
       }
-      set({ activeTableId: tableId });
+      return res;
     },
 
     observeTable: (tableId) => {
       const user = get().currentUser;
       if (!user) return;
-      const currentActiveId = get().activeTableId;
-      if (currentActiveId !== tableId) {
-        get().recordVisit(tableId).catch(() => {});
-      }
+      // Switch view immediately without firing a state-mutating tick that would race with join_seat
       set({ activeTableId: tableId });
     },
 
@@ -1913,25 +2022,29 @@ export const useGameStore = create<GameStore>((set, get) => {
 
     leaveTable: async (tableId, seatIndex) => {
       const user = get().currentUser;
-      if (!user) return;
+      if (!user) {
+        return { ok: false, code: 'NO_USER', error: 'Player session is not ready.' };
+      }
 
       if (seatIndex !== undefined) {
-        await dispatchOnlineAction({
+        return dispatchConfirmedOnlineAction({
           action: 'leave_seat',
           tableId,
           seatIndex,
         });
-      } else {
-        await dispatchOnlineAction({
-          action: 'leave_seat',
-          tableId,
-        });
+      }
+      const res = await dispatchConfirmedOnlineAction({
+        action: 'leave_seat',
+        tableId,
+      });
+      if (res.ok) {
         set({ activeTableId: null });
       }
+      return res;
     },
 
     unlockTableBalance: async (tableId) => {
-      await dispatchOnlineAction({
+      return dispatchConfirmedOnlineAction({
         action: 'unlock_table_balance',
         tableId,
       });
@@ -1939,14 +2052,14 @@ export const useGameStore = create<GameStore>((set, get) => {
 
     refillGameCoins: async (tableId) => {
       const targetTableId = tableId || get().activeTableId || Object.keys(get().tables)[0];
-      await dispatchOnlineAction({
+      return dispatchConfirmedOnlineAction({
         action: 'claim_refill',
         ...(targetTableId ? { tableId: targetTableId } : {}),
       });
     },
 
     placeBet: async (tableId, seatIndex, amount, sideBets) => {
-      await dispatchOnlineAction({
+      return dispatchConfirmedOnlineAction({
         action: 'place_bet',
         tableId,
         seatIndex,
@@ -1960,15 +2073,30 @@ export const useGameStore = create<GameStore>((set, get) => {
       });
     },
 
+    placeBets: async (tableId, seatIndices, amount, sideBets) => {
+      return dispatchConfirmedOnlineAction({
+        action: 'place_bets',
+        tableId,
+        seatIndices,
+        amount,
+        sideBets: {
+          pair: sideBets?.pair || 0,
+          twentyOnePlusThree: sideBets?.twentyOnePlusThree || 0,
+        },
+        pairBet: sideBets?.pair || 0,
+        plus3Bet: sideBets?.twentyOnePlusThree || 0,
+      });
+    },
+
     startGame: async (tableId) => {
-      await dispatchOnlineAction({
+      return dispatchConfirmedOnlineAction({
         action: 'start_game',
         tableId,
       });
     },
 
     hit: async (tableId, seatIndex) => {
-      await dispatchOnlineAction({
+      return dispatchConfirmedOnlineAction({
         action: 'hit',
         tableId,
         seatIndex,
@@ -1976,7 +2104,7 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     stand: async (tableId, seatIndex) => {
-      await dispatchOnlineAction({
+      return dispatchConfirmedOnlineAction({
         action: 'stand',
         tableId,
         seatIndex,
@@ -1984,7 +2112,7 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     doubleDown: async (tableId, seatIndex) => {
-      await dispatchOnlineAction({
+      return dispatchConfirmedOnlineAction({
         action: 'double_down',
         tableId,
         seatIndex,
@@ -1992,7 +2120,7 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     split: async (tableId, seatIndex) => {
-      await dispatchOnlineAction({
+      return dispatchConfirmedOnlineAction({
         action: 'split',
         tableId,
         seatIndex,
@@ -2000,7 +2128,7 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     buyInsurance: async (tableId, seatIndex) => {
-      await dispatchOnlineAction({
+      return dispatchConfirmedOnlineAction({
         action: 'buy_insurance',
         tableId,
         seatIndex,
@@ -2011,7 +2139,7 @@ export const useGameStore = create<GameStore>((set, get) => {
       if (tableId === 'table_1') {
         readyRandseedRoom().catch(() => {});
       }
-      await dispatchOnlineAction({
+      return dispatchConfirmedOnlineAction({
         action: 'ready_next',
         tableId,
       });

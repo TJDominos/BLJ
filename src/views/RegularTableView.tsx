@@ -21,6 +21,7 @@ import { TablePlayersSidebar } from '@/components/blackjack/TablePlayersSidebar'
 import { TableSeatButton } from '@/components/blackjack/TableSeatButton';
 import { CurrencyIcon } from '@/components/CurrencyIcon';
 import { useBotBehavior } from '@/hooks/useBotBehavior';
+import { isRandseedRoomConnected } from '@/lib/randseedRuntime';
 
 // Further down, replace the dealer area:
 
@@ -50,7 +51,7 @@ import {
 } from '@/store/uiStore';
 
 export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }: { onNavigate: (view: 'lobby' | 'create' | 'table' | 'host_table' | 'manage_tables') => boolean | void, onToggleSidebar?: () => void, isSidebarOpen?: boolean }) {
-  const { tables, activeTableId, currentUser, leaveTable, joinTable, placeBet, startGame, hit, stand, doubleDown, split, buyInsurance, gameRecords: allGameRecords, unlockTableBalance, refillGameCoins } = useGameStore();
+  const { tables, activeTableId, currentUser, disconnectedPlayerIds, leaveTable, joinTable, placeBet, placeBets, startGame, hit, stand, doubleDown, split, buyInsurance, gameRecords: allGameRecords, unlockTableBalance, refillGameCoins } = useGameStore();
 
   const userHostedTables = Object.values(tables).filter(t => t.houseId === currentUser?.id);
   const hasHostedTables = userHostedTables.length > 0;
@@ -103,10 +104,29 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
   const setRecentWinAmount = uiStore.setRecentWinAmount;
   const playMode = useUIStore(selectPlayMode);
   const [isStatsOpen, setIsStatsOpen] = useState(false);
+  const [pendingSeatIndex, setPendingSeatIndex] = useState<number | null>(null);
+  const [isDealing, setIsDealing] = useState(false);
 
   const table = tables[activeTableId || ''];
   const isSeatDealRevealed = useDealRevealedSeats(table?.status, table?.seats?.length || 7);
-  const mySeats = React.useMemo(() => table?.seats.map((s, i) => s.userId === currentUser?.id ? i : -1).filter(i => i >= 0) || [], [table?.seats?.map(s => s.userId)?.join(), currentUser?.id]);
+  const seatsSignature = React.useMemo(
+    () =>
+      table?.seats
+        .map(
+          (s, idx) =>
+            `${idx}:${s.userId || ''}:${s.isReady ? 1 : 0}:${s.hand?.status || ''}:${s.hand?.cards?.length || 0}:${s.hand?.bet || 0}`
+        )
+        .join('|') || '',
+    [table?.seats]
+  );
+  const mySeats = React.useMemo(
+    () =>
+      table?.seats
+        .map((s, i) => (s.userId === currentUser?.id ? i : -1))
+        .filter((i) => i >= 0) || [],
+    [seatsSignature, currentUser?.id]
+  );
+  const mySeatsKey = mySeats.join(',');
 
   const setPlayMode = useUIStore(state => state.setPlayMode);
   const seatedCurrency = table?.userBalances?.[currentUser?.id || '']?.currency;
@@ -137,6 +157,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
   const isResolvingRef = React.useRef(false);
   const isFirstLoadRef = React.useRef(true);
   const isPlacingBetRef = React.useRef(false);
+  const seatActionInFlightRef = React.useRef(false);
 
   const isRoundJustSettled = Boolean(
     table &&
@@ -181,7 +202,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     } else {
       setDealCountdown(null);
     }
-  }, [table?.status, dealCountdown, table?.settings.actionTimeLimit, recentWinAmount, JSON.stringify(table?.seats)]);
+  }, [table?.status, dealCountdown, table?.settings.actionTimeLimit, recentWinAmount, seatsSignature]);
 
   useEffect(() => {
     if (confirmAction !== null) return;
@@ -196,12 +217,22 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
       const timer = setTimeout(() => setDealCountdown(dealCountdown - 1), 1000);
       return () => clearTimeout(timer);
     } else if (dealCountdown === 0 && table?.status === 'waiting') {
-      setDealCountdown(-1);
       const seatedPlayers = table.seats.filter(s => s.userId !== null);
       if (seatedPlayers.length === 0) {
           setDealCountdown(null);
           return;
       }
+
+      // 网络卡顿或有在座玩家处于 10 秒断线宽限期时，等待恢复，不触发自动离座或强行开局
+      const hasSeatedGraceWait =
+        !isRandseedRoomConnected() ||
+        seatedPlayers.some(s => s.userId && disconnectedPlayerIds.includes(s.userId));
+      if (hasSeatedGraceWait) {
+          const timer = setTimeout(() => setDealCountdown(1), 1000);
+          return () => clearTimeout(timer);
+      }
+
+      setDealCountdown(-1);
 
       const myNotReady = mySeats.filter(sIdx => !table.seats[sIdx].isReady);
       if (myNotReady.length > 0 && !isPlacingBetRef.current) {
@@ -217,7 +248,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
          setDealCountdown(null);
       }
     }
-  }, [dealCountdown, table?.id, table?.status, JSON.stringify(table?.seats), table?.settings.actionTimeLimit, mySeats, leaveTable, startGame, table?.houseId, currentUser?.id, confirmAction]);
+  }, [dealCountdown, table?.id, table?.status, seatsSignature, table?.settings.actionTimeLimit, mySeats, leaveTable, startGame, table?.houseId, currentUser?.id, confirmAction, disconnectedPlayerIds]);
 
   useEffect(() => {
     if (autoDeal && table?.status === 'waiting' && mySeats.length > 0 && !isResolvingRef.current && recentWinAmount === null && mySeats.some(sIdx => !table.seats[sIdx].isReady) && !isPlacingBetRef.current) {
@@ -226,7 +257,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
         }, 1200);
         return () => clearTimeout(timer);
     }
-  }, [autoDeal, table?.status, JSON.stringify(mySeats), recentWinAmount, betAmountStr, sideBetsEnabled, pairBetStr, plus3BetStr]);
+  }, [autoDeal, table?.status, mySeatsKey, recentWinAmount, betAmountStr, sideBetsEnabled, pairBetStr, plus3BetStr]);
 
   const scrollSeats = (dir: 'left' | 'right') => {
     if (seatsContainerRef.current) {
@@ -330,7 +361,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     }
     previousStatus.current = table?.status;
     previousRoundsPlayed.current = table?.roundsPlayed;
-  }, [table?.status, table?.id, table?.roundsPlayed, JSON.stringify(table?.seats), gameRecords]);
+  }, [table?.status, table?.id, table?.roundsPlayed, seatsSignature, gameRecords]);
 
   useEffect(() => {
     if (table) {
@@ -367,7 +398,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     } else {
       setActionCountdown(null);
     }
-  }, [table?.status, table?.currentTurnIndex, table?.settings.actionTimeLimit, currentUser?.id, JSON.stringify(table?.seats)]);
+  }, [table?.status, table?.currentTurnIndex, table?.settings.actionTimeLimit, currentUser?.id, seatsSignature]);
 
   useBotBehavior(table, hit, stand);
 
@@ -391,7 +422,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
       const timer = setTimeout(() => setActionCountdown(actionCountdown - 1), 1000);
       return () => clearTimeout(timer);
     }
-  }, [actionCountdown, isActiveTurnDealRevealed, table?.status, table?.id, table?.currentTurnIndex, currentUser?.id, JSON.stringify(table?.seats)]);
+  }, [actionCountdown, isActiveTurnDealRevealed, table?.status, table?.id, table?.currentTurnIndex, currentUser?.id, seatsSignature]);
 
   const prevActionSnapshot = React.useRef('');
   useEffect(() => {
@@ -407,7 +438,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     } else if (!isTurn) {
         prevActionSnapshot.current = '';
     }
-  }, [table?.status, table?.currentTurnIndex, isActiveTurnDealRevealed, JSON.stringify(table?.seats), currentUser?.id]);
+  }, [table?.status, table?.currentTurnIndex, isActiveTurnDealRevealed, seatsSignature, currentUser?.id]);
 
   if (!table || !currentUser) {
     return (
@@ -448,15 +479,47 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     : ((parseInt(betAmountStr.replace(/,/g, '') || '0') + sideBetsTotalStr) * mySeats.length);
 
   const toggleSeatSelection = async (seatIndex: number) => {
-    if (table.status !== 'waiting') return;
+    if (seatActionInFlightRef.current) return;
+    if (table.status !== 'waiting') {
+      setConfirmAction({
+        title: table.status === 'playing' ? 'Round in Progress' : 'Table Unavailable',
+        message:
+          table.status === 'playing'
+            ? 'A hand is currently being played. Please wait for this round to finish before taking or leaving a seat.'
+            : `Cannot change seats while table is ${table.status}.`,
+        confirmText: 'OK',
+        onConfirm: () => {}
+      });
+      return;
+    }
+
+    const seat = table.seats[seatIndex];
+    if (!seat) return;
+    if (seat.userId !== null && seat.userId !== currentUser.id) {
+      return;
+    }
+
     const clickPan = table.seats.length > 1 ? (seatIndex / (table.seats.length - 1)) * 2 - 1 : 0;
     soundManager.playClick(clickPan);
-    
-    const seat = table.seats[seatIndex];
-    if (seat.userId === null) {
-       await joinTable(table.id, seatIndex, 'Gcoin');
-    } else if (seat.userId === currentUser.id) {
-       await leaveTable(table.id, seatIndex);
+
+    seatActionInFlightRef.current = true;
+    setPendingSeatIndex(seatIndex);
+    try {
+      const res =
+        seat.userId === null
+          ? await joinTable(table.id, seatIndex, 'Gcoin')
+          : await leaveTable(table.id, seatIndex);
+      if (res && !res.ok) {
+        setConfirmAction({
+          title: seat.userId === null ? 'Cannot Join Seat' : 'Cannot Leave Seat',
+          message: res.error || 'Unable to update seat right now. Please try again.',
+          confirmText: 'OK',
+          onConfirm: () => {}
+        });
+      }
+    } finally {
+      seatActionInFlightRef.current = false;
+      setPendingSeatIndex(null);
     }
   };
 
@@ -509,13 +572,24 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
       if (isPlacingBetRef.current) return;
       try {
         isPlacingBetRef.current = true;
-        for (const seatIndex of mySeats) {
-          await placeBet(table.id, seatIndex, amount, { pair: pairAmt, twentyOnePlusThree: plus3Amt });
+        setIsDealing(true);
+        const betRes = await placeBets(table.id, mySeats, amount, {
+          pair: pairAmt,
+          twentyOnePlusThree: plus3Amt,
+        });
+        if (betRes && !betRes.ok) {
+          setConfirmAction({
+            title: 'Cannot Place Bet',
+            message: betRes.error || 'Unable to place bet right now.',
+            confirmText: 'OK',
+            onConfirm: () => {}
+          });
         }
       } catch (err: any) {
         console.warn("Could not place bet:", err);
       } finally {
-        setTimeout(() => { isPlacingBetRef.current = false; }, 1000);
+        isPlacingBetRef.current = false;
+        setIsDealing(false);
       }
     } else if (!canAfford && myUserBal < table.settings.minBet) {
       setConfirmAction({
@@ -1300,7 +1374,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
 
                      {/* If hand exists, render cards and score */}
                      {seat.hand && (
-                       <div className={cn("flex flex-col items-center justify-end transition-opacity relative z-20 w-full mb-0 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.72] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom", (table.status === "waiting" && !recentWinAmount && !isResolvingRef.current) && "opacity-20")}>
+                       <div className={cn("flex flex-col items-center justify-end transition-opacity relative z-20 w-full mb-0 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.72] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom", table.status === "waiting" && "pointer-events-none", (table.status === "waiting" && !recentWinAmount && !isResolvingRef.current) && "opacity-20")}>
                           <div className="flex flex-row items-center gap-1.5 z-30 w-full justify-center mb-1.5 sm:mb-2 pointer-events-none relative">
                             <motion.span 
                               key="score"
@@ -1446,6 +1520,8 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                         dealCountdown={dealCountdown}
                         actionCountdown={isThisSeatTurn && seatDealRevealed ? actionCountdown : null}
                         shakeSeats={shakeSeats}
+                        isPending={pendingSeatIndex === seatIdx}
+                        isDisconnected={Boolean(seat.userId && disconnectedPlayerIds.includes(seat.userId))}
                         onClick={() => toggleSeatSelection(seatIdx)}
                       />
                    </div>
@@ -1496,6 +1572,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
               onPlus3Minus={handlePlus3Minus}
               onPlus3Plus={handlePlus3Plus}
               onDeal={handleStartGame}
+              isDealing={isDealing}
               dealCountdown={dealCountdown}
               isTournament={false}
               onSideBetsToggle={() => setSideBetsEnabled(!sideBetsEnabled)}

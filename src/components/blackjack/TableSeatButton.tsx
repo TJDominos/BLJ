@@ -13,6 +13,8 @@ interface TableSeatButtonProps {
   dealCountdown: number | null;
   actionCountdown?: number | null;
   shakeSeats: boolean;
+  isPending?: boolean;
+  isDisconnected?: boolean;
   onClick: () => void;
 }
 
@@ -25,6 +27,8 @@ export function TableSeatButton({
   dealCountdown,
   actionCountdown = null,
   shakeSeats,
+  isPending = false,
+  isDisconnected = false,
   onClick,
 }: TableSeatButtonProps) {
   const isSeated = seat.userId !== null;
@@ -36,15 +40,19 @@ export function TableSeatButton({
     (seat.userId ? getAvatarUrl(seat.userId, seat.avatar) : undefined);
 
   const seatName = (isCurrentUser ? currentUser?.name : seat.name) || 'Player';
+  const displaySeatNum = totalSeats - seatIdx;
 
   return (
-    <motion.div
+    <motion.button
+      type="button"
+      aria-label={isSeated ? `Seat ${displaySeatNum} (${seatName})` : `Sit at Seat ${displaySeatNum}`}
+      disabled={isPending}
       onClick={onClick}
       animate={shakeSeats && !isSelected && !isSeated ? { x: [-10, 10, -10, 10, 0] } : {}}
       transition={{ duration: 0.4 }}
       className={cn(
-        "absolute bottom-[8px] sm:bottom-[10px] [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-[2px] left-1/2 -translate-x-1/2 w-[45px] h-[45px] sm:w-[50px] sm:h-[50px] md:w-[60px] md:h-[60px] [@media(max-height:520px)_and_(orientation:landscape)]:!w-[38px] [@media(max-height:520px)_and_(orientation:landscape)]:!h-[38px] text-[10px] sm:text-[12px] [@media(max-height:520px)_and_(orientation:landscape)]:!text-[9px] z-50 shadow-xl bg-black/60 rounded-full",
-        "flex flex-col items-center justify-center border transition-all cursor-pointer font-bold uppercase tracking-widest leading-none",
+        "pointer-events-auto absolute bottom-[8px] sm:bottom-[10px] [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-[2px] left-1/2 -translate-x-1/2 w-[45px] h-[45px] sm:w-[50px] sm:h-[50px] md:w-[60px] md:h-[60px] [@media(max-height:520px)_and_(orientation:landscape)]:!w-[38px] [@media(max-height:520px)_and_(orientation:landscape)]:!h-[38px] text-[10px] sm:text-[12px] [@media(max-height:520px)_and_(orientation:landscape)]:!text-[9px] z-50 shadow-xl bg-black/60 rounded-full p-0",
+        "flex flex-col items-center justify-center border transition-all cursor-pointer font-bold uppercase tracking-widest leading-none focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 disabled:cursor-wait",
         seat.isReady
           ? "border-[#32d5a4] text-[#32d5a4] bg-[#32d5a4]/30 shadow-[0_0_15px_rgba(50,213,164,0.3)] backdrop-blur-[2px]"
           : isSelected
@@ -52,9 +60,15 @@ export function TableSeatButton({
           : isSeated
           ? "border-white/20 text-white/50 bg-black/40"
           : "border-white/10 text-white bg-black/60 shadow-lg hover:border-white/50 backdrop-blur-[2px]",
+        isPending && "opacity-75 ring-2 ring-amber-400/60",
         shakeSeats && !isSelected && !isSeated && "border-red-500/80 text-white bg-red-500/60"
       )}
     >
+      {isPending && (
+        <span className="absolute inset-0 rounded-full flex items-center justify-center bg-black/55 z-40 pointer-events-none">
+          <span className="w-4 h-4 rounded-full border-2 border-amber-300 border-t-transparent animate-spin" />
+        </span>
+      )}
       {isSeated ? (
         <div className="flex flex-col items-center justify-center w-full h-full relative">
           {isSelected && !seat.isReady && (
@@ -121,11 +135,18 @@ export function TableSeatButton({
           )}
 
           {/* Seat Player Name Tag */}
-          <div className="absolute -bottom-2.5 sm:-bottom-3 left-1/2 -translate-x-1/2 flex items-center justify-center z-30 pointer-events-none">
+          <div className="absolute -bottom-2.5 sm:-bottom-3 left-1/2 -translate-x-1/2 flex flex-col items-center justify-center z-30 pointer-events-none gap-0.5">
+            {isDisconnected && (
+              <span className="px-1 py-[1px] rounded bg-amber-500/95 text-black text-[7px] font-black tracking-tight uppercase whitespace-nowrap shadow">
+                WAIT 10s
+              </span>
+            )}
             <span
               className={cn(
                 "px-1.5 py-0.5 rounded-full text-[8px] sm:text-[9px] font-bold tracking-tight shadow-md border whitespace-nowrap truncate max-w-[62px] sm:max-w-[74px] text-center leading-tight",
-                isSelected
+                isDisconnected
+                  ? "bg-amber-950/90 text-amber-300 border-amber-400/60"
+                  : isSelected
                   ? "bg-amber-400 text-black border-amber-300 font-extrabold shadow-[0_0_8px_rgba(251,191,36,0.6)]"
                   : seat.isReady
                   ? "bg-[#183a2d] text-[#32d5a4] border-[#32d5a4]/40"
@@ -144,6 +165,6 @@ export function TableSeatButton({
           <span>Sit</span>
         </div>
       )}
-    </motion.div>
+    </motion.button>
   );
 }

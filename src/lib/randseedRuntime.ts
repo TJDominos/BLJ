@@ -5,7 +5,7 @@ import {
   RoomClientError,
   getRandseedGameId,
   getRandseedHostOrigin,
-  readRoomSnapshotState,
+  peekRoomSnapshotState,
   readAgentPlayerView,
   classifyAgentPlayerViewUpdate,
   fetchMatchReplay,
@@ -75,10 +75,13 @@ export const RANDSEED_HOST_ORIGIN = safeGetRandseedHostOrigin();
 export const GAME_SLUG = "royal-blackjack";
 
 let runtimeClientInstance: RuntimeClient | null = null;
+let runtimeInitPromise: Promise<RuntimeClient | null> | null = null;
 let roomClientInstance: RoomClient | null = null;
 let roomConnectionStatus: RoomConnectionStatus = "idle";
 let roomConnectionError: string | null = null;
 let cachedRoomPlayers: RoomPlayer[] = [];
+let cachedRoomAllocation: RoomMatch | undefined = undefined;
+let latestRawSnapshot: RoomSnapshot | undefined = undefined;
 let lastAgentPlayerView: AgentPlayerView | null = null;
 let lastDeliveredSnapshotKey: string | null = null;
 
@@ -128,7 +131,7 @@ function readSafeRoomPlayers(room: RoomClient | null, snapshot?: RoomSnapshot): 
       // Room hosts that do not include a roster cause getPlayers() to throw CAPABILITY_UNAVAILABLE
     }
   }
-  const snapPlayers = (snapshot ?? room?.snapshot)?.players;
+  const snapPlayers = (snapshot ?? latestRawSnapshot)?.players;
   if (Array.isArray(snapPlayers)) {
     cachedRoomPlayers = snapPlayers;
     return snapPlayers;
@@ -179,19 +182,23 @@ function formatRoomErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-function getSnapshotKey(snapshot: RoomSnapshot): string {
-  return `${snapshot.scope.gameId}:${snapshot.matchId}:${snapshot.matchSeq}:${snapshot.tick}`;
+function getSnapshotKey(snapshot: RoomSnapshot, players?: RoomPlayer[]): string {
+  const rosterSig = Array.isArray(players)
+    ? players.map((p) => p.playerId).join(",")
+    : "";
+  const broadcastLen = Array.isArray(snapshot.broadcasts) ? snapshot.broadcasts.length : 0;
+  return `${snapshot.scope.gameId}:${snapshot.matchId}:${snapshot.matchSeq}:${snapshot.tick}:${rosterSig}:${broadcastLen}`;
 }
 
 function extractSnapshotState(
   snapshot: RoomSnapshot,
-  room: RoomClient | null
+  allocation?: RoomMatch
 ): Record<string, unknown> | null {
   if (isAgentPlayerViewEnvelope(snapshot.state)) {
     const view = readAgentPlayerView(
       snapshot,
-      room?.allocation?.playerId,
-      room?.allocation?.roomId
+      allocation?.playerId,
+      allocation?.roomId
     );
     const classification = classifyAgentPlayerViewUpdate(lastAgentPlayerView, view);
     if (classification.kind === "stale" || classification.kind === "duplicate") {
@@ -201,7 +208,7 @@ function extractSnapshotState(
     return view as unknown as Record<string, unknown>;
   }
 
-  const validated = readRoomSnapshotState<Record<string, JsonValue>>(
+  const validated = peekRoomSnapshotState<Record<string, JsonValue>>(
     snapshot,
     (val: JsonValue): val is Record<string, JsonValue> =>
       Boolean(val && typeof val === "object" && !Array.isArray(val))
@@ -220,38 +227,58 @@ export function getRandseedOnlinePlayers(): RoomPlayer[] {
 export async function initRandseedRuntime(): Promise<RuntimeClient | null> {
   if (typeof window === "undefined") return null;
   if (runtimeClientInstance) return runtimeClientInstance;
+  if (runtimeInitPromise) return runtimeInitPromise;
 
-  try {
-    const hostOrigin = safeGetRandseedHostOrigin();
-    const client = new RuntimeClient({
-      ...(hostOrigin ? { hostOrigin } : {}),
-      viewport: DEFAULT_RUNTIME_VIEWPORT,
-      readinessMode: "game",
-      timeoutMs: 2500,
-    });
-
-    runtimeClientInstance = client;
-
-    client.onStateChanged((nextState) => {
-      const muted = !!nextState?.sound?.muted;
-      useUIStore.getState().setIsMuted(muted);
-      soundManager.setMuted(muted);
-    });
-
-    const initialState = await client.connect();
-    if (initialState?.sound) {
-      const muted = !!initialState.sound.muted;
-      useUIStore.getState().setIsMuted(muted);
-      soundManager.setMuted(muted);
+  const hostOrigin = safeGetRandseedHostOrigin();
+  const isInIframe = (() => {
+    try {
+      return window.parent !== window;
+    } catch {
+      return true;
     }
+  })();
 
-    client.markReady();
-    return client;
-  } catch {
-    // Running outside of the Randseed Player Shell
-    runtimeClientInstance = null;
+  // Outside the RandSeed Player Shell iframe without an explicit host origin, skip postMessage wait immediately
+  if (!isInIframe && !hostOrigin) {
     return null;
   }
+
+  runtimeInitPromise = (async () => {
+    try {
+      const client = new RuntimeClient({
+        ...(hostOrigin ? { hostOrigin } : {}),
+        viewport: DEFAULT_RUNTIME_VIEWPORT,
+        readinessMode: "game",
+        timeoutMs: 1000,
+      });
+
+      runtimeClientInstance = client;
+
+      client.onStateChanged((nextState) => {
+        const muted = !!nextState?.sound?.muted;
+        useUIStore.getState().setIsMuted(muted);
+        soundManager.setMuted(muted);
+      });
+
+      const initialState = await client.connect();
+      if (initialState?.sound) {
+        const muted = !!initialState.sound.muted;
+        useUIStore.getState().setIsMuted(muted);
+        soundManager.setMuted(muted);
+      }
+
+      client.markReady();
+      return client;
+    } catch {
+      // Running outside of the Randseed Player Shell
+      runtimeClientInstance = null;
+      return null;
+    } finally {
+      runtimeInitPromise = null;
+    }
+  })();
+
+  return runtimeInitPromise;
 }
 
 export async function requestRandseedFullscreen(): Promise<boolean> {
@@ -280,16 +307,22 @@ export function getRandseedRoomError(): string | null {
 }
 
 export function getRandseedRoomAllocation(): RoomMatch | undefined {
-  return roomClientInstance?.allocation;
+  if (!cachedRoomAllocation && roomClientInstance) {
+    cachedRoomAllocation = roomClientInstance.allocation;
+  }
+  return cachedRoomAllocation;
 }
 
 export function getRandseedRoomSnapshot(): RoomSnapshot | undefined {
-  return roomClientInstance?.snapshot;
+  return latestRawSnapshot ?? roomClientInstance?.snapshot;
 }
 
 export function disconnectRandseedRoom(): void {
   if (roomClientInstance) {
     roomClientInstance.disconnect();
+    cachedRoomAllocation = undefined;
+    latestRawSnapshot = undefined;
+    cachedRoomPlayers = [];
     lastAgentPlayerView = null;
     lastDeliveredSnapshotKey = null;
   }
@@ -327,7 +360,7 @@ export async function matchRandseedRoom(
       const baseUrl = new URL("./", window.location.href).href;
       roomClientInstance = new RoomClient({
         baseUrl,
-        cloneSnapshots: true,
+        cloneSnapshots: false,
         refreshSession: async () => {
           if (!runtimeClientInstance) return false;
           const caps = runtimeClientInstance.getCapabilities();
@@ -345,8 +378,12 @@ export async function matchRandseedRoom(
           notifyRoomStatusChange(nextStatus);
         },
         onError: (err) => {
+          const currentStatus = roomClientInstance?.status;
+          const isReconnecting =
+            (err instanceof RoomClientError && err.code === "RECONNECTING") ||
+            currentStatus === "reconnecting";
           notifyRoomStatusChange(
-            "error",
+            isReconnecting ? "reconnecting" : "error",
             formatRoomErrorMessage(err, "Failed to connect to the online room.")
           );
         },
@@ -360,14 +397,17 @@ export async function matchRandseedRoom(
         },
         onSnapshot: (snapshot) => {
           try {
-            const players = readSafeRoomPlayers(roomClientInstance, snapshot);
-            if (playersChangedListener && Array.isArray(players)) {
-              playersChangedListener(players);
+            latestRawSnapshot = snapshot;
+            if (!cachedRoomAllocation && roomClientInstance) {
+              cachedRoomAllocation = roomClientInstance.allocation;
             }
-            const nextState = extractSnapshotState(snapshot, roomClientInstance);
+            const players = readSafeRoomPlayers(roomClientInstance, snapshot);
+            const nextState = extractSnapshotState(snapshot, cachedRoomAllocation);
             if (nextState && snapshotListener) {
-              lastDeliveredSnapshotKey = getSnapshotKey(snapshot);
-              snapshotListener(nextState, roomClientInstance?.allocation, snapshot, players);
+              lastDeliveredSnapshotKey = getSnapshotKey(snapshot, players);
+              snapshotListener(nextState, cachedRoomAllocation, snapshot, players);
+            } else if (playersChangedListener && Array.isArray(players)) {
+              playersChangedListener(players);
             }
           } catch {
             // Ignore malformed snapshot frame
@@ -376,42 +416,42 @@ export async function matchRandseedRoom(
       });
     }
 
-    // Pre-warm standby container only when idle/disconnected
-    if (
-      roomClientInstance.status === "idle" ||
-      roomClientInstance.status === "closed" ||
-      roomClientInstance.status === "error"
-    ) {
-      roomClientInstance.warm().catch(() => {});
-    }
-
     const snapshot = await roomClientInstance.connect();
+    latestRawSnapshot = snapshot;
+    cachedRoomAllocation = roomClientInstance.allocation;
     notifyRoomStatusChange("connected", null);
     const players = readSafeRoomPlayers(roomClientInstance, snapshot);
-    if (playersChangedListener && Array.isArray(players)) {
-      playersChangedListener(players);
-    }
-    const snapKey = getSnapshotKey(snapshot);
+    const snapKey = getSnapshotKey(snapshot, players);
     if (snapKey !== lastDeliveredSnapshotKey) {
-      const nextState = extractSnapshotState(snapshot, roomClientInstance);
+      const nextState = extractSnapshotState(snapshot, cachedRoomAllocation);
       if (nextState && snapshotListener) {
         lastDeliveredSnapshotKey = snapKey;
         snapshotListener(
           nextState,
-          roomClientInstance.allocation,
+          cachedRoomAllocation,
           snapshot,
           players
         );
       }
+    } else if (playersChangedListener && Array.isArray(players)) {
+      playersChangedListener(players);
     }
     return {
-      allocation: roomClientInstance.allocation,
+      allocation: cachedRoomAllocation,
       snapshot,
       players,
     };
   } catch (err: unknown) {
+    const currentStatus = roomClientInstance?.status;
+    const isReconnecting =
+      (err instanceof RoomClientError && err.code === "RECONNECTING") ||
+      currentStatus === "reconnecting";
     notifyRoomStatusChange(
-      roomClientInstance?.status === "closed" ? "closed" : "error",
+      isReconnecting
+        ? "reconnecting"
+        : currentStatus === "closed"
+        ? "closed"
+        : "error",
       formatRoomErrorMessage(err, "Unable to connect to the online room.")
     );
     return null;
@@ -477,9 +517,38 @@ function formatActionRejectionCode(code?: string): string {
   }
 }
 
+let confirmedActionChain: Promise<unknown> = Promise.resolve();
+
+async function waitForRandseedRoomConnected(maxWaitMs = 3500): Promise<boolean> {
+  const getStatus = (): RoomConnectionStatus | undefined => roomClientInstance?.status;
+  const initialStatus = getStatus();
+  if (!initialStatus) return false;
+  if (initialStatus === "connected") return true;
+  if (
+    initialStatus !== "matching" &&
+    initialStatus !== "connecting" &&
+    initialStatus !== "reconnecting"
+  ) {
+    return false;
+  }
+
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const status = getStatus();
+    if (!status) return false;
+    if (status === "connected") return true;
+    if (status === "error" || status === "closed") {
+      return false;
+    }
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  return getStatus() === "connected";
+}
+
 async function waitForMatchRolloverIfOver(maxWaitMs = 3000): Promise<boolean> {
   if (!roomClientInstance) return false;
-  if (!isSnapshotGameOver(roomClientInstance.snapshot)) {
+  const curSnap = latestRawSnapshot ?? roomClientInstance.snapshot;
+  if (!isSnapshotGameOver(curSnap)) {
     return roomClientInstance.status === "connected";
   }
 
@@ -489,21 +558,28 @@ async function waitForMatchRolloverIfOver(maxWaitMs = 3000): Promise<boolean> {
     if (!roomClientInstance || roomClientInstance.status !== "connected") {
       return false;
     }
-    if (!isSnapshotGameOver(roomClientInstance.snapshot)) {
+    if (!isSnapshotGameOver(latestRawSnapshot ?? roomClientInstance.snapshot)) {
       return true;
     }
     await new Promise((r) => setTimeout(r, 30));
   }
-  return !isSnapshotGameOver(roomClientInstance?.snapshot);
+  return !isSnapshotGameOver(latestRawSnapshot ?? roomClientInstance?.snapshot);
 }
 
-export async function sendRandseedRoomActionConfirmed(
+async function executeConfirmedRoomAction(
   action: Record<string, JsonValue>
 ): Promise<{ ok: boolean; code?: string; error?: string }> {
-  if (!roomClientInstance || roomClientInstance.status !== "connected") {
+  const connected = await waitForRandseedRoomConnected(3500);
+  if (!connected || !roomClientInstance) {
+    const status = roomClientInstance?.status ?? roomConnectionStatus;
     return {
       ok: false,
-      error: "Online room is not connected yet. Please wait for the room to connect.",
+      code: status === "reconnecting" ? "RECONNECTING" : "NOT_CONNECTED",
+      error:
+        status === "reconnecting"
+          ? "Reconnecting to the online room. Please try again in a moment."
+          : getRandseedRoomError() ||
+            "Online room is not connected yet. Please wait for the room to connect.",
     };
   }
 
@@ -512,20 +588,29 @@ export async function sendRandseedRoomActionConfirmed(
     if (!ready) {
       return {
         ok: false,
+        code: "MATCH_TRANSITIONING",
         error: "The room is transitioning between rounds. Please try again in a moment.",
       };
     }
 
     for (let attempt = 0; attempt < 4; attempt++) {
       if (!roomClientInstance || roomClientInstance.status !== "connected") {
-        return { ok: false, error: "Lost connection to the online room." };
+        const reconnected = await waitForRandseedRoomConnected(2500);
+        if (!reconnected || !roomClientInstance) {
+          return {
+            ok: false,
+            code: "NOT_CONNECTED",
+            error: "Lost connection to the online room. Please wait for reconnection and try again.",
+          };
+        }
       }
 
-      if (isSnapshotGameOver(roomClientInstance.snapshot)) {
+      if (isSnapshotGameOver(latestRawSnapshot)) {
         const rolled = await waitForMatchRolloverIfOver(2500);
         if (!rolled) {
           return {
             ok: false,
+            code: "MATCH_TRANSITIONING",
             error: "The room is transitioning between rounds. Please try again in a moment.",
           };
         }
@@ -551,16 +636,17 @@ export async function sendRandseedRoomActionConfirmed(
             return { ok: true };
           }
           if (err.code === "INPUT_PENDING" && attempt < 3) {
-            await new Promise((r) => setTimeout(r, 100));
+            await new Promise((r) => setTimeout(r, 120));
             continue;
           }
           if (err.status === 409 && attempt < 3) {
-            await new Promise((r) => setTimeout(r, 50));
+            await new Promise((r) => setTimeout(r, 60));
             continue;
           }
         }
         return {
           ok: false,
+          code: err instanceof RoomClientError ? err.code : undefined,
           error: formatRoomErrorMessage(err, "Failed to send action to the room server."),
         };
       }
@@ -568,14 +654,27 @@ export async function sendRandseedRoomActionConfirmed(
 
     return {
       ok: false,
+      code: "ROOM_CONFLICT",
       error: "Room state changed while submitting your request. Please try again.",
     };
   } catch (err: unknown) {
     return {
       ok: false,
+      code: err instanceof RoomClientError ? err.code : undefined,
       error: formatRoomErrorMessage(err, "Failed to send action to the room server."),
     };
   }
+}
+
+export async function sendRandseedRoomActionConfirmed(
+  action: Record<string, JsonValue>
+): Promise<{ ok: boolean; code?: string; error?: string }> {
+  const run = confirmedActionChain.then(
+    () => executeConfirmedRoomAction(action),
+    () => executeConfirmedRoomAction(action)
+  );
+  confirmedActionChain = run.catch(() => {});
+  return run;
 }
 
 export async function sendRandseedRoomAction(
@@ -585,16 +684,12 @@ export async function sendRandseedRoomAction(
     return false;
   }
   try {
-    const ready = await waitForMatchRolloverIfOver(3000);
-    if (!ready) {
+    if (isSnapshotGameOver(latestRawSnapshot)) {
       return false;
     }
-
-    if (roomClientInstance.sendSocketInput(action, { allowSameTick: true, force: true })) {
-      return true;
-    }
-    const res = await roomClientInstance.sendInput(action);
-    return Boolean(res?.applied);
+    // Use non-blocking WebSocket input exclusively so background telemetry/profile sync
+    // never sets RoomClient.inputPending = true or triggers HTTP 409 tick conflicts
+    return roomClientInstance.sendSocketInput(action, { allowSameTick: true, force: true });
   } catch {
     return false;
   }
@@ -620,7 +715,7 @@ export async function fetchAllRandseedMatchHistory(options?: {
   pageSize?: number;
   maxPages?: number;
 }): Promise<PersonalArchiveFetchResult> {
-  const gameId = safeGetRandseedGameId() || roomClientInstance?.allocation?.scope.gameId;
+  const gameId = safeGetRandseedGameId() || cachedRoomAllocation?.scope.gameId;
   if (!gameId) {
     return {
       items: [],
@@ -674,7 +769,7 @@ export async function fetchRandseedMatchHistory(options?: {
   limit?: number;
   offset?: number;
 }): Promise<ArchiveHistoryPage | null> {
-  const gameId = safeGetRandseedGameId() || roomClientInstance?.allocation?.scope.gameId;
+  const gameId = safeGetRandseedGameId() || cachedRoomAllocation?.scope.gameId;
   if (!gameId) return null;
   try {
     return await fetchPlayerMatchHistory({
@@ -689,7 +784,7 @@ export async function fetchRandseedMatchHistory(options?: {
 }
 
 export async function fetchRandseedMatchReplay(matchId: string): Promise<MatchReplayResult | null> {
-  const gameId = safeGetRandseedGameId() || roomClientInstance?.allocation?.scope.gameId;
+  const gameId = safeGetRandseedGameId() || cachedRoomAllocation?.scope.gameId;
   if (!gameId || !matchId) return null;
   try {
     return await fetchMatchReplay({

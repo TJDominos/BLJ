@@ -21,6 +21,7 @@ import { TablePlayersSidebar } from '@/components/blackjack/TablePlayersSidebar'
 import { TableSeatButton } from '@/components/blackjack/TableSeatButton';
 import { CurrencyIcon } from '@/components/CurrencyIcon';
 import { useBotBehavior } from '@/hooks/useBotBehavior';
+import { isRandseedRoomConnected } from '@/lib/randseedRuntime';
 
 // Further down, replace the dealer area:
 
@@ -49,7 +50,7 @@ import {
 } from '@/store/uiStore';
 
 export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen }: { onNavigate: (view: 'lobby' | 'create' | 'table' | 'host_table' | 'manage_tables') => boolean | void, onToggleSidebar?: () => void, isSidebarOpen?: boolean }) {
-  const { tables, activeTableId, currentUser, leaveTable, joinTable, placeBet, startGame, hit, stand, doubleDown, split, buyInsurance, gameRecords, unlockTableBalance, refillGameCoins } = useGameStore();
+  const { tables, activeTableId, currentUser, disconnectedPlayerIds, leaveTable, joinTable, placeBet, placeBets, startGame, hit, stand, doubleDown, split, buyInsurance, gameRecords, unlockTableBalance, refillGameCoins } = useGameStore();
 
   const userHostedTables = Object.values(tables).filter(t => t.houseId === currentUser?.id);
   const hasHostedTables = userHostedTables.length > 0;
@@ -100,10 +101,28 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
   const recentWinAmount = useUIStore(selectRecentWinAmount);
   const setRecentWinAmount = uiStore.setRecentWinAmount;
   const [isStatsOpen, setIsStatsOpen] = useState(false);
+  const [pendingSeatIndex, setPendingSeatIndex] = useState<number | null>(null);
+  const [isDealing, setIsDealing] = useState(false);
 
   const table = tables[activeTableId || ''];
   const isSeatDealRevealed = useDealRevealedSeats(table?.status, table?.seats?.length || 7);
-  const mySeats = React.useMemo(() => table?.seats.map((s, i) => s.userId === currentUser?.id ? i : -1).filter(i => i >= 0) || [], [table?.seats?.map(s => s.userId)?.join(), currentUser?.id]);
+  const seatsSignature = React.useMemo(
+    () =>
+      table?.seats
+        .map(
+          (s, idx) =>
+            `${idx}:${s.userId || ''}:${s.isReady ? 1 : 0}:${s.hand?.status || ''}:${s.hand?.cards?.length || 0}:${s.hand?.bet || 0}`
+        )
+        .join('|') || '',
+    [table?.seats]
+  );
+  const mySeats = React.useMemo(
+    () =>
+      table?.seats
+        .map((s, i) => (s.userId === currentUser?.id ? i : -1))
+        .filter((i) => i >= 0) || [],
+    [seatsSignature, currentUser?.id]
+  );
 
   useEffect(() => {
     if (betAmountStr === '0' && table?.settings.tournament?.minBetChips) {
@@ -119,6 +138,8 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
   const seatsContainerRef = React.useRef<HTMLDivElement>(null);
   const isResolvingRef = React.useRef(false);
   const isFirstLoadRef = React.useRef(true);
+  const isPlacingBetRef = React.useRef(false);
+  const seatActionInFlightRef = React.useRef(false);
 
   const isRoundJustSettled = Boolean(
     table &&
@@ -168,7 +189,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
     } else {
       setDealCountdown(null);
     }
-  }, [table?.status, dealCountdown, table?.settings.actionTimeLimit, recentWinAmount, JSON.stringify(table?.seats)]);
+  }, [table?.status, dealCountdown, table?.settings.actionTimeLimit, recentWinAmount, seatsSignature]);
 
   useEffect(() => {
     if (confirmAction !== null) return;
@@ -183,12 +204,21 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
       const timer = setTimeout(() => setDealCountdown(dealCountdown - 1), 1000);
       return () => clearTimeout(timer);
     } else if (dealCountdown === 0 && table?.status === 'waiting') {
-      setDealCountdown(-1);
       const seatedPlayers = table.seats.filter(s => s.userId !== null);
       if (seatedPlayers.length === 0) {
           setDealCountdown(null);
           return;
       }
+
+      const hasSeatedGraceWait =
+        !isRandseedRoomConnected() ||
+        seatedPlayers.some(s => s.userId && disconnectedPlayerIds.includes(s.userId));
+      if (hasSeatedGraceWait) {
+          const timer = setTimeout(() => setDealCountdown(1), 1000);
+          return () => clearTimeout(timer);
+      }
+
+      setDealCountdown(-1);
 
       const runCountdownDeal = async () => {
         const myNotReady = mySeats.filter(sIdx => !table.seats[sIdx].isReady);
@@ -198,9 +228,10 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
           const desiredBet = parseInt(betAmountStr.replace(/,/g, '') || '0', 10) || minBet;
           const perSeatBet = Math.min(userAllowance, Math.max(minBet, desiredBet));
           if (perSeatBet > 0) {
-            await Promise.all(
-              myNotReady.map(sIdx => placeBet(table.id, sIdx, perSeatBet, { pair: 0, twentyOnePlusThree: 0 }).catch(() => {}))
-            );
+            await placeBets(table.id, myNotReady, perSeatBet, {
+              pair: 0,
+              twentyOnePlusThree: 0,
+            }).catch(() => {});
           }
         }
         if (table.houseId === 'system' || table.houseId === currentUser?.id) {
@@ -209,7 +240,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
       };
       runCountdownDeal();
     }
-  }, [dealCountdown, table?.id, table?.status, JSON.stringify(table?.seats), table?.settings.actionTimeLimit, mySeats, placeBet, startGame, table?.houseId, currentUser?.id, confirmAction, betAmountStr]);
+  }, [dealCountdown, table?.id, table?.status, seatsSignature, table?.settings.actionTimeLimit, mySeats, placeBets, startGame, table?.houseId, currentUser?.id, confirmAction, betAmountStr, disconnectedPlayerIds]);
 
   const scrollSeats = (dir: 'left' | 'right') => {
     if (seatsContainerRef.current) {
@@ -313,7 +344,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
     }
     previousStatus.current = table?.status;
     previousRoundsPlayed.current = table?.roundsPlayed;
-  }, [table?.status, table?.id, table?.roundsPlayed, JSON.stringify(table?.seats), gameRecords]);
+  }, [table?.status, table?.id, table?.roundsPlayed, seatsSignature, gameRecords]);
 
   useEffect(() => {
     if (table) {
@@ -350,7 +381,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
     } else {
       setActionCountdown(null);
     }
-  }, [table?.status, table?.currentTurnIndex, table?.settings.actionTimeLimit, currentUser?.id, JSON.stringify(table?.seats)]);
+  }, [table?.status, table?.currentTurnIndex, table?.settings.actionTimeLimit, currentUser?.id, seatsSignature]);
 
   useBotBehavior(table, hit, stand);
 
@@ -374,7 +405,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
       const timer = setTimeout(() => setActionCountdown(actionCountdown - 1), 1000);
       return () => clearTimeout(timer);
     }
-  }, [actionCountdown, isActiveTurnDealRevealed, table?.status, table?.id, table?.currentTurnIndex, currentUser?.id, JSON.stringify(table?.seats)]);
+  }, [actionCountdown, isActiveTurnDealRevealed, table?.status, table?.id, table?.currentTurnIndex, currentUser?.id, seatsSignature]);
 
   const prevActionSnapshot = React.useRef('');
   useEffect(() => {
@@ -390,7 +421,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
     } else if (!isTurn) {
         prevActionSnapshot.current = '';
     }
-  }, [table?.status, table?.currentTurnIndex, isActiveTurnDealRevealed, JSON.stringify(table?.seats), currentUser?.id]);
+  }, [table?.status, table?.currentTurnIndex, isActiveTurnDealRevealed, seatsSignature, currentUser?.id]);
 
   if (!table || !currentUser) {
     return (
@@ -431,7 +462,19 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
     : ((parseInt(betAmountStr.replace(/,/g, '') || '0') + sideBetsTotalStr) * mySeats.length);
 
   const toggleSeatSelection = async (seatIndex: number) => {
-    if (table.status !== 'waiting') return;
+    if (seatActionInFlightRef.current) return;
+    if (table.status !== 'waiting') {
+      setConfirmAction({
+        title: table.status === 'playing' ? 'Round in Progress' : 'Table Unavailable',
+        message:
+          table.status === 'playing'
+            ? 'A hand is currently being played. Please wait for this round to finish.'
+            : `Cannot join seats while table is ${table.status}.`,
+        confirmText: 'OK',
+        onConfirm: () => {}
+      });
+      return;
+    }
     // Requirement 6: For tournament, once a player is seated, they cannot leave or change their seat
     if (mySeats.length > 0) return;
 
@@ -443,15 +486,21 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
        const userBal = table.userBalances?.[currentUser.id]?.balance || 0;
        if (table.settings.mode === 'tournament') {
            if (userBal > 0) {
+               seatActionInFlightRef.current = true;
+               setPendingSeatIndex(seatIndex);
                try {
-                 await joinTable(table.id, seatIndex);
-               } catch (err: any) {
-                 setConfirmAction({
-                   title: "Cannot Join Seat",
-                   message: err?.message || "Unable to join tournament seat.",
-                   confirmText: "OK",
-                   onConfirm: () => setConfirmAction(null)
-                 });
+                 const res = await joinTable(table.id, seatIndex);
+                 if (res && !res.ok) {
+                   setConfirmAction({
+                     title: "Cannot Join Seat",
+                     message: res.error || "Unable to join tournament seat.",
+                     confirmText: "OK",
+                     onConfirm: () => {}
+                   });
+                 }
+               } finally {
+                 seatActionInFlightRef.current = false;
+                 setPendingSeatIndex(null);
                }
            } else {
                const ticketPriceCoins = table.settings.tournament?.ticketPrice || 100;
@@ -492,18 +541,40 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                  ),
                  confirmText: !canAffordTicket ? "Claim 5,000 Game Coins & Buy Ticket" : "Buy Ticket & Sit",
                  onConfirm: async () => {
+                   seatActionInFlightRef.current = true;
+                   setPendingSeatIndex(seatIndex);
                    try {
                      if (!canAffordTicket) {
-                       await refillGameCoins(table.id);
+                       const refillRes = await refillGameCoins(table.id);
+                       if (refillRes && !refillRes.ok) {
+                         setConfirmAction({
+                           title: "Refill Failed",
+                           message: refillRes.error || "Unable to claim Game Coins refill right now.",
+                           confirmText: "OK",
+                           onConfirm: () => {}
+                         });
+                         return;
+                       }
                      }
-                     await joinTable(table.id, seatIndex);
+                     const joinRes = await joinTable(table.id, seatIndex);
+                     if (joinRes && !joinRes.ok) {
+                       setConfirmAction({
+                         title: "Ticket Purchase Failed",
+                         message: joinRes.error || "Insufficient Game Coins to purchase tournament ticket.",
+                         confirmText: "OK",
+                         onConfirm: () => {}
+                       });
+                     }
                    } catch (err: any) {
                      setConfirmAction({
                        title: "Ticket Purchase Failed",
                        message: err?.message || "Insufficient Game Coins to purchase tournament ticket.",
                        confirmText: "OK",
-                       onConfirm: () => setConfirmAction(null)
+                       onConfirm: () => {}
                      });
+                   } finally {
+                     seatActionInFlightRef.current = false;
+                     setPendingSeatIndex(null);
                    }
                  }
                });
@@ -537,19 +608,34 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
     const canAfford = myUserBal >= totalBet;
 
     if (amount >= effectiveMinBet && amount > 0 && canAfford) {
+      if (isPlacingBetRef.current) return;
       try {
-        for (const seatIndex of mySeats) {
-          await placeBet(table.id, seatIndex, amount, { pair: pairAmt, twentyOnePlusThree: plus3Amt });
+        isPlacingBetRef.current = true;
+        setIsDealing(true);
+        const betRes = await placeBets(table.id, mySeats, amount, {
+          pair: pairAmt,
+          twentyOnePlusThree: plus3Amt,
+        });
+        if (betRes && !betRes.ok) {
+          setConfirmAction({
+            title: "Cannot Place Bet",
+            message: betRes.error || "Unable to place bet right now.",
+            confirmText: "OK",
+            onConfirm: () => {}
+          });
         }
       } catch (err: any) {
         console.warn("Could not place bet:", err);
+      } finally {
+        isPlacingBetRef.current = false;
+        setIsDealing(false);
       }
     } else {
       setConfirmAction({
         title: "Invalid Bet",
         message: `Minimum bet is ${effectiveMinBet} (Total required: ${totalBet}, Locked Allowance: ${myUserBal}). Skipping rounds is not allowed in tournaments.`,
         confirmText: "OK",
-        onConfirm: () => setConfirmAction(null)
+        onConfirm: () => {}
       });
     }
   };
@@ -1351,7 +1437,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
 
                      {/* If hand exists, render cards and score */}
                      {seat.hand && (
-                       <div className={cn("flex flex-col items-center justify-end transition-opacity relative z-20 w-full mb-0 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.72] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom", (table.status === "waiting" && !recentWinAmount && !isResolvingRef.current) && "opacity-20")}>
+                       <div className={cn("flex flex-col items-center justify-end transition-opacity relative z-20 w-full mb-0 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.72] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom", table.status === "waiting" && "pointer-events-none", (table.status === "waiting" && !recentWinAmount && !isResolvingRef.current) && "opacity-20")}>
                           <div className="flex flex-row items-center gap-1.5 z-30 w-full justify-center mb-1.5 sm:mb-2 pointer-events-none relative">
                             <motion.span 
                               key="score"
@@ -1485,6 +1571,8 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                         dealCountdown={dealCountdown}
                         actionCountdown={isThisSeatTurn && seatDealRevealed ? actionCountdown : null}
                         shakeSeats={shakeSeats}
+                        isPending={pendingSeatIndex === seatIdx}
+                        isDisconnected={Boolean(seat.userId && disconnectedPlayerIds.includes(seat.userId))}
                         onClick={() => toggleSeatSelection(seatIdx)}
                       />
                    </div>
@@ -1535,6 +1623,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
               onPlus3Minus={handlePlus3Minus}
               onPlus3Plus={handlePlus3Plus}
               onDeal={handleStartGame}
+              isDealing={isDealing}
               dealCountdown={dealCountdown}
               isTournament={true}
               onSideBetsToggle={() => setSideBetsEnabled(!sideBetsEnabled)}

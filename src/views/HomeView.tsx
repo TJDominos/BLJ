@@ -44,6 +44,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
   const {
     tables,
     currentUser,
+    isGameOwner,
     onlinePlayers,
     createTable,
     gameRecords,
@@ -95,12 +96,13 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
       });
     }
 
-    // Also ensure any seated player on active tables is represented with their real seat data
+    // Enrich connected or 10s-grace seated human players with their current table seat info
     for (const t of Object.values(tables)) {
       if (t.status === 'closed' || t.status === 'closing') continue;
       for (const s of t.seats) {
-        if (!s.userId) continue;
+        if (!s.userId || s.userId.startsWith('bot_')) continue;
         const existing = map.get(s.userId);
+        if (!existing && onlinePlayers.length > 0) continue;
         const isMe = s.userId === currentUser?.id;
         map.set(s.userId, {
           userId: s.userId,
@@ -125,8 +127,8 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     return Array.from(map.values());
   }, [onlinePlayers, tables, currentUser]);
 
-  // Creator perspective is enabled by default (Platform SDK also provides creator identity)
-  const isCreator = true;
+  // Report is hidden by default and only displayed once server confirms the player is the game owner
+  const isCreator = Boolean(isGameOwner);
 
   const [showStatsModal, setShowStatsModal] = useState(false);
   const [showCreatorAuthModal, setShowCreatorAuthModal] = useState(false);
@@ -184,10 +186,24 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     setIsLoadingStats(true);
     setStatsError(null);
     try {
-      const statsData = getRuntimeGameStats();
-      setServerStats(statsData);
+      const statsUrl = new URL('./api/stats', window.location.href).href;
+      const res = await fetch(statsUrl, {
+        method: 'GET',
+        credentials: 'same-origin',
+        cache: 'no-store',
+      });
+      if (res.ok) {
+        const statsData = await res.json();
+        setServerStats(statsData);
+        return;
+      }
+      setServerStats(getRuntimeGameStats());
     } catch (err: any) {
-      setStatsError(err?.message || 'Failed to load game statistics');
+      try {
+        setServerStats(getRuntimeGameStats());
+      } catch {
+        setStatsError(err?.message || 'Failed to load game statistics');
+      }
     } finally {
       setIsLoadingStats(false);
     }
@@ -874,51 +890,89 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
 
             {/* Tables List (Scrollbars hidden) */}
             <div className="lg:flex-1 lg:min-h-0 lg:overflow-y-auto space-y-3 sm:space-y-4 hide-scrollbar-custom">
-              {roomStatus === 'error' || roomStatus === 'closed' ? (
-                <div className="rounded-2xl p-6 sm:p-8 border border-rose-500/35 bg-[#141b17] text-center space-y-4">
-                  <div className="w-11 h-11 rounded-full bg-rose-500/15 border border-rose-500/30 flex items-center justify-center mx-auto">
-                    <AlertCircle className="w-5 h-5 text-rose-400" />
+              {Object.keys(tables).length === 0 ? (
+                roomStatus === 'error' || roomStatus === 'closed' ? (
+                  <div className="rounded-2xl p-6 sm:p-8 border border-rose-500/35 bg-[#141b17] text-center space-y-4">
+                    <div className="w-11 h-11 rounded-full bg-rose-500/15 border border-rose-500/30 flex items-center justify-center mx-auto">
+                      <AlertCircle className="w-5 h-5 text-rose-400" />
+                    </div>
+                    <div className="space-y-1">
+                      <h3 className="text-base sm:text-lg font-bold text-white">Room Connection Failed</h3>
+                      <p className="text-xs sm:text-sm text-slate-300 max-w-md mx-auto">
+                        {roomError || 'Disconnected from the online multiplayer room server.'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => reconnectRoom()}
+                      className="px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold text-[#090d0b] bg-[#e5c158] hover:bg-[#f5d97e] transition-colors inline-flex items-center gap-2 cursor-pointer"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      <span>Retry Room Connection</span>
+                    </button>
                   </div>
-                  <div className="space-y-1">
-                    <h3 className="text-base sm:text-lg font-bold text-white">Room Connection Failed</h3>
-                    <p className="text-xs sm:text-sm text-slate-300 max-w-md mx-auto">
-                      {roomError || 'Disconnected from the online multiplayer room server.'}
+                ) : (
+                  <div className="rounded-2xl p-6 sm:p-8 border border-[#c6a364]/30 bg-[#141b17] text-center space-y-3">
+                    <Loader2 className="w-7 h-7 animate-spin text-emerald-400 mx-auto" />
+                    <h3 className="text-base sm:text-lg font-bold text-white">
+                      {roomStatus === 'reconnecting'
+                        ? 'Reconnecting to Online Room...'
+                        : roomStatus === 'matching'
+                        ? 'Matching Online Room...'
+                        : 'Connecting to Online Room...'}
+                    </h3>
+                    <p className="text-xs sm:text-sm text-slate-400">
+                      Waiting for authoritative RoomClient match & snapshot...
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => reconnectRoom()}
-                    className="px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold text-[#090d0b] bg-[#e5c158] hover:bg-[#f5d97e] transition-colors inline-flex items-center gap-2 cursor-pointer"
-                  >
-                    <RefreshCw className="w-4 h-4" />
-                    <span>Retry Room Connection</span>
-                  </button>
-                </div>
-              ) : roomStatus !== 'connected' || Object.keys(tables).length === 0 ? (
-                <div className="rounded-2xl p-6 sm:p-8 border border-[#c6a364]/30 bg-[#141b17] text-center space-y-3">
-                  <Loader2 className="w-7 h-7 animate-spin text-emerald-400 mx-auto" />
-                  <h3 className="text-base sm:text-lg font-bold text-white">
-                    {roomStatus === 'reconnecting'
-                      ? 'Reconnecting to Online Room...'
-                      : roomStatus === 'matching'
-                      ? 'Matching Online Room...'
-                      : 'Connecting to Online Room...'}
-                  </h3>
-                  <p className="text-xs sm:text-sm text-slate-400">
-                    Waiting for authoritative RoomClient match & snapshot...
-                  </p>
-                </div>
-              ) : filteredRooms.length === 0 ? (
-                <div className="rounded-2xl p-6 sm:p-8 border border-white/10 bg-[#141b17] text-center space-y-2">
-                  <h3 className="text-base font-bold text-white">
-                    No Active {roomFilter === 'tournament' ? 'Tournament' : 'Regular'} Tables
-                  </h3>
-                  <p className="text-xs sm:text-sm text-slate-400">
-                    Click &ldquo;+ Custom Table&rdquo; above to host a new online table.
-                  </p>
-                </div>
+                )
               ) : (
-                filteredRooms.map((room) => {
+                <>
+                  {(roomStatus === 'error' || roomStatus === 'closed') && (
+                    <div className="rounded-xl px-4 py-3 border border-rose-500/35 bg-[#1a1314] flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                        <p className="text-xs sm:text-sm text-slate-200 truncate">
+                          {roomError || 'Disconnected from the online multiplayer room server.'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => reconnectRoom()}
+                        className="px-3.5 py-1.5 rounded-lg text-xs font-bold text-[#090d0b] bg-[#e5c158] hover:bg-[#f5d97e] transition-colors inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Retry Connection</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {(roomStatus === 'reconnecting' || roomStatus === 'matching' || roomStatus === 'connecting') && (
+                    <div className="rounded-xl px-4 py-2.5 border border-[#c6a364]/30 bg-[#141b17] flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Loader2 className="w-4 h-4 animate-spin text-emerald-400 shrink-0" />
+                        <span className="text-xs sm:text-sm text-slate-200 truncate">
+                          {roomStatus === 'reconnecting'
+                            ? 'Reconnecting to Online Room...'
+                            : roomStatus === 'matching'
+                            ? 'Matching Online Room...'
+                            : 'Connecting to Online Room...'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {filteredRooms.length === 0 ? (
+                    <div className="rounded-2xl p-6 sm:p-8 border border-white/10 bg-[#141b17] text-center space-y-2">
+                      <h3 className="text-base font-bold text-white">
+                        No Active {roomFilter === 'tournament' ? 'Tournament' : 'Regular'} Tables
+                      </h3>
+                      <p className="text-xs sm:text-sm text-slate-400">
+                        Click &ldquo;+ Custom Table&rdquo; above to host a new online table.
+                      </p>
+                    </div>
+                  ) : (
+                    filteredRooms.map((room) => {
                 const isTournament = room.settings.mode === 'tournament';
                 const isSystemTable = room.houseId === 'system';
                 const occupiedSeats = room.seats.filter(s => s.userId !== null).length;
@@ -1047,6 +1101,8 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                   </div>
                 );
               }))}
+                </>
+              )}
             </div>
           </div>
         </main>

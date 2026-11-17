@@ -229,6 +229,10 @@ export interface GameServer<TState = unknown, TInput = unknown, TCommand = unkno
     state: TState,
     players?: readonly string[],
   ): Promise<CommandResult<TState>> | CommandResult<TState>;
+  derivePlayerViews?(
+    state: TState,
+    players?: readonly string[],
+  ): Record<string, JsonValue>;
 }
 
 export interface PlatformSqlResponse {
