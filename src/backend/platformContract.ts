@@ -196,6 +196,7 @@ function projectSingleSubTablePublic(
     roundsPlayed: ct.roundsPlayed,
     deckRemainingCount: Array.isArray(ct.deck) ? ct.deck.length : 312,
     discardCount: ct.discardCount || 0,
+    shuffleSeq: ct.shuffleSeq || 0,
     dealerHand: sanitizedDealer,
     seats: publicSeats,
     balances: ct.balances || {},
@@ -263,6 +264,7 @@ export function projectBlackjackRoomState(state: RoyalBlackjackRoomState): State
   const publicState = {
     matchId: state.matchId,
     matchSeq: state.matchSeq,
+    viewRev: state.viewRev || 0,
     mode: state.mode,
     winningRule: state.winningRule,
     order: state.order,
@@ -282,6 +284,7 @@ export function projectBlackjackRoomState(state: RoyalBlackjackRoomState): State
     totalRefillsCount: state.totalRefillsCount || 0,
     deckRemainingCount: state.deck.length,
     discardCount: state.discardCount,
+    shuffleSeq: state.shuffleSeq || 0,
     dealerHand: sanitizedDealer,
     seats: publicSeats,
     balances: state.balances,
@@ -344,6 +347,7 @@ export function projectBlackjackRoomState(state: RoyalBlackjackRoomState): State
       mySeats,
       unlockedTableIds: state.unlockedTablesByPlayer?.[pid] || [],
       ownedTableCodes,
+      recentActionOutcomes: state.recentClientActionOutcomes?.[pid] || [],
     };
   }
 

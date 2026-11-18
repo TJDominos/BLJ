@@ -70,7 +70,12 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     [tables, currentUser?.id]
   );
 
-  // Real online players list enriched with current table info
+  const [headerAvatarError, setHeaderAvatarError] = useState(false);
+  React.useEffect(() => {
+    setHeaderAvatarError(false);
+  }, [currentUser?.avatar]);
+
+  // Real online players list enriched with current table info & SDK profile fields
   const realOnlineList = useMemo(() => {
     const map = new Map<
       string,
@@ -78,6 +83,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
         userId: string;
         name: string;
         avatar?: string;
+        isGameCreator?: boolean;
         tableId?: string;
         tableName?: string;
         isPlaying?: boolean;
@@ -86,10 +92,12 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
 
     for (const p of onlinePlayers) {
       if (!p.userId) continue;
+      const isMe = p.userId === currentUser?.id;
       map.set(p.userId, {
         userId: p.userId,
-        name: p.userId === currentUser?.id ? (currentUser.name || p.name) : p.name,
-        avatar: p.userId === currentUser?.id ? (currentUser.avatar || p.avatar) : p.avatar,
+        name: isMe ? (currentUser.name || p.name) : p.name,
+        avatar: isMe ? (currentUser.avatar || p.avatar) : p.avatar,
+        isGameCreator: isMe ? Boolean(isGameOwner || p.isGameCreator) : Boolean(p.isGameCreator),
         tableId: p.tableId,
         tableName: p.tableName,
         isPlaying: p.isPlaying,
@@ -108,6 +116,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
           userId: s.userId,
           name: isMe ? (currentUser?.name || s.name || 'Player') : (existing?.name || s.name || s.userId.substring(0, 12)),
           avatar: isMe ? (currentUser?.avatar || s.avatar) : (existing?.avatar || s.avatar),
+          isGameCreator: isMe ? Boolean(isGameOwner || existing?.isGameCreator) : Boolean(existing?.isGameCreator),
           tableId: t.id,
           tableName: t.name,
           isPlaying: Boolean(s.hand) || t.status === 'playing',
@@ -120,14 +129,15 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
         userId: currentUser.id,
         name: currentUser.name,
         avatar: currentUser.avatar,
+        isGameCreator: Boolean(isGameOwner),
         isPlaying: false,
       });
     }
 
     return Array.from(map.values());
-  }, [onlinePlayers, tables, currentUser]);
+  }, [onlinePlayers, tables, currentUser, isGameOwner]);
 
-  // Report is hidden by default and only displayed once server confirms the player is the game owner
+  // Report is hidden by default and only displayed once SDK/server confirms the player is the game owner
   const isCreator = Boolean(isGameOwner);
 
   const [showStatsModal, setShowStatsModal] = useState(false);
@@ -330,12 +340,42 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
             </span>
           </div>
 
-          {/* Right Controls: Game Coins Balance + My Stats + Game Stats */}
-          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+          {/* Right Controls: Player Identity (Avatar + Name + Owner) + Game Coins Balance + My Stats + Report */}
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0 min-w-0">
             {currentUser && (
-              <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm bg-black/45 border border-white/10 rounded-full px-2.5 sm:px-4 py-1.5 sm:py-2 tabular-nums">
+              <div
+                onClick={() => setShowMyStatsModal(true)}
+                title={`${currentUser.name}${isCreator ? ' · Game Owner' : ''} (Click for My Stats)`}
+                className="flex items-center gap-2 bg-black/45 hover:bg-black/65 border border-white/10 hover:border-[#d4af37]/40 rounded-full pl-1.5 pr-2.5 sm:pr-3 py-1 transition-colors cursor-pointer max-w-[160px] sm:max-w-[230px]"
+              >
+                <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-full bg-gradient-to-br from-[#126b6f] to-[#0a3e40] border border-[#d4af37]/50 overflow-hidden flex items-center justify-center text-white font-bold text-xs shrink-0">
+                  {currentUser.avatar && !headerAvatarError ? (
+                    <img
+                      src={currentUser.avatar}
+                      alt={currentUser.name}
+                      onError={() => setHeaderAvatarError(true)}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    (currentUser.name || 'P').charAt(0).toUpperCase()
+                  )}
+                </div>
+                <span className="text-xs sm:text-sm font-semibold text-white truncate hidden xs:inline sm:inline">
+                  {currentUser.name}
+                </span>
+                {isCreator && (
+                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-[#d4af37]/20 border border-[#d4af37]/45 text-[#ffd86b] text-[10px] font-bold uppercase tracking-wider shrink-0">
+                    <Crown className="w-2.5 h-2.5 shrink-0" />
+                    <span className="hidden md:inline">Owner</span>
+                  </span>
+                )}
+              </div>
+            )}
+
+            {currentUser && (
+              <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm bg-black/45 border border-white/10 rounded-full px-2.5 sm:px-3.5 py-1.5 sm:py-2 tabular-nums">
                 <CurrencyIcon currency="Chip" className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-                <span className="text-slate-300 hidden md:inline">Coins</span>
+                <span className="text-slate-300 hidden lg:inline">Coins</span>
                 <span className="text-xs sm:text-base font-mono font-bold text-[#ffc53d]">
                   {currentUser.balance.toLocaleString()}
                 </span>
@@ -362,7 +402,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 className="flex items-center gap-1 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold text-[#ffd86b] bg-[#d4af37]/15 hover:bg-[#d4af37]/25 border border-[#d4af37]/40 transition-colors whitespace-nowrap cursor-pointer min-h-[36px]"
               >
                 <User className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#ffd86b] shrink-0" />
-                <span className="hidden sm:inline">My </span>
+                <span className="hidden md:inline">My </span>
                 <span>Stats</span>
               </button>
 
@@ -581,6 +621,12 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                               <div className="min-w-0">
                                 <div className="text-sm font-bold text-white truncate flex items-center gap-1.5">
                                   <span className="truncate">{player.name}</span>
+                                  {player.isGameCreator && (
+                                    <span className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-[#d4af37]/20 border border-[#d4af37]/40 text-[#ffd86b] font-mono shrink-0">
+                                      <Crown className="w-2.5 h-2.5 shrink-0" />
+                                      <span>Owner</span>
+                                    </span>
+                                  )}
                                   {isMe && (
                                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono shrink-0">
                                       You
@@ -947,16 +993,12 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                     </div>
                   )}
 
-                  {(roomStatus === 'reconnecting' || roomStatus === 'matching' || roomStatus === 'connecting') && (
+                  {roomStatus === 'reconnecting' && (
                     <div className="rounded-xl px-4 py-2.5 border border-[#c6a364]/30 bg-[#141b17] flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2.5 min-w-0">
                         <Loader2 className="w-4 h-4 animate-spin text-emerald-400 shrink-0" />
                         <span className="text-xs sm:text-sm text-slate-200 truncate">
-                          {roomStatus === 'reconnecting'
-                            ? 'Reconnecting to Online Room...'
-                            : roomStatus === 'matching'
-                            ? 'Matching Online Room...'
-                            : 'Connecting to Online Room...'}
+                          Reconnecting to Online Room...
                         </span>
                       </div>
                     </div>
@@ -1022,6 +1064,23 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                                 ? ` · ${room.settings.tableCode}`
                                 : ''}
                             </span>
+                          </span>
+                        )}
+
+                        {!isSystemTable && (room.houseName || room.houseAvatar) && (
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/[0.04] border border-white/10 text-xs text-slate-300 shrink-0 max-w-[180px]">
+                            {room.houseAvatar ? (
+                              <img
+                                src={room.houseAvatar}
+                                alt={room.houseName || 'Host'}
+                                className="w-4 h-4 rounded-full object-cover shrink-0"
+                              />
+                            ) : (
+                              <span className="w-4 h-4 rounded-full bg-[#126b6f] text-white text-[9px] font-bold flex items-center justify-center shrink-0">
+                                {(room.houseName || 'H').charAt(0).toUpperCase()}
+                              </span>
+                            )}
+                            <span className="truncate">{room.houseName || 'Host'}</span>
                           </span>
                         )}
                       </div>

@@ -7,6 +7,7 @@ import {
   initRandseedRuntime,
   onRandseedRoomStatusChange,
   getRandseedOnlinePlayers,
+  getRandseedCurrentPlayerProfile,
   isRandseedRoomConnected,
   getRandseedRoomStatus,
   getRandseedRoomError,
@@ -151,6 +152,7 @@ export interface Table {
   dealerHand: Hand | null;
   deck: PlayingCard[];
   discardCount: number;
+  shuffleSeq?: number;
   discardedCards: PlayingCard[];
   currentTurnIndex: number; // -1 for dealer, 0..maxSeats-1 for players
   roundsPlayed: number;
@@ -249,6 +251,7 @@ export interface OnlinePlayerEntry {
   userId: string;
   name: string;
   avatar?: string;
+  isGameCreator?: boolean;
   joinedAt?: number;
   tableId?: string;
   tableName?: string;
@@ -1028,7 +1031,12 @@ function mapRoomStateToTable(
         ? CACHED_MASKED_DECK.slice(0, Math.max(0, deckCount))
         : Array.from({ length: Math.max(0, deckCount) }, () => MASKED_CARD),
     discardCount: Number(roomState.discardCount) || 0,
-    discardedCards: existing?.discardedCards || [],
+    shuffleSeq:
+      typeof roomState.shuffleSeq === 'number'
+        ? roomState.shuffleSeq
+        : existing?.shuffleSeq ?? 0,
+    discardedCards:
+      Number(roomState.discardCount || 0) === 0 ? [] : existing?.discardedCards || [],
     currentTurnIndex:
       roomState.phase === 'playing'
         ? Number(roomState.currentTurnSeatIndex ?? -1)
@@ -1195,12 +1203,18 @@ function buildOnlinePlayersList(
     if (!uid || uid.startsWith('bot_')) continue;
     const isMe = currentUser?.id === uid;
     const tableInfo = findPlayerTableInfo(uid);
+    const sdkDisplayName =
+      typeof rp.displayName === 'string' && rp.displayName.trim() ? rp.displayName.trim() : '';
+    const sdkAvatarUrl =
+      typeof rp.avatarUrl === 'string' && rp.avatarUrl.trim() ? rp.avatarUrl.trim() : '';
     const resolvedName =
+      sdkDisplayName ||
       (isMe && currentUser?.name && currentUser.name !== 'Player' ? currentUser.name : '') ||
       (stateNames[uid] && stateNames[uid] !== uid ? stateNames[uid] : '') ||
       tableInfo?.seatName ||
       formatOpaquePlayerId(uid);
     const resolvedAvatar =
+      sdkAvatarUrl ||
       (isMe ? currentUser?.avatar : undefined) ||
       stateAvatars[uid] ||
       tableInfo?.seatAvatar ||
@@ -1210,6 +1224,7 @@ function buildOnlinePlayersList(
       userId: uid,
       name: resolvedName,
       avatar: resolvedAvatar,
+      isGameCreator: rp.isGameCreator === true,
       joinedAt: rp.joinedAt,
       tableId: tableInfo?.tableId,
       tableName: tableInfo?.tableName,
@@ -1415,6 +1430,8 @@ interface GameStore {
 }
 
 export const useGameStore = create<GameStore>((set, get) => {
+  let lastAppliedRoomSnapshotSig = '';
+
   const applyOnlineRoomSnapshot = (
     rawRoomState: Record<string, any>,
     allocation?: { roomId: string; playerId: string },
@@ -1436,6 +1453,22 @@ export const useGameStore = create<GameStore>((set, get) => {
         ? { ...roomState.playerAvatars }
         : {};
 
+    // Merge trusted public display profiles (`displayName`, `avatarUrl`, `isGameCreator`) from @randseed/game-sdk@0.8.0
+    const sdkRosterById = new Map<string, RoomPlayer>();
+    if (Array.isArray(sdkPlayers)) {
+      for (const rp of sdkPlayers) {
+        if (!rp || typeof rp.playerId !== 'string' || !rp.playerId.trim()) continue;
+        const pid = rp.playerId.trim();
+        sdkRosterById.set(pid, rp);
+        if (typeof rp.displayName === 'string' && rp.displayName.trim()) {
+          roomState.playerNames[pid] = rp.displayName.trim();
+        }
+        if (typeof rp.avatarUrl === 'string' && rp.avatarUrl.trim()) {
+          roomState.playerAvatars[pid] = rp.avatarUrl.trim();
+        }
+      }
+    }
+
     latestOnlineRoomState = roomState;
     if (allocation?.roomId) {
       latestOnlineRoomId = allocation.roomId;
@@ -1452,7 +1485,49 @@ export const useGameStore = create<GameStore>((set, get) => {
       return;
     }
 
+    const myRosterProfile =
+      sdkRosterById.get(resolvedId) || getRandseedCurrentPlayerProfile(resolvedId);
+    const confirmedOwner = Boolean(
+      get().isGameOwner ||
+        myRosterProfile?.isGameCreator === true ||
+        roomState._privateState?.isGameOwner === true
+    );
+
+    const viewRev = Number(roomState.viewRev || 0);
+    if (viewRev > 0 && get().roomStatus === 'connected' && current?.id === resolvedId) {
+      const rosterSig = Array.isArray(sdkPlayers)
+        ? sdkPlayers
+            .map(
+              (rp) =>
+                `${rp.playerId}:${rp.displayName ?? ''}:${rp.avatarUrl ?? ''}:${
+                  rp.isGameCreator === true ? '1' : '0'
+                }`
+            )
+            .join(',')
+        : '';
+      const disconnectedSig = Array.isArray(roomState.disconnectedPlayerIds)
+        ? roomState.disconnectedPlayerIds.join(',')
+        : '';
+      const snapSig = `${roomState.matchId ?? ''}:${roomState.matchSeq ?? 0}:${viewRev}:${resolvedId}:${confirmedOwner ? '1' : '0'}:${rosterSig}:${disconnectedSig}`;
+      if (snapSig === lastAppliedRoomSnapshotSig) {
+        return;
+      }
+      lastAppliedRoomSnapshotSig = snapSig;
+    } else {
+      lastAppliedRoomSnapshotSig = '';
+    }
+
+    const sdkMyName =
+      typeof myRosterProfile?.displayName === 'string' && myRosterProfile.displayName.trim()
+        ? myRosterProfile.displayName.trim()
+        : '';
+    const sdkMyAvatar =
+      typeof myRosterProfile?.avatarUrl === 'string' && myRosterProfile.avatarUrl.trim()
+        ? myRosterProfile.avatarUrl.trim()
+        : '';
+
     const resolvedName =
+      sdkMyName ||
       (roomState.playerNames?.[resolvedId] && roomState.playerNames[resolvedId] !== resolvedId
         ? roomState.playerNames[resolvedId]
         : '') ||
@@ -1460,6 +1535,7 @@ export const useGameStore = create<GameStore>((set, get) => {
       formatOpaquePlayerId(resolvedId);
 
     const resolvedAvatar =
+      sdkMyAvatar ||
       roomState.playerAvatars?.[resolvedId] ||
       current?.avatar ||
       undefined;
@@ -1478,9 +1554,6 @@ export const useGameStore = create<GameStore>((set, get) => {
         ? balMap[resolvedId]
         : current?.balance ?? DEFAULT_GAME_COINS;
 
-    const confirmedOwner = Boolean(
-      get().isGameOwner || roomState._privateState?.isGameOwner === true
-    );
     const syncedUser: User = {
       id: resolvedId,
       name: resolvedName,
@@ -1593,20 +1666,95 @@ export const useGameStore = create<GameStore>((set, get) => {
         applyOnlineRoomSnapshot(roomState, allocation, players);
       },
       (players) => {
-        set((state) => ({
-          onlinePlayers: buildOnlinePlayersList(
-            state.tables,
-            state.currentUser,
-            players,
-            latestOnlineRoomState
-          ),
-        }));
+        set((state) => {
+          const profileMap = new Map<string, RoomPlayer>();
+          for (const rp of players) {
+            if (rp && typeof rp.playerId === 'string' && rp.playerId.trim()) {
+              profileMap.set(rp.playerId.trim(), rp);
+            }
+          }
+
+          let nextUser = state.currentUser;
+          let nextOwner = state.isGameOwner;
+          if (nextUser) {
+            const me = profileMap.get(nextUser.id);
+            if (me) {
+              const sdkName =
+                typeof me.displayName === 'string' && me.displayName.trim()
+                  ? me.displayName.trim()
+                  : nextUser.name;
+              const sdkAvatar =
+                typeof me.avatarUrl === 'string' && me.avatarUrl.trim()
+                  ? me.avatarUrl.trim()
+                  : nextUser.avatar;
+              if (me.isGameCreator === true) {
+                nextOwner = true;
+              }
+              nextUser = {
+                ...nextUser,
+                name: sdkName,
+                avatar: sdkAvatar,
+                role: nextOwner ? 'creator' : 'player',
+                isCreator: nextOwner,
+              };
+            }
+          }
+
+          // Also refresh seated player & custom table host profiles immediately on roster change
+          const updatedTables: Record<string, Table> = {};
+          for (const [tid, t] of Object.entries(state.tables)) {
+            const hostEntry = t.houseId && t.houseId !== 'system' ? profileMap.get(t.houseId) : undefined;
+            const nextHouseName =
+              (typeof hostEntry?.displayName === 'string' && hostEntry.displayName.trim()) ||
+              t.houseName;
+            const nextHouseAvatar =
+              (typeof hostEntry?.avatarUrl === 'string' && hostEntry.avatarUrl.trim()) ||
+              t.houseAvatar;
+            const nextSeats = t.seats.map((s) => {
+              if (!s.userId) return s;
+              const pEntry = profileMap.get(s.userId);
+              if (!pEntry) return s;
+              const sName =
+                (typeof pEntry.displayName === 'string' && pEntry.displayName.trim()) || s.name;
+              const sAvatar =
+                (typeof pEntry.avatarUrl === 'string' && pEntry.avatarUrl.trim()) || s.avatar;
+              return sName !== s.name || sAvatar !== s.avatar
+                ? { ...s, name: sName, avatar: sAvatar }
+                : s;
+            });
+            updatedTables[tid] = {
+              ...t,
+              houseName: nextHouseName,
+              houseAvatar: nextHouseAvatar,
+              seats: nextSeats,
+            };
+          }
+
+          return {
+            currentUser: nextUser,
+            isGameOwner: nextOwner,
+            tables: updatedTables,
+            onlinePlayers: buildOnlinePlayersList(
+              updatedTables,
+              nextUser,
+              players,
+              latestOnlineRoomState
+            ),
+          };
+        });
       }
     );
 
     if (res?.allocation) {
-      const syncName = get().currentUser?.name || fallbackName;
-      const syncAvatar = get().currentUser?.avatar || fallbackAvatar;
+      const myProfile = getRandseedCurrentPlayerProfile(res.allocation.playerId);
+      const syncName =
+        (typeof myProfile?.displayName === 'string' && myProfile.displayName.trim()) ||
+        get().currentUser?.name ||
+        fallbackName;
+      const syncAvatar =
+        (typeof myProfile?.avatarUrl === 'string' && myProfile.avatarUrl.trim()) ||
+        get().currentUser?.avatar ||
+        fallbackAvatar;
       if (syncName && syncName !== 'Player' && !syncName.startsWith('Player #')) {
         sendRandseedRoomAction({
           action: 'sync_profile',
@@ -1617,10 +1765,49 @@ export const useGameStore = create<GameStore>((set, get) => {
     }
   };
 
+  const initialBootstrapUser: User = {
+    id: 'connecting_player',
+    name: 'Player',
+    balance: DEFAULT_GAME_COINS,
+    bonusBalance: 0,
+    role: 'player',
+    isCreator: false,
+  };
+
+  const initialBootstrapTable1 = mapRoomStateToTable(
+    {
+      name: 'Table #1',
+      houseId: 'system',
+      mode: 'regular',
+      winningRule: 'standard',
+      order: 'sequential',
+      minBet: 10,
+      maxBet: 500,
+      actionTimeLimitSec: 20,
+      phase: 'betting',
+      isPublic: true,
+      visits: 1,
+      liquidity: 100000,
+      initialLiquidity: 100000,
+      deckRemainingCount: 312,
+      discardCount: 0,
+      roundsPlayed: 0,
+      seats: Array.from({ length: 7 }, (_, seatIndex) => ({
+        seatIndex,
+        playerId: null,
+        isReady: false,
+        hand: null,
+      })),
+      balances: {},
+      walletCoins: {},
+    },
+    'table_1'
+  );
+
   return {
-    currentUser: null,
+    currentUser: initialBootstrapUser,
     isGameOwner: false,
-    tables: {},
+    tables: { table_1: initialBootstrapTable1 },
     activeTableId: null,
     gameRecords: [],
     onlinePlayers: [],
@@ -1677,8 +1864,12 @@ export const useGameStore = create<GameStore>((set, get) => {
             data && (data.isGameOwner === true || data.isCreator === true)
           );
           set((state) => {
+            const sdkSelf = getRandseedCurrentPlayerProfile(state.currentUser?.id);
             const nextOwner = Boolean(
-              apiConfirmedOwner || latestOnlineRoomState?._privateState?.isGameOwner === true
+              state.isGameOwner ||
+                apiConfirmedOwner ||
+                sdkSelf?.isGameCreator === true ||
+                latestOnlineRoomState?._privateState?.isGameOwner === true
             );
             return {
               isGameOwner: nextOwner,
@@ -2166,3 +2357,11 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
   };
 });
+
+// Start matching & connecting to the authoritative room immediately at module load
+// so container warmup runs in parallel with initial React rendering.
+if (typeof window !== 'undefined') {
+  queueMicrotask(() => {
+    useGameStore.getState().login('Player').catch(() => {});
+  });
+}

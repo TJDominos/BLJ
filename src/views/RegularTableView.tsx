@@ -106,9 +106,44 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
   const [isStatsOpen, setIsStatsOpen] = useState(false);
   const [pendingSeatIndex, setPendingSeatIndex] = useState<number | null>(null);
   const [isDealing, setIsDealing] = useState(false);
+  const [holdCardsForShuffle, setHoldCardsForShuffle] = useState(false);
 
   const table = tables[activeTableId || ''];
-  const isSeatDealRevealed = useDealRevealedSeats(table?.status, table?.seats?.length || 7);
+  const previousTableId = React.useRef<string | undefined>(table?.id);
+  const previousShuffleSeq = React.useRef<number | undefined>(table?.shuffleSeq);
+  const shuffleTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previousDeckLength = React.useRef(table?.deck?.length || 0);
+  const previousStatus = React.useRef(table?.status);
+  const previousRoundsPlayed = React.useRef<number | undefined>(table?.roundsPlayed);
+  const seatsContainerRef = React.useRef<HTMLDivElement>(null);
+  const isResolvingRef = React.useRef(false);
+  const isFirstLoadRef = React.useRef(true);
+  const isPlacingBetRef = React.useRef(false);
+  const seatActionInFlightRef = React.useRef(false);
+
+  const isPendingShuffleFrame = Boolean(
+    table &&
+    previousTableId.current === table.id &&
+    ((typeof table.shuffleSeq === 'number' &&
+      previousShuffleSeq.current !== undefined &&
+      table.shuffleSeq > previousShuffleSeq.current) ||
+      (table.shuffleSeq === undefined &&
+        previousDeckLength.current > 0 &&
+        (table.deck?.length || 0) > previousDeckLength.current))
+  );
+  const isPendingNewDealShuffle =
+    isPendingShuffleFrame &&
+    (previousStatus.current !== 'playing' ||
+      (previousRoundsPlayed.current !== undefined &&
+        (table?.roundsPlayed || 0) > previousRoundsPlayed.current));
+  const effectiveIsShuffling = isShuffling || isPendingShuffleFrame;
+  const shouldHoldDealtCards = (isShuffling && holdCardsForShuffle) || isPendingNewDealShuffle;
+
+  const isSeatDealRevealed = useDealRevealedSeats(
+    table?.status,
+    table?.seats?.length || 7,
+    shouldHoldDealtCards
+  );
   const seatsSignature = React.useMemo(
     () =>
       table?.seats
@@ -149,15 +184,6 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
        setBetAmountStr(table.settings.minBet.toString());
     }
   }, [table?.settings.minBet, betAmountStr, setBetAmountStr]);
-
-  const previousDeckLength = React.useRef(table?.deck?.length || 0);
-  const previousStatus = React.useRef(table?.status);
-  const previousRoundsPlayed = React.useRef<number | undefined>(table?.roundsPlayed);
-  const seatsContainerRef = React.useRef<HTMLDivElement>(null);
-  const isResolvingRef = React.useRef(false);
-  const isFirstLoadRef = React.useRef(true);
-  const isPlacingBetRef = React.useRef(false);
-  const seatActionInFlightRef = React.useRef(false);
 
   const isRoundJustSettled = Boolean(
     table &&
@@ -205,7 +231,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
   }, [table?.status, dealCountdown, table?.settings.actionTimeLimit, recentWinAmount, seatsSignature]);
 
   useEffect(() => {
-    if (confirmAction !== null) return;
+    if (confirmAction !== null || effectiveIsShuffling) return;
     
     if (dealCountdown !== null && dealCountdown > 0) {
       const isSeatedNotReady = table?.seats.some(s => s?.userId === currentUser?.id && !s.isReady);
@@ -248,16 +274,16 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
          setDealCountdown(null);
       }
     }
-  }, [dealCountdown, table?.id, table?.status, seatsSignature, table?.settings.actionTimeLimit, mySeats, leaveTable, startGame, table?.houseId, currentUser?.id, confirmAction, disconnectedPlayerIds]);
+  }, [dealCountdown, table?.id, table?.status, seatsSignature, table?.settings.actionTimeLimit, mySeats, leaveTable, startGame, table?.houseId, currentUser?.id, confirmAction, disconnectedPlayerIds, effectiveIsShuffling]);
 
   useEffect(() => {
-    if (autoDeal && table?.status === 'waiting' && mySeats.length > 0 && !isResolvingRef.current && recentWinAmount === null && mySeats.some(sIdx => !table.seats[sIdx].isReady) && !isPlacingBetRef.current) {
+    if (autoDeal && !effectiveIsShuffling && table?.status === 'waiting' && mySeats.length > 0 && !isResolvingRef.current && recentWinAmount === null && mySeats.some(sIdx => !table.seats[sIdx].isReady) && !isPlacingBetRef.current) {
         const timer = setTimeout(() => {
            handleStartGame();
         }, 1200);
         return () => clearTimeout(timer);
     }
-  }, [autoDeal, table?.status, mySeatsKey, recentWinAmount, betAmountStr, sideBetsEnabled, pairBetStr, plus3BetStr]);
+  }, [autoDeal, effectiveIsShuffling, table?.status, mySeatsKey, recentWinAmount, betAmountStr, sideBetsEnabled, pairBetStr, plus3BetStr]);
 
   const scrollSeats = (dir: 'left' | 'right') => {
     if (seatsContainerRef.current) {
@@ -302,21 +328,65 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
   };
 
   useEffect(() => {
-    if (table && table.deck && previousDeckLength.current > 0) {
-      if (table.deck.length > previousDeckLength.current) {
-        soundManager.playShuffle();
-        setIsShuffling(true);
-        setTimeout(() => setIsShuffling(false), 5000);
+    return () => {
+      if (shuffleTimerRef.current) {
+        clearTimeout(shuffleTimerRef.current);
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!table) return;
+    if (previousTableId.current !== table.id) {
+      previousTableId.current = table.id;
+      previousShuffleSeq.current = table.shuffleSeq;
+      previousDeckLength.current = table.deck?.length || 0;
+      if (shuffleTimerRef.current) {
+        clearTimeout(shuffleTimerRef.current);
+        shuffleTimerRef.current = null;
+      }
+      setIsShuffling(false);
+      setHoldCardsForShuffle(false);
+      return;
     }
-    previousDeckLength.current = table?.deck?.length || 0;
-  }, [table?.deck?.length]);
+
+    const seqIncreased =
+      typeof table.shuffleSeq === 'number' &&
+      previousShuffleSeq.current !== undefined &&
+      table.shuffleSeq > previousShuffleSeq.current;
+    const legacyDeckRefilled =
+      table.shuffleSeq === undefined &&
+      previousDeckLength.current > 0 &&
+      (table.deck?.length || 0) > previousDeckLength.current;
+
+    if (seqIncreased || legacyDeckRefilled) {
+      const isNewDealShuffle =
+        previousStatus.current !== 'playing' ||
+        (previousRoundsPlayed.current !== undefined &&
+          (table.roundsPlayed || 0) > previousRoundsPlayed.current);
+      soundManager.playShuffle();
+      setIsShuffling(true);
+      setHoldCardsForShuffle(isNewDealShuffle);
+      if (shuffleTimerRef.current) {
+        clearTimeout(shuffleTimerRef.current);
+      }
+      shuffleTimerRef.current = setTimeout(() => {
+        shuffleTimerRef.current = null;
+        setIsShuffling(false);
+        setHoldCardsForShuffle(false);
+      }, 3200);
+    }
+
+    previousShuffleSeq.current = table.shuffleSeq;
+    previousDeckLength.current = table.deck?.length || 0;
+  }, [table?.id, table?.shuffleSeq, table?.deck?.length]);
 
   useEffect(() => {
     soundManager.setMuted(isMuted);
   }, [isMuted]);
 
   useEffect(() => {
+    if (shouldHoldDealtCards) return;
     const settledNow =
       table &&
       table.status === 'waiting' &&
@@ -361,7 +431,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     }
     previousStatus.current = table?.status;
     previousRoundsPlayed.current = table?.roundsPlayed;
-  }, [table?.status, table?.id, table?.roundsPlayed, seatsSignature, gameRecords]);
+  }, [table?.status, table?.id, table?.roundsPlayed, seatsSignature, gameRecords, shouldHoldDealtCards]);
 
   useEffect(() => {
     if (table) {
@@ -1089,7 +1159,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
       <div className="flex-1 w-full max-w-[1200px] flex flex-col items-center justify-between pb-0 pt-0 mt-0 ml-0 relative min-h-0 overflow-hidden origin-center">
 
 <AnimatePresence>
-             {isShuffling && (
+             {effectiveIsShuffling && (
                <motion.div 
                  initial={{ opacity: 0 }}
                  animate={{ opacity: 1 }}
@@ -1153,7 +1223,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
              name={table.name}
              houseName={table.houseName || (table.houseId === currentUser.id ? currentUser.name : undefined)}
              houseAvatar={table.houseAvatar || (table.houseId === currentUser.id ? currentUser.avatar : undefined)}
-             dealerHand={table.status === 'playing' || recentWinAmount !== null || isResolvingRef.current ? table.dealerHand : null}
+             dealerHand={!shouldHoldDealtCards && (table.status === 'playing' || recentWinAmount !== null || isResolvingRef.current) ? table.dealerHand : null}
              totalSeats={table.seats.length}
              recentWinAmount={recentWinAmount}
              mode={table.settings.mode}
@@ -1373,7 +1443,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
 
 
                      {/* If hand exists, render cards and score */}
-                     {seat.hand && (
+                     {seat.hand && !shouldHoldDealtCards && (
                        <div className={cn("flex flex-col items-center justify-end transition-opacity relative z-20 w-full mb-0 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.72] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom", table.status === "waiting" && "pointer-events-none", (table.status === "waiting" && !recentWinAmount && !isResolvingRef.current) && "opacity-20")}>
                           <div className="flex flex-row items-center gap-1.5 z-30 w-full justify-center mb-1.5 sm:mb-2 pointer-events-none relative">
                             <motion.span 
@@ -1551,7 +1621,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
        </div>
 
                 {/* Bottom Control Overlay (HUD) */}
-         {table.status === 'waiting' && !showRules && !showHistory && !isCommentsOpen && !confirmAction && !isSidebarOpen && !isTablePlayersOpen && !isStatsOpen && table.seats.some(s => s.userId === currentUser.id || s.userId === null) && (
+         {table.status === 'waiting' && !effectiveIsShuffling && !showRules && !showHistory && !isCommentsOpen && !confirmAction && !isSidebarOpen && !isTablePlayersOpen && !isStatsOpen && table.seats.some(s => s.userId === currentUser.id || s.userId === null) && (
             <DealControlHUD 
               table={table}
               mySeats={mySeats}

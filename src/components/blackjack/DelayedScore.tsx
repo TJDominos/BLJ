@@ -46,13 +46,22 @@ export const DelayedScore: React.FC<DelayedScoreProps> = ({ score, cardsLength, 
 
 export function useDealRevealedSeats(
   tableStatus: string | undefined,
-  totalSeats: number
+  totalSeats: number,
+  holdReveal: boolean = false
 ): (seatIdx: number, originalSeatIndex?: number) => boolean {
   const [revealedSeats, setRevealedSeats] = useState<Record<number, boolean>>({});
   const prevStatusRef = React.useRef<string | undefined>(tableStatus);
-  const isJustStartingPlay = tableStatus === 'playing' && prevStatusRef.current !== 'playing';
+  const isJustStartingPlay =
+    holdReveal || (tableStatus === 'playing' && prevStatusRef.current !== 'playing');
 
   useEffect(() => {
+    if (holdReveal) {
+      if (tableStatus === 'playing') {
+        setRevealedSeats({});
+      }
+      return;
+    }
+
     if (tableStatus === 'playing' && prevStatusRef.current !== 'playing') {
       prevStatusRef.current = 'playing';
       setRevealedSeats({});
@@ -74,9 +83,10 @@ export function useDealRevealedSeats(
     if (tableStatus !== 'playing') {
       prevStatusRef.current = tableStatus;
     }
-  }, [tableStatus, totalSeats]);
+  }, [tableStatus, totalSeats, holdReveal]);
 
   return (seatIdx: number, originalSeatIndex?: number) => {
+    if (holdReveal) return false;
     if (tableStatus !== 'playing') return true;
     if (isJustStartingPlay) return false;
     const lookupIdx = originalSeatIndex !== undefined ? originalSeatIndex : seatIdx;

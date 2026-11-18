@@ -714,7 +714,8 @@ async function startServer() {
 
   const sanitizeSdkDisplayName = (raw: unknown): string | undefined => {
     if (typeof raw !== "string") return undefined;
-    const cleaned = raw.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 120);
+    const stripped = raw.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim();
+    const cleaned = Array.from(stripped).slice(0, 60).join("").trim();
     return cleaned.length > 0 ? cleaned : undefined;
   };
 
@@ -781,10 +782,26 @@ async function startServer() {
     viewerPlayerId?: string
   ) => {
     const playerIds: string[] = Array.isArray(inst.state?.players) ? inst.state.players : [];
-    const players = playerIds.slice(0, 100).map((pid) => ({
-      playerId: pid,
-      joinedAt: inst.playerJoinedAt.get(pid) ?? inst.startedAtMs,
-    }));
+    const ownerSet = new Set<string>(
+      Array.isArray(inst.state?.ownerPlayerIds) ? inst.state.ownerPlayerIds : []
+    );
+    const players = playerIds.slice(0, 100).map((pid) => {
+      const displayName =
+        typeof inst.state?.playerNames?.[pid] === "string" && inst.state.playerNames[pid].trim()
+          ? inst.state.playerNames[pid].trim()
+          : undefined;
+      const avatarUrl =
+        typeof inst.state?.playerAvatars?.[pid] === "string" && inst.state.playerAvatars[pid].trim()
+          ? inst.state.playerAvatars[pid].trim()
+          : undefined;
+      return {
+        playerId: pid,
+        joinedAt: inst.playerJoinedAt.get(pid) ?? inst.startedAtMs,
+        ...(displayName ? { displayName } : {}),
+        ...(avatarUrl ? { avatarUrl } : {}),
+        isGameCreator: ownerSet.has(pid),
+      };
+    });
     const authoritativePlayerView =
       viewerPlayerId && inst.playerViews && inst.playerViews[viewerPlayerId]
         ? inst.playerViews[viewerPlayerId]
@@ -1052,7 +1069,7 @@ async function startServer() {
           inst.sockets.delete(client);
           continue;
         }
-        if (nowMs - client.lastSeenMs > 12_000) {
+        if (nowMs - client.lastSeenMs > 45_000) {
           try {
             client.socket.destroy();
           } catch {
@@ -1060,7 +1077,7 @@ async function startServer() {
           }
           continue;
         }
-        if (backgroundLoopCycle % 4 === 0) {
+        if (backgroundLoopCycle % 10 === 0) {
           try {
             client.socket.write(encodeWsControlFrame(0x09));
           } catch {
@@ -1100,6 +1117,7 @@ async function startServer() {
           }
           continue;
         }
+        const prevViewRev = Number(inst.state?.viewRev || 0);
         inst.tick += 1;
         const activeRoster: string[] = Array.isArray(inst.state?.players) ? inst.state.players : [];
         const tickRes = await royalBlackjackGameServer.tick(
@@ -1112,7 +1130,14 @@ async function startServer() {
           activeRoster
         );
         await processRoomTickOutcome(inst, tickRes);
-        broadcastRoomSnapshot(inst);
+        const nextViewRev = Number(inst.state?.viewRev || 0);
+        if (
+          nextViewRev !== prevViewRev ||
+          (tickRes.broadcasts && tickRes.broadcasts.length > 0) ||
+          (tickRes.actionResults && tickRes.actionResults.length > 0)
+        ) {
+          broadcastRoomSnapshot(inst);
+        }
         if (
           inst.gameResult?.over &&
           inst.gameResult?.nextMatchPolicy?.mode === "auto_next_match" &&

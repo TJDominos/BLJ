@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useGameStore } from '@/store/gameStore';
 import { soundManager } from '@/lib/sounds';
 
@@ -18,45 +18,67 @@ export function ActiveTurnHUD({
   canDouble
 }: ActiveTurnHUDProps) {
   const { buyInsurance, split, doubleDown, hit, stand } = useGameStore();
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPendingAction(null);
+  }, [tableId, activeSeatIndex]);
+
+  const runAction = async (label: string, fn: () => Promise<unknown>) => {
+    if (pendingAction) return;
+    soundManager.playClick();
+    setPendingAction(label);
+    try {
+      await fn();
+    } finally {
+      setPendingAction((cur) => (cur === label ? null : cur));
+    }
+  };
 
   return (
     <div className="flex gap-1.5 sm:gap-3 pointer-events-auto flex-wrap justify-center mb-[4px] shrink-0 max-w-full">
       {canBuyInsurance && (
         <button
-          className="bg-purple-600 hover:bg-purple-500 text-white font-bold uppercase tracking-wider text-[11px] sm:text-sm px-3 sm:px-4 min-h-[38px] py-2 rounded-xl sm:rounded-[1rem] shadow-xl transition-transform active:scale-95 shadow-purple-500/20"
-          onClick={() => { soundManager.playClick(); buyInsurance(tableId, activeSeatIndex); }}
+          disabled={Boolean(pendingAction)}
+          className="bg-purple-600 hover:bg-purple-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold uppercase tracking-wider text-[11px] sm:text-sm px-3 sm:px-4 min-h-[38px] py-2 rounded-xl sm:rounded-[1rem] shadow-xl transition-transform active:scale-95 shadow-purple-500/20 cursor-pointer"
+          onClick={() => void runAction('insurance', () => buyInsurance(tableId, activeSeatIndex))}
         >
-          Insurance
+          {pendingAction === 'insurance' ? '...' : 'Insurance'}
         </button>
       )}
       {canSplit && (
         <button
-          className="bg-blue-600 hover:bg-blue-500 text-white font-bold uppercase tracking-wider text-[11px] sm:text-sm px-3 sm:px-4 min-h-[38px] py-2 rounded-xl sm:rounded-[1rem] shadow-xl transition-transform active:scale-95 shadow-blue-500/20"
-          onClick={() => { soundManager.playClick(); split(tableId, activeSeatIndex); }}
+          disabled={Boolean(pendingAction)}
+          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold uppercase tracking-wider text-[11px] sm:text-sm px-3 sm:px-4 min-h-[38px] py-2 rounded-xl sm:rounded-[1rem] shadow-xl transition-transform active:scale-95 shadow-blue-500/20 cursor-pointer"
+          onClick={() => void runAction('split', () => split(tableId, activeSeatIndex))}
         >
-          Split
+          {pendingAction === 'split' ? '...' : 'Split'}
         </button>
       )}
       {canDouble && (
         <button
-          className="bg-yellow-600 hover:bg-yellow-500 text-white font-bold uppercase tracking-wider text-[11px] sm:text-sm px-3 sm:px-4 min-h-[38px] py-2 rounded-xl sm:rounded-[1rem] shadow-xl transition-transform active:scale-95 shadow-yellow-500/20"
-          onClick={() => { soundManager.playClick(); doubleDown(tableId, activeSeatIndex); }}
+          disabled={Boolean(pendingAction)}
+          className="bg-yellow-600 hover:bg-yellow-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold uppercase tracking-wider text-[11px] sm:text-sm px-3 sm:px-4 min-h-[38px] py-2 rounded-xl sm:rounded-[1rem] shadow-xl transition-transform active:scale-95 shadow-yellow-500/20 cursor-pointer"
+          onClick={() => void runAction('double', () => doubleDown(tableId, activeSeatIndex))}
         >
-          Double
+          {pendingAction === 'double' ? '...' : 'Double'}
         </button>
       )}
       <button
-        className="bg-[#33a852] hover:bg-[#2c9646] text-white font-bold uppercase tracking-wider text-[11px] sm:text-sm px-5 sm:px-8 min-h-[38px] py-2 rounded-xl sm:rounded-[1rem] shadow-xl transition-transform active:scale-95 shadow-green-500/20"
-        onClick={() => { soundManager.playClick(); hit(tableId, activeSeatIndex); }}
+        disabled={Boolean(pendingAction)}
+        className="bg-[#33a852] hover:bg-[#2c9646] disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold uppercase tracking-wider text-[11px] sm:text-sm px-5 sm:px-8 min-h-[38px] py-2 rounded-xl sm:rounded-[1rem] shadow-xl transition-transform active:scale-95 shadow-green-500/20 cursor-pointer"
+        onClick={() => void runAction('hit', () => hit(tableId, activeSeatIndex))}
       >
-        Hit
+        {pendingAction === 'hit' ? 'Hitting...' : 'Hit'}
       </button>
       <button
-        className="bg-[#ea4335] hover:bg-[#d63a2d] text-white font-bold uppercase tracking-wider text-[11px] sm:text-sm px-5 sm:px-8 min-h-[38px] py-2 rounded-xl sm:rounded-[1rem] shadow-xl transition-transform active:scale-95 shadow-red-500/20"
-        onClick={() => { soundManager.playClick(); stand(tableId, activeSeatIndex); }}
+        disabled={Boolean(pendingAction)}
+        className="bg-[#ea4335] hover:bg-[#d63a2d] disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold uppercase tracking-wider text-[11px] sm:text-sm px-5 sm:px-8 min-h-[38px] py-2 rounded-xl sm:rounded-[1rem] shadow-xl transition-transform active:scale-95 shadow-red-500/20 cursor-pointer"
+        onClick={() => void runAction('stand', () => stand(tableId, activeSeatIndex))}
       >
-        Stand
+        {pendingAction === 'stand' ? 'Standing...' : 'Stand'}
       </button>
     </div>
   );
 }
+

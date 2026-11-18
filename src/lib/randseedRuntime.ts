@@ -172,6 +172,8 @@ function formatRoomErrorMessage(err: unknown, fallback: string): string {
         return "Received an invalid game state from the room host.";
       case "INVALID_ROOM_RESPONSE":
         return "Received an invalid room protocol response.";
+      case "ROOM_CONFLICT":
+        return "Room state updated simultaneously. Retrying automatically — please try again if needed.";
       case "SECURE_RANDOM_UNAVAILABLE":
         return "Browser secure random generator is unavailable.";
       default:
@@ -182,9 +184,95 @@ function formatRoomErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
+interface PendingSocketActionEntry {
+  reqId: string;
+  actionPayload: Record<string, JsonValue>;
+  lastSentTick: number;
+  resendCount: number;
+  resolve: (outcome: { status: "applied" | "rejected"; code?: string } | null) => void;
+  retryTimer: ReturnType<typeof setInterval>;
+  timeoutTimer: ReturnType<typeof setTimeout>;
+}
+
+const pendingSocketActions = new Map<string, PendingSocketActionEntry>();
+
+function inspectSnapshotForSocketActionReceipts(
+  stateObj: Record<string, unknown> | null,
+  snapshotTick: number
+): void {
+  if (!stateObj || pendingSocketActions.size === 0) return;
+  const selfObj =
+    stateObj.self && typeof stateObj.self === "object" && !Array.isArray(stateObj.self)
+      ? (stateObj.self as Record<string, unknown>)
+      : null;
+  const privObj =
+    (selfObj?.privateState &&
+    typeof selfObj.privateState === "object" &&
+    !Array.isArray(selfObj.privateState)
+      ? (selfObj.privateState as Record<string, unknown>)
+      : null) ||
+    (stateObj.privateState &&
+    typeof stateObj.privateState === "object" &&
+    !Array.isArray(stateObj.privateState)
+      ? (stateObj.privateState as Record<string, unknown>)
+      : null) ||
+    (stateObj._privateState &&
+    typeof stateObj._privateState === "object" &&
+    !Array.isArray(stateObj._privateState)
+      ? (stateObj._privateState as Record<string, unknown>)
+      : null);
+
+  const rawOutcomes = Array.isArray(privObj?.recentActionOutcomes)
+    ? privObj!.recentActionOutcomes
+    : [];
+
+  for (const [reqId, waiter] of Array.from(pendingSocketActions.entries())) {
+    const matched = rawOutcomes.find(
+      (item: any) =>
+        item &&
+        typeof item === "object" &&
+        item.reqId === reqId &&
+        (item.status === "applied" || item.status === "rejected")
+    ) as { reqId: string; status: "applied" | "rejected"; code?: string } | undefined;
+
+    if (matched) {
+      clearInterval(waiter.retryTimer);
+      clearTimeout(waiter.timeoutTimer);
+      pendingSocketActions.delete(reqId);
+      waiter.resolve({ status: matched.status, code: matched.code });
+      continue;
+    }
+
+    // If the room tick advanced 2+ ticks past our sent tick without recording our reqId
+    // (e.g. WS frame crossed a tick boundary or was dropped), re-transmit the idempotent payload.
+    if (
+      snapshotTick > waiter.lastSentTick + 1 &&
+      waiter.resendCount < 6 &&
+      roomClientInstance &&
+      roomClientInstance.status === "connected"
+    ) {
+      const sent = roomClientInstance.sendSocketInput(waiter.actionPayload, {
+        allowSameTick: true,
+        force: true,
+      });
+      if (sent) {
+        waiter.lastSentTick = snapshotTick;
+        waiter.resendCount += 1;
+      }
+    }
+  }
+}
+
 function getSnapshotKey(snapshot: RoomSnapshot, players?: RoomPlayer[]): string {
   const rosterSig = Array.isArray(players)
-    ? players.map((p) => p.playerId).join(",")
+    ? players
+        .map(
+          (p) =>
+            `${p.playerId}:${p.displayName ?? ""}:${p.avatarUrl ?? ""}:${
+              p.isGameCreator === true ? "1" : p.isGameCreator === false ? "0" : ""
+            }`
+        )
+        .join(",")
     : "";
   const broadcastLen = Array.isArray(snapshot.broadcasts) ? snapshot.broadcasts.length : 0;
   return `${snapshot.scope.gameId}:${snapshot.matchId}:${snapshot.matchSeq}:${snapshot.tick}:${rosterSig}:${broadcastLen}`;
@@ -221,7 +309,22 @@ export function getRandseedOnlinePlayers(): RoomPlayer[] {
 }
 
 /**
- * Initialize RandSeed RuntimeClient (@randseed/game-sdk@0.7.0) for responsive shell viewport,
+ * Read the current player's trusted public profile & owner display hint
+ * (`displayName`, `avatarUrl`, `isGameCreator`) from @randseed/game-sdk@0.8.0 RoomClient.getPlayers().
+ */
+export function getRandseedCurrentPlayerProfile(playerIdOverride?: string): RoomPlayer | null {
+  const targetId =
+    playerIdOverride ||
+    cachedRoomAllocation?.playerId ||
+    roomClientInstance?.allocation?.playerId ||
+    "";
+  if (!targetId) return null;
+  const players = readSafeRoomPlayers(roomClientInstance);
+  return players.find((p) => p.playerId === targetId) || null;
+}
+
+/**
+ * Initialize RandSeed RuntimeClient (@randseed/game-sdk@0.8.0) for responsive shell viewport,
  * room session refresh, fullscreen & audio mute bridging.
  */
 export async function initRandseedRuntime(): Promise<RuntimeClient | null> {
@@ -328,6 +431,12 @@ export function disconnectRandseedRoom(): void {
   }
 }
 
+let matchInFlightPromise: Promise<{
+  allocation?: RoomMatch;
+  snapshot?: RoomSnapshot;
+  players?: RoomPlayer[];
+} | null> | null = null;
+
 /**
  * Connect to the full-stack RandSeed Room backend via RoomClient (@randseed/game-sdk@0.7.0).
  */
@@ -353,6 +462,15 @@ export async function matchRandseedRoom(
     playersChangedListener = onPlayersUpdate;
   }
 
+  if (matchInFlightPromise) {
+    return matchInFlightPromise;
+  }
+
+  const runConnect = async (): Promise<{
+    allocation?: RoomMatch;
+    snapshot?: RoomSnapshot;
+    players?: RoomPlayer[];
+  } | null> => {
   try {
     if (!roomClientInstance) {
       lastAgentPlayerView = null;
@@ -403,6 +521,7 @@ export async function matchRandseedRoom(
             }
             const players = readSafeRoomPlayers(roomClientInstance, snapshot);
             const nextState = extractSnapshotState(snapshot, cachedRoomAllocation);
+            inspectSnapshotForSocketActionReceipts(nextState, snapshot.tick);
             if (nextState && snapshotListener) {
               lastDeliveredSnapshotKey = getSnapshotKey(snapshot, players);
               snapshotListener(nextState, cachedRoomAllocation, snapshot, players);
@@ -424,6 +543,7 @@ export async function matchRandseedRoom(
     const snapKey = getSnapshotKey(snapshot, players);
     if (snapKey !== lastDeliveredSnapshotKey) {
       const nextState = extractSnapshotState(snapshot, cachedRoomAllocation);
+      inspectSnapshotForSocketActionReceipts(nextState, snapshot.tick);
       if (nextState && snapshotListener) {
         lastDeliveredSnapshotKey = snapKey;
         snapshotListener(
@@ -455,7 +575,13 @@ export async function matchRandseedRoom(
       formatRoomErrorMessage(err, "Unable to connect to the online room.")
     );
     return null;
+  } finally {
+    matchInFlightPromise = null;
   }
+  };
+
+  matchInFlightPromise = runConnect();
+  return matchInFlightPromise;
 }
 
 function isSnapshotGameOver(snapshot?: RoomSnapshot): boolean {
@@ -519,28 +645,18 @@ function formatActionRejectionCode(code?: string): string {
 
 let confirmedActionChain: Promise<unknown> = Promise.resolve();
 
-async function waitForRandseedRoomConnected(maxWaitMs = 3500): Promise<boolean> {
+async function waitForRandseedRoomConnected(maxWaitMs = 15000): Promise<boolean> {
   const getStatus = (): RoomConnectionStatus | undefined => roomClientInstance?.status;
-  const initialStatus = getStatus();
-  if (!initialStatus) return false;
-  if (initialStatus === "connected") return true;
-  if (
-    initialStatus !== "matching" &&
-    initialStatus !== "connecting" &&
-    initialStatus !== "reconnecting"
-  ) {
-    return false;
-  }
+  if (getStatus() === "connected") return true;
 
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
     const status = getStatus();
-    if (!status) return false;
     if (status === "connected") return true;
     if (status === "error" || status === "closed") {
       return false;
     }
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 60));
   }
   return getStatus() === "connected";
 }
@@ -566,10 +682,65 @@ async function waitForMatchRolloverIfOver(maxWaitMs = 3000): Promise<boolean> {
   return !isSnapshotGameOver(latestRawSnapshot ?? roomClientInstance?.snapshot);
 }
 
+function submitActionViaSocketWithReceipt(
+  actionPayload: Record<string, JsonValue>,
+  reqId: string,
+  timeoutMs = 3600
+): Promise<{ status: "applied" | "rejected"; code?: string } | null> {
+  if (!roomClientInstance || roomClientInstance.status !== "connected") {
+    return Promise.resolve(null);
+  }
+  const initialTick = latestRawSnapshot?.tick ?? 0;
+  const sent = roomClientInstance.sendSocketInput(actionPayload, {
+    allowSameTick: true,
+    force: true,
+  });
+  if (!sent) {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    const retryTimer = setInterval(() => {
+      const waiter = pendingSocketActions.get(reqId);
+      if (!waiter || !roomClientInstance || roomClientInstance.status !== "connected") {
+        return;
+      }
+      if (waiter.resendCount >= 6) return;
+      const ok = roomClientInstance.sendSocketInput(waiter.actionPayload, {
+        allowSameTick: true,
+        force: true,
+      });
+      if (ok) {
+        waiter.lastSentTick = latestRawSnapshot?.tick ?? waiter.lastSentTick;
+        waiter.resendCount += 1;
+      }
+    }, 650);
+
+    const timeoutTimer = setTimeout(() => {
+      const waiter = pendingSocketActions.get(reqId);
+      if (waiter) {
+        clearInterval(waiter.retryTimer);
+        pendingSocketActions.delete(reqId);
+      }
+      resolve(null);
+    }, timeoutMs);
+
+    pendingSocketActions.set(reqId, {
+      reqId,
+      actionPayload,
+      lastSentTick: initialTick,
+      resendCount: 0,
+      resolve,
+      retryTimer,
+      timeoutTimer,
+    });
+  });
+}
+
 async function executeConfirmedRoomAction(
   action: Record<string, JsonValue>
 ): Promise<{ ok: boolean; code?: string; error?: string }> {
-  const connected = await waitForRandseedRoomConnected(3500);
+  const connected = await waitForRandseedRoomConnected(15000);
   if (!connected || !roomClientInstance) {
     const status = roomClientInstance?.status ?? roomConnectionStatus;
     return {
@@ -579,7 +750,7 @@ async function executeConfirmedRoomAction(
         status === "reconnecting"
           ? "Reconnecting to the online room. Please try again in a moment."
           : getRandseedRoomError() ||
-            "Online room is not connected yet. Please wait for the room to connect.",
+            "Online room is still starting up. Please try again in a moment.",
     };
   }
 
@@ -593,9 +764,30 @@ async function executeConfirmedRoomAction(
       };
     }
 
-    for (let attempt = 0; attempt < 4; attempt++) {
+    const clientReqId = `rq_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const actionPayload: Record<string, JsonValue> = {
+      ...action,
+      clientReqId,
+    };
+
+    // 1. Primary Fast Path: Persistent WebSocket input + idempotent snapshot receipt
+    //    Avoids HTTP POST /input optimistic-tick 409 conflicts and inputPending locks completely.
+    const wsOutcome = await submitActionViaSocketWithReceipt(actionPayload, clientReqId, 3600);
+    if (wsOutcome) {
+      if (wsOutcome.status === "applied") {
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        code: wsOutcome.code,
+        error: formatActionRejectionCode(wsOutcome.code),
+      };
+    }
+
+    // 2. Fallback Path: HTTP sendAction (carries same idempotent clientReqId so it never double-applies)
+    for (let attempt = 0; attempt < 6; attempt++) {
       if (!roomClientInstance || roomClientInstance.status !== "connected") {
-        const reconnected = await waitForRandseedRoomConnected(2500);
+        const reconnected = await waitForRandseedRoomConnected(4000);
         if (!reconnected || !roomClientInstance) {
           return {
             ok: false,
@@ -617,7 +809,7 @@ async function executeConfirmedRoomAction(
       }
 
       try {
-        const receipt = await roomClientInstance.sendAction(action);
+        const receipt = await roomClientInstance.sendAction(actionPayload);
         if (receipt.status === "applied") {
           return { ok: true };
         }
@@ -632,15 +824,14 @@ async function executeConfirmedRoomAction(
       } catch (err: unknown) {
         if (err instanceof RoomClientError) {
           if (err.code === "ACTION_RECEIPT_TIMEOUT") {
-            // Host accepted HTTP input (applied: true) even if WS receipt frame was omitted
             return { ok: true };
           }
-          if (err.code === "INPUT_PENDING" && attempt < 3) {
-            await new Promise((r) => setTimeout(r, 120));
+          if (err.code === "INPUT_PENDING" && attempt < 5) {
+            await new Promise((r) => setTimeout(r, 80));
             continue;
           }
-          if (err.status === 409 && attempt < 3) {
-            await new Promise((r) => setTimeout(r, 60));
+          // RoomClient.sendAction already ran this.refresh() on 409 — retry immediately with 0ms delay!
+          if (err.status === 409 && attempt < 5) {
             continue;
           }
         }
@@ -655,7 +846,7 @@ async function executeConfirmedRoomAction(
     return {
       ok: false,
       code: "ROOM_CONFLICT",
-      error: "Room state changed while submitting your request. Please try again.",
+      error: "Room state updated simultaneously. Please click again.",
     };
   } catch (err: unknown) {
     return {

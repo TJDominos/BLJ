@@ -18,7 +18,7 @@ interface NormalizedRound {
 }
 
 export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: TablePlayersSidebarProps) {
-  const { currentUser, onlinePlayers, tables } = useGameStore();
+  const { currentUser, isGameOwner, onlinePlayers, tables } = useGameStore();
 
   // Merge server/room roundHistory for this table with local gameRecords for this table (deduplicated)
   const mergedTableRounds = useMemo<NormalizedRound[]>(() => {
@@ -51,20 +51,22 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
     return Array.from(map.values()).sort((a, b) => b.timestamp - a.timestamp);
   }, [table.id, table.roundHistory, gameRecords]);
 
-  // Helper to resolve real player name & avatar
+  // Helper to resolve real player name, avatar & owner flag from SDK
   const resolvePlayerIdentity = (userId: string, fallbackName?: string, fallbackAvatar?: string) => {
+    const onlineMatch = onlinePlayers.find(p => p.userId === userId);
     if (currentUser && userId === currentUser.id) {
       return {
-        name: currentUser.name || fallbackName || 'Player',
-        avatar: currentUser.avatar || fallbackAvatar,
+        name: currentUser.name || onlineMatch?.name || fallbackName || 'Player',
+        avatar: currentUser.avatar || onlineMatch?.avatar || fallbackAvatar,
+        isGameCreator: Boolean(isGameOwner || onlineMatch?.isGameCreator),
       };
     }
 
-    const onlineMatch = onlinePlayers.find(p => p.userId === userId);
     if (onlineMatch) {
       return {
         name: onlineMatch.name || fallbackName || userId.substring(0, 12),
         avatar: onlineMatch.avatar || fallbackAvatar,
+        isGameCreator: Boolean(onlineMatch.isGameCreator),
       };
     }
 
@@ -74,6 +76,7 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
           return {
             name: s.name || fallbackName || userId.substring(0, 12),
             avatar: s.avatar || fallbackAvatar,
+            isGameCreator: false,
           };
         }
       }
@@ -82,6 +85,7 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
     return {
       name: fallbackName || userId.replace(/^bot_/, 'Bot ').substring(0, 12),
       avatar: fallbackAvatar,
+      isGameCreator: false,
     };
   };
 
@@ -170,6 +174,7 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
         userId: string;
         name: string;
         avatar?: string;
+        isGameCreator?: boolean;
         rounds: number;
         wins: number;
         amountWon: number;
@@ -190,6 +195,7 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
             userId: sr.userId,
             name: identity.name,
             avatar: identity.avatar,
+            isGameCreator: identity.isGameCreator,
             rounds: 0,
             wins: 0,
             amountWon: 0,
@@ -202,6 +208,9 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
           }
           if (identity.avatar && !stats[sr.userId].avatar) {
             stats[sr.userId].avatar = identity.avatar;
+          }
+          if (identity.isGameCreator) {
+            stats[sr.userId].isGameCreator = true;
           }
         }
 
@@ -231,7 +240,7 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
     }
 
     return Object.values(stats).sort((a, b) => b.amountWon - a.amountWon);
-  }, [mergedTableRounds, currentUser, onlinePlayers, tables]);
+  }, [mergedTableRounds, currentUser, isGameOwner, onlinePlayers, tables]);
 
   return (
     <AnimatePresence>
@@ -277,12 +286,26 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
             <div className="flex-1 overflow-y-auto p-4 space-y-5">
               {/* Section 1: My Record on This Table */}
               <div className="space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold uppercase tracking-wider text-[#f5d97e] flex items-center gap-1.5">
-                    <User className="w-3.5 h-3.5 text-[#ffd86b]" />
-                    My Record
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-[#f5d97e] flex items-center gap-1.5 min-w-0">
+                    {currentUser?.avatar ? (
+                      <img
+                        src={currentUser.avatar}
+                        alt={currentUser.name}
+                        className="w-4 h-4 rounded-full object-cover border border-[#ffd86b]/50 shrink-0"
+                      />
+                    ) : (
+                      <User className="w-3.5 h-3.5 text-[#ffd86b] shrink-0" />
+                    )}
+                    <span className="truncate">{currentUser?.name || 'My Record'}</span>
+                    {isGameOwner && (
+                      <span className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded bg-[#d4af37]/20 border border-[#d4af37]/40 text-[#ffd86b] font-mono shrink-0">
+                        <Crown className="w-2.5 h-2.5" />
+                        OWNER
+                      </span>
+                    )}
                   </span>
-                  <span className="text-[10px] font-mono text-zinc-400">This Table</span>
+                  <span className="text-[10px] font-mono text-zinc-400 shrink-0">This Table</span>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2.5">
@@ -431,6 +454,11 @@ export function TablePlayersSidebar({ isOpen, onClose, table, gameRecords }: Tab
                                   )}
                                 >
                                   <span className="truncate">{user.name}</span>
+                                  {user.isGameCreator && (
+                                    <span className="text-[9px] px-1 py-0.2 rounded bg-[#d4af37]/20 border border-[#d4af37]/35 text-[#ffd86b] font-mono shrink-0">
+                                      Owner
+                                    </span>
+                                  )}
                                   {isMe && (
                                     <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono shrink-0">
                                       You

@@ -118,6 +118,7 @@ export function buildRoomPlayerViews(
             mySeats: [],
             unlockedTableIds: state.unlockedTablesByPlayer?.[pid] || [],
             ownedTableCodes: {},
+            recentActionOutcomes: state.recentClientActionOutcomes?.[pid] || [],
           },
       },
     };
@@ -438,6 +439,7 @@ export interface OnlineSubTableState {
   } | null;
   deck: PlayingCard[];
   discardCount: number;
+  shuffleSeq?: number;
   turnOrder: number[];
   currentTurnSeatIndex: number;
   phaseStartElapsedSec: number;
@@ -516,6 +518,7 @@ export interface RoyalBlackjackRoomState {
   } | null;
   deck: PlayingCard[];
   discardCount: number;
+  shuffleSeq?: number;
   /** 本局座位行动顺序（支持顺序行动与每局确定性随机行动顺序） */
   turnOrder: number[];
   currentTurnSeatIndex: number;
@@ -534,6 +537,10 @@ export interface RoyalBlackjackRoomState {
   totalTokensPaidOut?: number;
   totalRefillsCount?: number;
   ownerPlayerIds?: string[];
+  recentClientActionOutcomes?: Record<
+    string,
+    Array<{ reqId: string; status: "applied" | "rejected"; code?: string }>
+  >;
   viewRev?: number;
   forceClose: boolean;
 }
@@ -590,6 +597,7 @@ function reshuffleTargetShoeWithVrf(
   const rng = restoreTargetRng(target, fallbackRootSeedHex);
   target.deck = shuffleShoeWithVrfRng(rng, gameRules.deckCount);
   target.discardCount = 0;
+  target.shuffleSeq = (target.shuffleSeq || 0) + 1;
   target.rngState = rng.getState();
 }
 
@@ -701,10 +709,11 @@ function dealInitialCards(
   broadcasts: unknown[]
 ): void {
   const rootSeedHex = resolveStateRootSeed(rootState);
-  // 检查切牌卡渗透率（6 副牌 312 张，75% 渗透率即剩余不足 78 张时在新一局发牌前使用 VRF ChaCha20Rng 重洗）
+  const prevShuffleSeq = target.shuffleSeq || 0;
+  // 检查切牌卡渗透率（6 副牌 312 张，达到 75% 渗透率即剩余 <= 78 张时才使用平台初始 VRF ChaCha20Rng 重洗，不每手换种子）
   const totalShoeCards = gameRules.deckCount * 52;
   const minRemainingBeforeCutCard = Math.floor(totalShoeCards * (1 - gameRules.shufflePenetration));
-  if (target.deck.length < minRemainingBeforeCutCard) {
+  if (target.deck.length <= minRemainingBeforeCutCard) {
     reshuffleTargetShoeWithVrf(target, rootSeedHex);
   }
 
@@ -810,13 +819,15 @@ function dealInitialCards(
     target.status = "playing";
   }
 
+  const reshuffledThisDeal = (target.shuffleSeq || 0) > prevShuffleSeq;
   const firstSeat = findNextPlayingSeatInTurnOrder(target);
   if (firstSeat === -1) {
     runDealerAndSettle(rootState, target, broadcasts);
   } else {
     target.phase = "playing";
     target.currentTurnSeatIndex = firstSeat;
-    target.phaseStartElapsedSec = rootState.elapsedSeconds;
+    // 若触发了 75% 渗透率洗牌，服务端顺延 3.5 秒出牌计时以匹配客户端洗牌动效时长
+    target.phaseStartElapsedSec = rootState.elapsedSeconds + (reshuffledThisDeal ? 3.5 : 0);
   }
 
   broadcasts.push({
@@ -825,6 +836,7 @@ function dealInitialCards(
     dealerUpCard,
     turnOrder: target.turnOrder,
     currentTurnSeatIndex: target.currentTurnSeatIndex,
+    reshuffled: reshuffledThisDeal,
   });
 }
 
@@ -1639,7 +1651,101 @@ function reconcileOnlineRoomTables(state: RoyalBlackjackRoomState): void {
  * 服务端反向平台客户端 (RandSeed Server SDK PlatformClient)
  * 用于在固定运行时容器环境中向 http://platform.players、http://platform.data、http://platform.db、http://platform.kv 发起反向调用
  */
-export const randseedPlatformClient = new PlatformClient();
+export const randseedPlatformClient = new PlatformClient({
+  fetch: (input, init) => {
+    const signal = init?.signal ?? AbortSignal.timeout(300);
+    return globalThis.fetch(input, { ...init, signal });
+  },
+});
+
+let platformPlayersBackoffUntilMs = 0;
+
+/**
+ * 通过更新后的后端 SDK 接口 randseedPlatformClient.getPlayers() 读取在线玩家的
+ * displayName、avatarUrl 与 isGameCreator（isOwner），同步到权威状态中供全桌与前端展示。
+ */
+export async function syncPlatformPlayerProfilesIntoState(
+  state: RoyalBlackjackRoomState
+): Promise<boolean> {
+  if (Date.now() < platformPlayersBackoffUntilMs) {
+    return false;
+  }
+  try {
+    const roster = await randseedPlatformClient.getPlayers();
+    if (!state.playerNames) state.playerNames = {};
+    if (!state.playerAvatars) state.playerAvatars = {};
+    const ownerSet = new Set<string>(
+      Array.isArray(state.ownerPlayerIds) ? state.ownerPlayerIds : []
+    );
+    let mutated = false;
+
+    for (const p of roster) {
+      if (!p || typeof p.playerId !== "string" || !p.playerId.trim()) continue;
+      const pid = p.playerId.trim();
+
+      if (typeof p.displayName === "string" && p.displayName.trim().length > 0) {
+        const strippedName = p.displayName.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim();
+        const cleanName = Array.from(strippedName).slice(0, 60).join("").trim();
+        if (cleanName && state.playerNames[pid] !== cleanName) {
+          state.playerNames[pid] = cleanName;
+          mutated = true;
+        }
+        if (cleanName && state.customTables) {
+          for (const ct of Object.values(state.customTables)) {
+            if (ct && ct.houseId === pid && ct.houseName !== cleanName) {
+              ct.houseName = cleanName;
+              mutated = true;
+            }
+          }
+        }
+      }
+
+      if (typeof p.avatarUrl === "string" && p.avatarUrl.trim().length > 0) {
+        const trimmedAvatar = p.avatarUrl.trim();
+        const isSafeAvatar =
+          trimmedAvatar.length <= 4096 &&
+          !/[\u0000-\u001f\u007f-\u009f]/.test(trimmedAvatar) &&
+          (/^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/i.test(trimmedAvatar) ||
+            (() => {
+              try {
+                const parsed = new URL(trimmedAvatar);
+                return (
+                  parsed.protocol === "https:" &&
+                  !parsed.username &&
+                  !parsed.password &&
+                  !parsed.hash
+                );
+              } catch {
+                return false;
+              }
+            })());
+        if (isSafeAvatar && state.playerAvatars[pid] !== trimmedAvatar) {
+          state.playerAvatars[pid] = trimmedAvatar;
+          mutated = true;
+        }
+        if (isSafeAvatar && state.customTables) {
+          for (const ct of Object.values(state.customTables)) {
+            if (ct && ct.houseId === pid && ct.houseAvatar !== trimmedAvatar) {
+              ct.houseAvatar = trimmedAvatar;
+              mutated = true;
+            }
+          }
+        }
+      }
+
+      if (p.isGameCreator === true && !ownerSet.has(pid)) {
+        ownerSet.add(pid);
+        mutated = true;
+      }
+    }
+
+    state.ownerPlayerIds = Array.from(ownerSet);
+    return mutated;
+  } catch {
+    platformPlayersBackoffUntilMs = Date.now() + 5000;
+    return false;
+  }
+}
 
 export const PLAYER_STANDINGS_COLLECTION = "playerStandings";
 
@@ -2378,7 +2484,11 @@ function applyAuthoritativePlayerInput(
 
   if (data.action === "join_seat") {
     prepareNextBettingPhaseIfSettled(state, target);
-    if (typeof data.playerName === "string" && data.playerName.trim()) {
+    if (
+      typeof data.playerName === "string" &&
+      data.playerName.trim() &&
+      data.playerName.trim() !== "Player"
+    ) {
       state.playerNames![playerId] = data.playerName.trim().slice(0, 120);
     }
     const cleanAvatar = sanitizeAvatarForState(data.playerAvatar);
@@ -2668,10 +2778,12 @@ function applyAuthoritativePlayerInput(
     }
 
     if (data.action === "hit") {
+      const prevSeq = target.shuffleSeq || 0;
       const card = drawCardFromShoe(target);
       seat.hand.cards.push(card);
       seat.hand.score = calculateHandScore(seat.hand.cards);
-      target.phaseStartElapsedSec = ctx.elapsedSeconds;
+      target.phaseStartElapsedSec =
+        ctx.elapsedSeconds + ((target.shuffleSeq || 0) > prevSeq ? 3.5 : 0);
 
       if (seat.hand.score > 21) {
         seat.hand.status = "busted";
@@ -3077,7 +3189,7 @@ export const royalBlackjackGameServer: GameServer<
     };
   },
 
-  init(config: MatchConfig): InitResult<RoyalBlackjackRoomState> {
+  async init(config: MatchConfig): Promise<InitResult<RoyalBlackjackRoomState>> {
     if (
       config.options !== undefined &&
       (typeof config.options !== "object" || config.options === null || Array.isArray(config.options))
@@ -3240,6 +3352,7 @@ export const royalBlackjackGameServer: GameServer<
         : null,
       deck,
       discardCount,
+      shuffleSeq: 0,
       turnOrder: Array.from({ length: maxSeats }, (_, i) => maxSeats - 1 - i),
       currentTurnSeatIndex: -1,
       phaseStartElapsedSec: 0,
@@ -3290,6 +3403,8 @@ export const royalBlackjackGameServer: GameServer<
       viewRev: 1,
       forceClose: false,
     };
+
+    await syncPlatformPlayerProfilesIntoState(state);
 
     const sanitizedState = sanitizeJson(state);
     return {
@@ -3406,6 +3521,7 @@ export const royalBlackjackGameServer: GameServer<
     if (!state.customTables) state.customTables = {};
     if (!state.unlockedTablesByPlayer) state.unlockedTablesByPlayer = {};
     if (!state.disconnectedAtElapsedSec) state.disconnectedAtElapsedSec = {};
+    if (!state.recentClientActionOutcomes) state.recentClientActionOutcomes = {};
     if (!Array.isArray(state.ownerPlayerIds)) {
       state.ownerPlayerIds = resolveConfiguredOwnerPlayerIds();
     }
@@ -3443,13 +3559,43 @@ export const royalBlackjackGameServer: GameServer<
     }
 
     for (const input of ctx.inputs) {
-      const outcome = applyAuthoritativePlayerInput(
-        state,
-        ctx,
-        input.playerId,
-        input.data,
-        broadcasts
-      );
+      const rawData =
+        input.data && typeof input.data === "object" && !Array.isArray(input.data)
+          ? (input.data as unknown as Record<string, unknown>)
+          : null;
+      const clientReqId =
+        rawData && typeof rawData.clientReqId === "string"
+          ? rawData.clientReqId.trim().slice(0, 96)
+          : "";
+
+      const playerHistory = state.recentClientActionOutcomes[input.playerId] || [];
+      const duplicateOutcome = clientReqId
+        ? playerHistory.find((entry) => entry.reqId === clientReqId)
+        : undefined;
+
+      const outcome: { status: "applied" | "rejected"; code?: string } = duplicateOutcome
+        ? { status: duplicateOutcome.status, code: duplicateOutcome.code }
+        : applyAuthoritativePlayerInput(
+            state,
+            ctx,
+            input.playerId,
+            input.data,
+            broadcasts
+          );
+
+      if (clientReqId && !duplicateOutcome) {
+        const nextHistory = [
+          ...playerHistory,
+          {
+            reqId: clientReqId,
+            status: outcome.status,
+            ...(outcome.code ? { code: outcome.code } : {}),
+          },
+        ];
+        state.recentClientActionOutcomes[input.playerId] =
+          nextHistory.length > 8 ? nextHistory.slice(nextHistory.length - 8) : nextHistory;
+      }
+
       if (typeof input.actionId === "string" && input.actionId.trim().length > 0) {
         actionResults.push(
           outcome.status === "applied"
@@ -3613,11 +3759,11 @@ export const royalBlackjackGameServer: GameServer<
     };
   },
 
-  onPlayerJoin(
+  async onPlayerJoin(
     playerId: string,
     prevState: RoyalBlackjackRoomState,
     players?: readonly string[]
-  ): PlayerEventResult<RoyalBlackjackRoomState> {
+  ): Promise<PlayerEventResult<RoyalBlackjackRoomState>> {
     const state: RoyalBlackjackRoomState = structuredClone(prevState);
     if (state.disconnectedAtElapsedSec?.[playerId] !== undefined) {
       delete state.disconnectedAtElapsedSec[playerId];
@@ -3639,6 +3785,7 @@ export const royalBlackjackGameServer: GameServer<
     if (!state.playerNames[playerId] || state.playerNames[playerId] === playerId) {
       state.playerNames[playerId] = formatDefaultOpaquePlayerName(playerId);
     }
+    await syncPlatformPlayerProfilesIntoState(state);
     if (typeof state.walletCoins[playerId] !== "number" || state.walletCoins[playerId] <= 0) {
       state.walletCoins[playerId] = DEFAULT_GAME_COINS;
       state.totalTokensIssued = (state.totalTokensIssued || 0) + DEFAULT_GAME_COINS;

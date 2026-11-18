@@ -1,7 +1,8 @@
 import React from 'react';
 import { motion } from 'motion/react';
+import { Crown } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { PlayerSeat, User } from '@/store/gameStore';
+import { PlayerSeat, User, useGameStore } from '@/store/gameStore';
 import { getAvatarUrl } from '@/utils/avatar';
 
 interface TableSeatButtonProps {
@@ -31,16 +32,34 @@ export function TableSeatButton({
   isDisconnected = false,
   onClick,
 }: TableSeatButtonProps) {
+  const { onlinePlayers, isGameOwner } = useGameStore();
+  const [imgError, setImgError] = React.useState(false);
+
   const isSeated = seat.userId !== null;
-  const isCurrentUser = isSelected || (currentUser && seat.userId === currentUser.id);
+  const isCurrentUser = Boolean(isSelected || (currentUser && seat.userId === currentUser.id));
+  const onlineEntry = React.useMemo(
+    () => (seat.userId ? onlinePlayers.find((p) => p.userId === seat.userId) : undefined),
+    [onlinePlayers, seat.userId]
+  );
 
-  // Correct avatar and name resolution (authoritative identity from session/user/seat)
-  const seatAvatar =
-    (isCurrentUser ? currentUser?.avatar : seat.avatar) ||
-    (seat.userId ? getAvatarUrl(seat.userId, seat.avatar) : undefined);
-
-  const seatName = (isCurrentUser ? currentUser?.name : seat.name) || 'Player';
+  // Correct avatar, name, and isOwner resolution from SDK player profile
+  const seatAvatar = getAvatarUrl(
+    seat.userId || undefined,
+    (isCurrentUser ? currentUser?.avatar : undefined) || onlineEntry?.avatar || seat.avatar
+  );
+  const seatName =
+    (isCurrentUser ? currentUser?.name : undefined) ||
+    onlineEntry?.name ||
+    seat.name ||
+    'Player';
+  const isSeatOwner = isCurrentUser
+    ? Boolean(isGameOwner || onlineEntry?.isGameCreator)
+    : Boolean(onlineEntry?.isGameCreator);
   const displaySeatNum = totalSeats - seatIdx;
+
+  React.useEffect(() => {
+    setImgError(false);
+  }, [seatAvatar]);
 
   return (
     <motion.button
@@ -75,10 +94,11 @@ export function TableSeatButton({
             <div className="absolute inset-[3px] rounded-full ring-2 ring-amber-400 ring-offset-0 animate-pulse shadow-[0_0_20px_rgba(251,191,36,0.8)] z-0" />
           )}
 
-          {seatAvatar ? (
+          {seatAvatar && !imgError ? (
             <img
               src={seatAvatar}
               alt={seatName}
+              onError={() => setImgError(true)}
               className={cn(
                 "w-[80%] h-[80%] rounded-full object-cover relative z-10",
                 seat.isReady
@@ -143,7 +163,7 @@ export function TableSeatButton({
             )}
             <span
               className={cn(
-                "px-1.5 py-0.5 rounded-full text-[8px] sm:text-[9px] font-bold tracking-tight shadow-md border whitespace-nowrap truncate max-w-[62px] sm:max-w-[74px] text-center leading-tight",
+                "px-1.5 py-0.5 rounded-full text-[8px] sm:text-[9px] font-bold tracking-tight shadow-md border whitespace-nowrap truncate max-w-[68px] sm:max-w-[82px] text-center leading-tight inline-flex items-center justify-center gap-0.5",
                 isDisconnected
                   ? "bg-amber-950/90 text-amber-300 border-amber-400/60"
                   : isSelected
@@ -153,7 +173,15 @@ export function TableSeatButton({
                   : "bg-black/85 text-slate-200 border-white/20"
               )}
             >
-              {seatName}
+              {isSeatOwner && (
+                <Crown
+                  className={cn(
+                    "w-2.5 h-2.5 shrink-0",
+                    isSelected && !isDisconnected ? "text-amber-950" : "text-[#ffd86b]"
+                  )}
+                />
+              )}
+              <span className="truncate">{seatName}</span>
             </span>
           </div>
         </div>
