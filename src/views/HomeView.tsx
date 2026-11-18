@@ -91,7 +91,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     >();
 
     for (const p of onlinePlayers) {
-      if (!p.userId) continue;
+      if (!p.userId || p.userId === 'connecting_player') continue;
       const isMe = p.userId === currentUser?.id;
       map.set(p.userId, {
         userId: p.userId,
@@ -108,7 +108,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     for (const t of Object.values(tables)) {
       if (t.status === 'closed' || t.status === 'closing') continue;
       for (const s of t.seats) {
-        if (!s.userId || s.userId.startsWith('bot_')) continue;
+        if (!s.userId || s.userId.startsWith('bot_') || s.userId === 'connecting_player') continue;
         const existing = map.get(s.userId);
         if (!existing && onlinePlayers.length > 0) continue;
         const isMe = s.userId === currentUser?.id;
@@ -124,7 +124,11 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
       }
     }
 
-    if (currentUser && !map.has(currentUser.id)) {
+    if (
+      currentUser &&
+      currentUser.id !== 'connecting_player' &&
+      !map.has(currentUser.id)
+    ) {
       map.set(currentUser.id, {
         userId: currentUser.id,
         name: currentUser.name,
@@ -192,36 +196,44 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     return list;
   }, [tables, roomFilter]);
 
-  const loadRuntimeStats = async () => {
-    setIsLoadingStats(true);
+  const loadRuntimeStats = async (silentBackground = false) => {
     setStatsError(null);
+    if (!silentBackground) {
+      try {
+        setServerStats(getRuntimeGameStats());
+      } catch {
+        // Fallback to network fetch below
+      }
+      setIsLoadingStats(false);
+    }
     try {
       const statsUrl = new URL('./api/stats', window.location.href).href;
       const res = await fetch(statsUrl, {
         method: 'GET',
         credentials: 'same-origin',
         cache: 'no-store',
+        signal: AbortSignal.timeout(1500),
       });
       if (res.ok) {
         const statsData = await res.json();
         setServerStats(statsData);
-        return;
       }
-      setServerStats(getRuntimeGameStats());
-    } catch (err: any) {
-      try {
-        setServerStats(getRuntimeGameStats());
-      } catch {
-        setStatsError(err?.message || 'Failed to load game statistics');
-      }
+    } catch {
+      // Runtime snapshot stats already shown instantaneously
     } finally {
       setIsLoadingStats(false);
     }
   };
 
   const handleOpenStats = () => {
+    try {
+      setServerStats(getRuntimeGameStats());
+    } catch {
+      // Ignore
+    }
+    setIsLoadingStats(false);
     setShowStatsModal(true);
-    loadRuntimeStats();
+    void loadRuntimeStats(true);
   };
 
   const handleCreatorLogin = async (e: React.FormEvent) => {

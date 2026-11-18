@@ -628,7 +628,11 @@ export function resolveStreamDurability(game: GameServer): StreamDurability | un
   return raw === "checkpoint" || raw === "strict" ? raw : undefined;
 }
 
-export function attachStreamUpgradeHandler(server: http.Server, game: GameServer): void {
+export function attachStreamUpgradeHandler(
+  server: http.Server,
+  game: GameServer,
+  options?: { ignoreNonStreamPaths?: boolean },
+): void {
   const activeSockets = new Set<Duplex>();
   server.on("close", () => {
     for (const sock of activeSockets) {
@@ -639,8 +643,16 @@ export function attachStreamUpgradeHandler(server: http.Server, game: GameServer
 
   server.on("upgrade", (req, socket, head) => {
     const pathname = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`).pathname;
+    if (pathname !== "/stream") {
+      if (options?.ignoreNonStreamPaths) {
+        return;
+      }
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     const key = req.headers["sec-websocket-key"];
-    if (pathname !== "/stream" || typeof key !== "string" || key.length === 0) {
+    if (typeof key !== "string" || key.length === 0) {
       socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;

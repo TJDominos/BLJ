@@ -20,7 +20,6 @@ import { RankWidget } from '@/components/blackjack/RankWidget';
 import { TablePlayersSidebar } from '@/components/blackjack/TablePlayersSidebar';
 import { TableSeatButton } from '@/components/blackjack/TableSeatButton';
 import { CurrencyIcon } from '@/components/CurrencyIcon';
-import { useBotBehavior } from '@/hooks/useBotBehavior';
 import { isRandseedRoomConnected } from '@/lib/randseedRuntime';
 
 // Further down, replace the dealer area:
@@ -224,11 +223,13 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
          }
       } else if (seatedPlayers.length === 0 && dealCountdown !== null) {
          setDealCountdown(null);
+      } else if (dealCountdown === -1 && mySeats.length === 0) {
+         setDealCountdown(null);
       }
     } else {
       setDealCountdown(null);
     }
-  }, [table?.status, dealCountdown, table?.settings.actionTimeLimit, recentWinAmount, seatsSignature]);
+  }, [table?.status, dealCountdown, table?.settings.actionTimeLimit, recentWinAmount, seatsSignature, mySeats.length]);
 
   useEffect(() => {
     if (confirmAction !== null || effectiveIsShuffling) return;
@@ -260,19 +261,28 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
 
       setDealCountdown(-1);
 
-      const myNotReady = mySeats.filter(sIdx => !table.seats[sIdx].isReady);
-      if (myNotReady.length > 0 && !isPlacingBetRef.current) {
-         myNotReady.forEach(sIdx => leaveTable(table.id, sIdx, true));
-      }
-      
-      // If none of the remaining players are ready, don't restart the countdown here,
-      // it will be handled by the other useEffect when seats update.
-      const hasReady = table.seats.some(s => s.userId !== null && s.isReady);
-      if (hasReady && (table.houseId === 'system' || table.houseId === currentUser?.id)) {
-         startGame(table.id);
-      } else if (!hasReady) {
-         setDealCountdown(null);
-      }
+      void (async () => {
+        const myNotReady = mySeats.filter(sIdx => !table.seats[sIdx]?.isReady);
+        if (myNotReady.length > 0 && !isPlacingBetRef.current) {
+          const leaveRes = await leaveTable(table.id, myNotReady, true);
+          if (!leaveRes.ok) {
+            setDealCountdown(2);
+            return;
+          }
+        }
+
+        const hasOtherReady = table.seats.some(
+          (s, idx) => s.userId !== null && s.isReady && !myNotReady.includes(idx)
+        );
+        if (hasOtherReady && (table.houseId === 'system' || table.houseId === currentUser?.id)) {
+          const startRes = await startGame(table.id);
+          if (!startRes.ok) {
+            setDealCountdown(2);
+          }
+        } else if (!hasOtherReady) {
+          setDealCountdown(null);
+        }
+      })();
     }
   }, [dealCountdown, table?.id, table?.status, seatsSignature, table?.settings.actionTimeLimit, mySeats, leaveTable, startGame, table?.houseId, currentUser?.id, confirmAction, disconnectedPlayerIds, effectiveIsShuffling]);
 
@@ -469,8 +479,6 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
       setActionCountdown(null);
     }
   }, [table?.status, table?.currentTurnIndex, table?.settings.actionTimeLimit, currentUser?.id, seatsSignature]);
-
-  useBotBehavior(table, hit, stand);
 
   const activeTurnSeatForEffects =
     table?.status === 'playing' && table.currentTurnIndex >= 0

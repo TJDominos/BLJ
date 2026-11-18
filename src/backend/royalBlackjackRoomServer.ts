@@ -292,7 +292,7 @@ export type BlackjackPlayerInput =
       playerAvatar?: string;
       tableCode?: string;
     }
-  | { action: "leave_seat"; tableId?: string; seatIndex?: number }
+  | { action: "leave_seat"; tableId?: string; seatIndex?: number; seatIndices?: number[] }
   | {
       action: "place_bet";
       tableId?: string;
@@ -363,6 +363,7 @@ export interface RoomSeatState {
   seatIndex: number;
   playerId: string | null;
   isReady: boolean;
+  seatedAtElapsedSec?: number;
   hand: RoomHandState | null;
   isSplitHand?: boolean;
   originalSeatIndex?: number;
@@ -1427,6 +1428,11 @@ function prepareNextBettingPhaseIfSettled(
   for (const seat of target.seats) {
     seat.isReady = false;
     seat.hand = null;
+    if (seat.playerId) {
+      seat.seatedAtElapsedSec = rootState.elapsedSeconds;
+    } else {
+      delete seat.seatedAtElapsedSec;
+    }
     delete seat.isSplitHand;
     delete seat.originalSeatIndex;
   }
@@ -2552,8 +2558,10 @@ function applyAuthoritativePlayerInput(
         target.tournamentParticipants.push(playerId);
       }
       seat.playerId = playerId;
+      seat.seatedAtElapsedSec = state.elapsedSeconds;
     } else {
       seat.playerId = playerId;
+      seat.seatedAtElapsedSec = state.elapsedSeconds;
       if (typeof target.balances[playerId] !== "number" || target.balances[playerId] <= 0) {
         target.balances[playerId] = state.walletCoins[playerId] || DEFAULT_GAME_COINS;
       }
@@ -2573,7 +2581,9 @@ function applyAuthoritativePlayerInput(
       return { status: "rejected", code: "INVALID_PHASE" };
     }
     const indicesToLeave =
-      typeof data.seatIndex === "number"
+      Array.isArray(data.seatIndices) && data.seatIndices.length > 0
+        ? data.seatIndices
+        : typeof data.seatIndex === "number"
         ? [data.seatIndex]
         : target.seats
             .map((s, idx) => (s.playerId === playerId ? idx : -1))
@@ -2599,6 +2609,7 @@ function applyAuthoritativePlayerInput(
         seat.playerId = null;
         seat.isReady = false;
         seat.hand = null;
+        delete seat.seatedAtElapsedSec;
         leftAny = true;
       }
     }
@@ -2701,6 +2712,7 @@ function applyAuthoritativePlayerInput(
     for (const seat of targetSeats) {
       if (!seat.playerId && target.mode === "regular") {
         seat.playerId = playerId;
+        seat.seatedAtElapsedSec = state.elapsedSeconds;
       }
       seat.isReady = true;
       seat.hand = {
@@ -2752,6 +2764,7 @@ function applyAuthoritativePlayerInput(
           }
           seat.playerId = null;
           seat.hand = null;
+          delete seat.seatedAtElapsedSec;
         }
       }
     }
@@ -3166,7 +3179,7 @@ export const royalBlackjackGameServer: GameServer<
       version: "1.2.0",
       minPlayers: 1,
       maxPlayers,
-      tickRateHz: 10,
+      tickRateHz: 1,
       persistentTable: true,
       playerViewMode: "private",
       playerViewSchemaVersion: 1,
@@ -3467,7 +3480,25 @@ export const royalBlackjackGameServer: GameServer<
         return ctx.elapsedSeconds - target.phaseStartElapsedSec > target.actionTimeLimitSec + lagGraceSecPrev;
       };
 
+      const checkBettingSeatTimedOut = (target: TableExecutionTarget): boolean => {
+        if (target.phase !== "betting" || target.mode === "tournament") return false;
+        for (const seat of target.seats) {
+          if (!seat.playerId || seat.playerId.startsWith("bot_") || seat.isReady) continue;
+          if (typeof seat.seatedAtElapsedSec !== "number") return true;
+          const disconnectedAt = prevDisconnected[seat.playerId];
+          if (disconnectedAt !== undefined) {
+            if (ctx.elapsedSeconds - disconnectedAt > disconnectGraceSecPrev) return true;
+            continue;
+          }
+          if (ctx.elapsedSeconds - seat.seatedAtElapsedSec > target.actionTimeLimitSec + 2) {
+            return true;
+          }
+        }
+        return false;
+      };
+
       if (checkActiveTurnTimedOut(prevState)) return false;
+      if (checkBettingSeatTimedOut(prevState)) return false;
 
       const nowMs = Math.max(1000, Math.round(ctx.elapsedSeconds * 1000));
       let extraHasOpenSeat = false;
@@ -3475,6 +3506,7 @@ export const royalBlackjackGameServer: GameServer<
       for (const ct of Object.values(customMap)) {
         if (!ct || ct.status === "closed") continue;
         if (checkActiveTurnTimedOut(ct)) return false;
+        if (checkBettingSeatTimedOut(ct)) return false;
         if (ct.houseId === "system") {
           if (ct.seats.some((s) => !s.playerId)) {
             extraHasOpenSeat = true;
@@ -3509,8 +3541,8 @@ export const royalBlackjackGameServer: GameServer<
         playerViews: buildCachedRoomPlayerViews(idleState, players) as any,
         broadcasts: [],
         persist:
-          (hasPendingDisconnectTimers && ctx.tick % 20 === 0) ||
-          ctx.tick % 100 === 0,
+          (hasPendingDisconnectTimers && ctx.tick % 3 === 0) ||
+          ctx.tick % 15 === 0,
       };
     }
 
@@ -3663,6 +3695,56 @@ export const royalBlackjackGameServer: GameServer<
         activeSeat.hand.status = "stood";
         advanceTurnOrSettle(state, target, broadcasts);
       }
+
+      if (target.phase === "betting" && target.mode !== "tournament") {
+        let removedUnreadySeat = false;
+        for (const seat of target.seats) {
+          if (!seat.playerId || seat.playerId.startsWith("bot_") || seat.isReady) continue;
+          if (typeof seat.seatedAtElapsedSec !== "number") {
+            seat.seatedAtElapsedSec = ctx.elapsedSeconds;
+            continue;
+          }
+          const disconnectedAt = state.disconnectedAtElapsedSec[seat.playerId];
+          if (
+            disconnectedAt !== undefined &&
+            ctx.elapsedSeconds - disconnectedAt <= disconnectGraceSec
+          ) {
+            // Respect 10s disconnect grace before removing seat
+            continue;
+          }
+          if (ctx.elapsedSeconds - seat.seatedAtElapsedSec > target.actionTimeLimitSec + 2) {
+            const evictedPid = seat.playerId;
+            if (seat.hand && seat.hand.bet > 0) {
+              const refund =
+                seat.hand.bet +
+                (seat.hand.sideBets?.pair || 0) +
+                (seat.hand.sideBets?.twentyOnePlusThree || 0);
+              target.balances[evictedPid] = (target.balances[evictedPid] || 0) + refund;
+              if (isSubTable(target) && target.houseId !== "system" && target.mode === "regular") {
+                target.liquidity = Math.max(0, target.liquidity - refund);
+              }
+              syncPlayerRegularBalanceAcrossTables(state, evictedPid, target.balances[evictedPid]);
+            }
+            seat.playerId = null;
+            seat.isReady = false;
+            seat.hand = null;
+            delete seat.seatedAtElapsedSec;
+            removedUnreadySeat = true;
+            broadcasts.push({
+              type: "seat:bet_timeout",
+              tableId: getTargetTableId(target),
+              seatIndex: seat.seatIndex,
+              playerId: evictedPid,
+            });
+          }
+        }
+        if (removedUnreadySeat) {
+          const seatedAfter = target.seats.filter((s) => s.playerId !== null);
+          if (seatedAfter.length > 0 && seatedAfter.every((s) => s.isReady)) {
+            dealInitialCards(state, target, broadcasts);
+          }
+        }
+      }
     }
 
     // 3. 超过 10s 的断线玩家按正常离线规则处理
@@ -3684,6 +3766,7 @@ export const royalBlackjackGameServer: GameServer<
             seat.playerId = null;
             seat.isReady = false;
             seat.hand = null;
+            delete seat.seatedAtElapsedSec;
           }
         }
       }
@@ -3707,6 +3790,7 @@ export const royalBlackjackGameServer: GameServer<
                 seat.playerId = null;
                 seat.isReady = false;
                 seat.hand = null;
+                delete seat.seatedAtElapsedSec;
               }
             }
           }
@@ -3752,8 +3836,8 @@ export const royalBlackjackGameServer: GameServer<
         (ctx.commands?.length ?? 0) > 0 ||
         broadcasts.length > 0 ||
         resultUnits.length > 0 ||
-        (hasPendingDisconnectTimers && ctx.tick % 20 === 0) ||
-        ctx.tick % 100 === 0,
+        (hasPendingDisconnectTimers && ctx.tick % 3 === 0) ||
+        ctx.tick % 15 === 0,
       ...(resultUnits.length > 0 ? { resultUnits: sanitizeJson(resultUnits) } : {}),
       ...(actionResults.length > 0 ? { actionResults: sanitizeJson(actionResults) } : {}),
     };

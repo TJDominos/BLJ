@@ -196,11 +196,10 @@ interface PendingSocketActionEntry {
 
 const pendingSocketActions = new Map<string, PendingSocketActionEntry>();
 
-function inspectSnapshotForSocketActionReceipts(
-  stateObj: Record<string, unknown> | null,
-  snapshotTick: number
-): void {
-  if (!stateObj || pendingSocketActions.size === 0) return;
+function extractRecentActionOutcomesFromStateObj(
+  stateObj: Record<string, unknown> | null | undefined
+): Array<{ reqId: string; status: "applied" | "rejected"; code?: string }> {
+  if (!stateObj || typeof stateObj !== "object") return [];
   const selfObj =
     stateObj.self && typeof stateObj.self === "object" && !Array.isArray(stateObj.self)
       ? (stateObj.self as Record<string, unknown>)
@@ -222,18 +221,41 @@ function inspectSnapshotForSocketActionReceipts(
       ? (stateObj._privateState as Record<string, unknown>)
       : null);
 
-  const rawOutcomes = Array.isArray(privObj?.recentActionOutcomes)
-    ? privObj!.recentActionOutcomes
-    : [];
+  if (!Array.isArray(privObj?.recentActionOutcomes)) return [];
+  return privObj!.recentActionOutcomes.filter(
+    (item: any): item is { reqId: string; status: "applied" | "rejected"; code?: string } =>
+      Boolean(
+        item &&
+          typeof item === "object" &&
+          typeof item.reqId === "string" &&
+          (item.status === "applied" || item.status === "rejected")
+      )
+  );
+}
+
+function findClientReqOutcomeInSnapshot(
+  snapshot: RoomSnapshot | undefined,
+  reqId: string
+): { status: "applied" | "rejected"; code?: string } | null {
+  if (!snapshot || !snapshot.state || typeof snapshot.state !== "object" || Array.isArray(snapshot.state)) {
+    return null;
+  }
+  const outcomes = extractRecentActionOutcomesFromStateObj(
+    snapshot.state as Record<string, unknown>
+  );
+  const matched = outcomes.find((item) => item.reqId === reqId);
+  return matched ? { status: matched.status, code: matched.code } : null;
+}
+
+function inspectSnapshotForSocketActionReceipts(
+  stateObj: Record<string, unknown> | null,
+  snapshotTick: number
+): void {
+  if (!stateObj || pendingSocketActions.size === 0) return;
+  const rawOutcomes = extractRecentActionOutcomesFromStateObj(stateObj);
 
   for (const [reqId, waiter] of Array.from(pendingSocketActions.entries())) {
-    const matched = rawOutcomes.find(
-      (item: any) =>
-        item &&
-        typeof item === "object" &&
-        item.reqId === reqId &&
-        (item.status === "applied" || item.status === "rejected")
-    ) as { reqId: string; status: "applied" | "rejected"; code?: string } | undefined;
+    const matched = rawOutcomes.find((item) => item.reqId === reqId);
 
     if (matched) {
       clearInterval(waiter.retryTimer);
@@ -243,11 +265,11 @@ function inspectSnapshotForSocketActionReceipts(
       continue;
     }
 
-    // If the room tick advanced 2+ ticks past our sent tick without recording our reqId
-    // (e.g. WS frame crossed a tick boundary or was dropped), re-transmit the idempotent payload.
+    // If the room tick advanced past our sent tick without recording our reqId
+    // (e.g. WS frame crossed a tick boundary or was dropped), re-transmit with fresh snapshot tick.
     if (
-      snapshotTick > waiter.lastSentTick + 1 &&
-      waiter.resendCount < 6 &&
+      snapshotTick > waiter.lastSentTick &&
+      waiter.resendCount < 5 &&
       roomClientInstance &&
       roomClientInstance.status === "connected"
     ) {
@@ -506,6 +528,9 @@ export async function matchRandseedRoom(
           );
         },
         onPlayersChanged: (players) => {
+          if (!cachedRoomAllocation && roomClientInstance) {
+            cachedRoomAllocation = roomClientInstance.allocation;
+          }
           if (Array.isArray(players)) {
             cachedRoomPlayers = players;
             if (playersChangedListener) {
@@ -705,16 +730,20 @@ function submitActionViaSocketWithReceipt(
       if (!waiter || !roomClientInstance || roomClientInstance.status !== "connected") {
         return;
       }
-      if (waiter.resendCount >= 6) return;
+      if (waiter.resendCount >= 5) return;
+      const currentTick = latestRawSnapshot?.tick ?? waiter.lastSentTick;
+      if (currentTick <= waiter.lastSentTick) {
+        return;
+      }
       const ok = roomClientInstance.sendSocketInput(waiter.actionPayload, {
         allowSameTick: true,
         force: true,
       });
       if (ok) {
-        waiter.lastSentTick = latestRawSnapshot?.tick ?? waiter.lastSentTick;
+        waiter.lastSentTick = currentTick;
         waiter.resendCount += 1;
       }
-    }, 650);
+    }, 500);
 
     const timeoutTimer = setTimeout(() => {
       const waiter = pendingSocketActions.get(reqId);
@@ -770,21 +799,8 @@ async function executeConfirmedRoomAction(
       clientReqId,
     };
 
-    // 1. Primary Fast Path: Persistent WebSocket input + idempotent snapshot receipt
-    //    Avoids HTTP POST /input optimistic-tick 409 conflicts and inputPending locks completely.
-    const wsOutcome = await submitActionViaSocketWithReceipt(actionPayload, clientReqId, 3600);
-    if (wsOutcome) {
-      if (wsOutcome.status === "applied") {
-        return { ok: true };
-      }
-      return {
-        ok: false,
-        code: wsOutcome.code,
-        error: formatActionRejectionCode(wsOutcome.code),
-      };
-    }
-
-    // 2. Fallback Path: HTTP sendAction (carries same idempotent clientReqId so it never double-applies)
+    // 1. Primary Authoritative Path: RoomClient.sendAction (POST /api/room/:roomId/input)
+    //    Triggers an immediate authoritative tick on the room host without pre-locking the tick slot via WS.
     for (let attempt = 0; attempt < 6; attempt++) {
       if (!roomClientInstance || roomClientInstance.status !== "connected") {
         const reconnected = await waitForRandseedRoomConnected(4000);
@@ -808,6 +824,24 @@ async function executeConfirmedRoomAction(
         }
       }
 
+      const preCheck = findClientReqOutcomeInSnapshot(
+        latestRawSnapshot ?? roomClientInstance.snapshot,
+        clientReqId
+      );
+      if (preCheck) {
+        if (preCheck.status === "applied") {
+          return { ok: true };
+        }
+        return {
+          ok: false,
+          code: preCheck.code,
+          error: formatActionRejectionCode(preCheck.code),
+        };
+      }
+
+      const tickBeforeAttempt =
+        roomClientInstance.snapshot?.tick ?? latestRawSnapshot?.tick ?? 0;
+
       try {
         const receipt = await roomClientInstance.sendAction(actionPayload);
         if (receipt.status === "applied") {
@@ -822,18 +856,64 @@ async function executeConfirmedRoomAction(
         }
         return { ok: true };
       } catch (err: unknown) {
+        const postErrorCheck = findClientReqOutcomeInSnapshot(
+          latestRawSnapshot ?? roomClientInstance?.snapshot,
+          clientReqId
+        );
+        if (postErrorCheck) {
+          if (postErrorCheck.status === "applied") {
+            return { ok: true };
+          }
+          return {
+            ok: false,
+            code: postErrorCheck.code,
+            error: formatActionRejectionCode(postErrorCheck.code),
+          };
+        }
+
         if (err instanceof RoomClientError) {
           if (err.code === "ACTION_RECEIPT_TIMEOUT") {
             return { ok: true };
           }
-          if (err.code === "INPUT_PENDING" && attempt < 5) {
-            await new Promise((r) => setTimeout(r, 80));
+          if (
+            (err.status === 409 ||
+              err.code === "ROOM_CONFLICT" ||
+              err.code === "INPUT_PENDING") &&
+            attempt < 5
+          ) {
+            const currentTickAfterRefresh =
+              roomClientInstance?.snapshot?.tick ?? latestRawSnapshot?.tick ?? tickBeforeAttempt;
+            if (currentTickAfterRefresh <= tickBeforeAttempt) {
+              // Wait for the in-flight tick on the Room Host to commit before retrying
+              const waitStart = Date.now();
+              let refreshedAgain = false;
+              while (Date.now() - waitStart < 450) {
+                await new Promise((r) => setTimeout(r, 35));
+                const nowTick =
+                  roomClientInstance?.snapshot?.tick ??
+                  latestRawSnapshot?.tick ??
+                  tickBeforeAttempt;
+                if (nowTick > tickBeforeAttempt) {
+                  break;
+                }
+                if (!refreshedAgain && Date.now() - waitStart >= 200 && roomClientInstance) {
+                  refreshedAgain = true;
+                  const refreshFn = (
+                    roomClientInstance as unknown as { refresh?: () => Promise<void> }
+                  ).refresh;
+                  if (typeof refreshFn === "function") {
+                    await refreshFn.call(roomClientInstance).catch(() => {});
+                  }
+                }
+              }
+            } else {
+              await new Promise((r) => setTimeout(r, 40 * (attempt + 1)));
+            }
             continue;
           }
-          // RoomClient.sendAction already ran this.refresh() on 409 — retry immediately with 0ms delay!
-          if (err.status === 409 && attempt < 5) {
-            continue;
-          }
+        }
+        if (attempt >= 5) {
+          break;
         }
         return {
           ok: false,
@@ -841,6 +921,34 @@ async function executeConfirmedRoomAction(
           error: formatRoomErrorMessage(err, "Failed to send action to the room server."),
         };
       }
+    }
+
+    // 2. Fallback Path: WebSocket input + idempotent clientReqId receipt check
+    const wsOutcome = await submitActionViaSocketWithReceipt(actionPayload, clientReqId, 1600);
+    if (wsOutcome) {
+      if (wsOutcome.status === "applied") {
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        code: wsOutcome.code,
+        error: formatActionRejectionCode(wsOutcome.code),
+      };
+    }
+
+    const finalCheck = findClientReqOutcomeInSnapshot(
+      latestRawSnapshot ?? roomClientInstance?.snapshot,
+      clientReqId
+    );
+    if (finalCheck) {
+      if (finalCheck.status === "applied") {
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        code: finalCheck.code,
+        error: formatActionRejectionCode(finalCheck.code),
+      };
     }
 
     return {
@@ -878,8 +986,6 @@ export async function sendRandseedRoomAction(
     if (isSnapshotGameOver(latestRawSnapshot)) {
       return false;
     }
-    // Use non-blocking WebSocket input exclusively so background telemetry/profile sync
-    // never sets RoomClient.inputPending = true or triggers HTTP 409 tick conflicts
     return roomClientInstance.sendSocketInput(action, { allowSameTick: true, force: true });
   } catch {
     return false;
@@ -888,11 +994,11 @@ export async function sendRandseedRoomAction(
 
 export async function readyRandseedRoom(): Promise<void> {
   if (!roomClientInstance || roomClientInstance.status !== "connected") return;
+  if (!isSnapshotGameOver(latestRawSnapshot ?? roomClientInstance.snapshot)) return;
   try {
     await roomClientInstance.readyForNextMatch();
   } catch {
-    // Also send in-band ready_next action for persistent tables
-    await sendRandseedRoomAction({ action: "ready_next" });
+    // Ignore when match is not complete
   }
 }
 

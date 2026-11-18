@@ -1308,12 +1308,18 @@ function buildOnlinePlayersList(
     }
   }
 
-  if (currentUser?.id && !map.has(currentUser.id)) {
+  if (
+    !hasLiveSdkRoster &&
+    currentUser?.id &&
+    currentUser.id !== 'connecting_player' &&
+    !map.has(currentUser.id)
+  ) {
     const tableInfo = findPlayerTableInfo(currentUser.id);
     map.set(currentUser.id, {
       userId: currentUser.id,
       name: currentUser.name || 'Player',
       avatar: currentUser.avatar,
+      isGameCreator: Boolean(currentUser.isCreator),
       tableId: tableInfo?.tableId,
       tableName: tableInfo?.tableName,
       isPlaying: tableInfo?.isPlaying ?? false,
@@ -1321,7 +1327,7 @@ function buildOnlinePlayersList(
     });
   }
 
-  return Array.from(map.values());
+  return Array.from(map.values()).filter((p) => p.userId !== 'connecting_player');
 }
 
 export function getRuntimeGameStats() {
@@ -1411,7 +1417,7 @@ interface GameStore {
   joinTable: (tableId: string, seatIndex: number, currency?: 'Gcoin' | 'Bonus') => Promise<ActionOutcome>;
   observeTable: (tableId: string) => void;
   recordVisit: (tableId: string) => Promise<void>;
-  leaveTable: (tableId: string, seatIndex?: number, isTimeout?: boolean) => Promise<ActionOutcome>;
+  leaveTable: (tableId: string, seatIndex?: number | number[], isTimeout?: boolean) => Promise<ActionOutcome>;
   unlockTableBalance: (tableId: string) => Promise<ActionOutcome>;
   refillGameCoins: (tableId?: string) => Promise<ActionOutcome>;
   placeBet: (tableId: string, seatIndex: number, amount: number, sideBets?: SideBets) => Promise<ActionOutcome>;
@@ -1676,7 +1682,15 @@ export const useGameStore = create<GameStore>((set, get) => {
 
           let nextUser = state.currentUser;
           let nextOwner = state.isGameOwner;
+          const allocPlayerId =
+            getRandseedRoomAllocation()?.playerId ||
+            (players.length === 1 && typeof players[0]?.playerId === 'string'
+              ? players[0].playerId.trim()
+              : undefined);
           if (nextUser) {
+            if (nextUser.id === 'connecting_player' && allocPlayerId) {
+              nextUser = { ...nextUser, id: allocPlayerId };
+            }
             const me = profileMap.get(nextUser.id);
             if (me) {
               const sdkName =
@@ -1744,25 +1758,6 @@ export const useGameStore = create<GameStore>((set, get) => {
         });
       }
     );
-
-    if (res?.allocation) {
-      const myProfile = getRandseedCurrentPlayerProfile(res.allocation.playerId);
-      const syncName =
-        (typeof myProfile?.displayName === 'string' && myProfile.displayName.trim()) ||
-        get().currentUser?.name ||
-        fallbackName;
-      const syncAvatar =
-        (typeof myProfile?.avatarUrl === 'string' && myProfile.avatarUrl.trim()) ||
-        get().currentUser?.avatar ||
-        fallbackAvatar;
-      if (syncName && syncName !== 'Player' && !syncName.startsWith('Player #')) {
-        sendRandseedRoomAction({
-          action: 'sync_profile',
-          name: syncName,
-          ...(syncAvatar ? { avatar: syncAvatar } : {}),
-        }).catch(() => {});
-      }
-    }
   };
 
   const initialBootstrapUser: User = {
@@ -1851,6 +1846,7 @@ export const useGameStore = create<GameStore>((set, get) => {
             method: 'GET',
             credentials: 'same-origin',
             cache: 'no-store',
+            signal: AbortSignal.timeout(2000),
           });
           if (!res.ok) {
             return Boolean(get().isGameOwner);
@@ -2217,6 +2213,13 @@ export const useGameStore = create<GameStore>((set, get) => {
         return { ok: false, code: 'NO_USER', error: 'Player session is not ready.' };
       }
 
+      if (Array.isArray(seatIndex)) {
+        return dispatchConfirmedOnlineAction({
+          action: 'leave_seat',
+          tableId,
+          seatIndices: seatIndex,
+        });
+      }
       if (seatIndex !== undefined) {
         return dispatchConfirmedOnlineAction({
           action: 'leave_seat',

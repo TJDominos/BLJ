@@ -20,7 +20,6 @@ import { RankWidget } from '@/components/blackjack/RankWidget';
 import { TablePlayersSidebar } from '@/components/blackjack/TablePlayersSidebar';
 import { TableSeatButton } from '@/components/blackjack/TableSeatButton';
 import { CurrencyIcon } from '@/components/CurrencyIcon';
-import { useBotBehavior } from '@/hooks/useBotBehavior';
 import { isRandseedRoomConnected } from '@/lib/randseedRuntime';
 
 // Further down, replace the dealer area:
@@ -452,8 +451,6 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
       setActionCountdown(null);
     }
   }, [table?.status, table?.currentTurnIndex, table?.settings.actionTimeLimit, currentUser?.id, seatsSignature]);
-
-  useBotBehavior(table, hit, stand);
 
   const activeTurnSeatForEffects =
     table?.status === 'playing' && table.currentTurnIndex >= 0

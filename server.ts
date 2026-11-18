@@ -13,6 +13,7 @@ import {
   SDK_ERROR_METADATA,
   SdkProtocolError,
   STREAM_PROTOCOL_V1,
+  attachStreamUpgradeHandler,
   createAgentPlayerView,
   validateAgentGameCapabilities,
   validateAgentPlayerContract,
@@ -202,8 +203,13 @@ async function startServer() {
 
   app.post("/tick", async (req, res) => {
     try {
-      const { ctx, state } = req.body;
-      const result = await royalBlackjackGameServer.tick(ctx, state);
+      const { ctx, state, players } = req.body;
+      const effectivePlayers = Array.isArray(players)
+        ? players.filter((p: unknown): p is string => typeof p === "string")
+        : Array.isArray(state?.players)
+        ? state.players
+        : undefined;
+      const result = await royalBlackjackGameServer.tick(ctx, state, effectivePlayers);
       res.json(result);
     } catch (err: any) {
       res.status(400).json({ error: err?.message || "Tick failed" });
@@ -212,8 +218,11 @@ async function startServer() {
 
   app.post("/onPlayerJoin", async (req, res) => {
     try {
-      const { playerId, state } = req.body;
-      const result = await royalBlackjackGameServer.onPlayerJoin(playerId, state);
+      const { playerId, state, players } = req.body;
+      const effectivePlayers = Array.isArray(players)
+        ? players.filter((p: unknown): p is string => typeof p === "string")
+        : undefined;
+      const result = await royalBlackjackGameServer.onPlayerJoin(playerId, state, effectivePlayers);
       res.json(result);
     } catch (err: any) {
       res.status(400).json({ error: err?.message || "onPlayerJoin failed" });
@@ -222,8 +231,11 @@ async function startServer() {
 
   app.post("/onPlayerLeave", async (req, res) => {
     try {
-      const { playerId, state } = req.body;
-      const result = await royalBlackjackGameServer.onPlayerLeave(playerId, state);
+      const { playerId, state, players } = req.body;
+      const effectivePlayers = Array.isArray(players)
+        ? players.filter((p: unknown): p is string => typeof p === "string")
+        : undefined;
+      const result = await royalBlackjackGameServer.onPlayerLeave(playerId, state, effectivePlayers);
       res.json(result);
     } catch (err: any) {
       res.status(400).json({ error: err?.message || "onPlayerLeave failed" });
@@ -242,12 +254,15 @@ async function startServer() {
 
   app.post("/onCommand", async (req, res) => {
     try {
-      const { command, state } = req.body;
+      const { command, state, players } = req.body;
       if (!royalBlackjackGameServer.onCommand) {
         res.status(501).json({ error: "onCommand not implemented" });
         return;
       }
-      const result = await royalBlackjackGameServer.onCommand(command, state);
+      const effectivePlayers = Array.isArray(players)
+        ? players.filter((p: unknown): p is string => typeof p === "string")
+        : undefined;
+      const result = await royalBlackjackGameServer.onCommand(command, state, effectivePlayers);
       res.json(result);
     } catch (err: any) {
       res.status(400).json({ error: err?.message || "onCommand failed" });
@@ -313,6 +328,12 @@ async function startServer() {
       sockets: Set<{ socket: Duplex; playerId: string; lastSeenMs: number }>;
       playerJoinedAt: Map<string, number>;
       observationGenerations: Map<string, number>;
+      nextGenerationSeq: number;
+      generationToPlayer: Map<
+        number,
+        { playerId: string; name?: string; avatar?: string; isCreator?: boolean }
+      >;
+      lastMatchedPlayer?: { playerId: string; name?: string; avatar?: string; isCreator?: boolean };
     }
   >();
 
@@ -876,12 +897,19 @@ async function startServer() {
     if (!inst.state.playerAvatars || typeof inst.state.playerAvatars !== "object") {
       inst.state.playerAvatars = {};
     }
+    if (!Array.isArray(inst.state.ownerPlayerIds)) {
+      inst.state.ownerPlayerIds = [];
+    }
     if (usableName && inst.state.playerNames[playerId] !== usableName) {
       inst.state.playerNames[playerId] = usableName;
       changed = true;
     }
     if (cleanAvatar && inst.state.playerAvatars[playerId] !== cleanAvatar) {
       inst.state.playerAvatars[playerId] = cleanAvatar;
+      changed = true;
+    }
+    if (usersDb[playerId]?.isCreator && !inst.state.ownerPlayerIds.includes(playerId)) {
+      inst.state.ownerPlayerIds.push(playerId);
       changed = true;
     }
     return changed;
@@ -933,6 +961,8 @@ async function startServer() {
         sockets: new Set(),
         playerJoinedAt: new Map([[playerId, nowMs]]),
         observationGenerations: new Map(),
+        nextGenerationSeq: 0,
+        generationToPlayer: new Map(),
       };
       if (applyPlayerProfileToRoomState(inst, playerId, playerName, playerAvatar)) {
         if (typeof royalBlackjackGameServer.derivePlayerViews === "function") {
@@ -945,6 +975,32 @@ async function startServer() {
       syncRoomWalletsToPersistentStore(inst.state);
       hostedRoomInstances.set(roomId, inst);
     } else {
+      // If a real authenticated player joins a room that previously only had the unauthenticated "player_1" fallback
+      // with no active socket and no occupied seat, purge the dummy "player_1" entry so it never duplicates the player.
+      if (
+        playerId !== "player_1" &&
+        Array.isArray(inst.state?.players) &&
+        inst.state.players.includes("player_1")
+      ) {
+        const hasPlayer1Socket = Array.from(inst.sockets).some((c) => c.playerId === "player_1");
+        const isPlayer1Seated =
+          (Array.isArray(inst.state?.seats) &&
+            inst.state.seats.some((s: any) => s?.playerId === "player_1")) ||
+          (inst.state?.customTables &&
+            typeof inst.state.customTables === "object" &&
+            Object.values(inst.state.customTables).some(
+              (ct: any) =>
+                Array.isArray(ct?.seats) && ct.seats.some((s: any) => s?.playerId === "player_1")
+            ));
+        if (!hasPlayer1Socket && !isPlayer1Seated) {
+          inst.state.players = inst.state.players.filter((id: string) => id !== "player_1");
+          inst.playerJoinedAt.delete("player_1");
+          if (inst.state.playerNames) delete inst.state.playerNames["player_1"];
+          if (inst.state.playerAvatars) delete inst.state.playerAvatars["player_1"];
+          if (inst.state.disconnectedAtElapsedSec) delete inst.state.disconnectedAtElapsedSec["player_1"];
+        }
+      }
+
       if (!inst.playerJoinedAt.has(playerId)) {
         inst.playerJoinedAt.set(playerId, Date.now());
       }
@@ -999,7 +1055,10 @@ async function startServer() {
     return cookies;
   };
 
-  const resolveAuthenticatedPlatformPlayer = (req: express.Request | http.IncomingMessage): {
+  const resolveAuthenticatedPlatformPlayer = (
+    req: express.Request | http.IncomingMessage,
+    roomIdHint?: string
+  ): {
     playerId: string;
     name?: string;
     avatar?: string;
@@ -1024,17 +1083,47 @@ async function startServer() {
 
     const body = (req as express.Request).body;
     const query = (req as express.Request).query;
-    const fallbackId =
+    const parsedUrl = (() => {
+      try {
+        return new URL(req.url || "/", `http://${headers.host || "localhost"}`);
+      } catch {
+        return null;
+      }
+    })();
+
+    const targetRoomId =
+      roomIdHint ||
+      (typeof body?.roomId === "string" && body.roomId) ||
+      (typeof (req as express.Request).params?.roomId === "string" &&
+        (req as express.Request).params.roomId) ||
+      "room_main";
+    const inst = hostedRoomInstances.get(targetRoomId);
+
+    const rawGen =
+      query?.observationGeneration ??
+      parsedUrl?.searchParams.get("observationGeneration") ??
+      body?.observationGeneration ??
+      body?.startupGeneration;
+    const genNum = typeof rawGen === "number" ? rawGen : typeof rawGen === "string" ? Number(rawGen) : NaN;
+    const genMatchedPlayer =
+      Number.isSafeInteger(genNum) && genNum >= 1 ? inst?.generationToPlayer.get(genNum) : undefined;
+
+    const explicitId =
+      headerPlayerId ||
+      genMatchedPlayer?.playerId ||
+      cookiePlayerId ||
       (typeof body?.playerId === "string" && body.playerId) ||
       (typeof body?.userId === "string" && body.userId) ||
       (typeof query?.playerId === "string" && query.playerId) ||
+      parsedUrl?.searchParams.get("playerId") ||
+      inst?.lastMatchedPlayer?.playerId ||
       "player_1";
 
     return {
-      playerId: (headerPlayerId || cookiePlayerId || fallbackId).trim(),
-      name: headerName || cookieName || body?.name,
-      avatar: headerAvatar || body?.avatar,
-      isCreator: isAuthorizedCreator(req),
+      playerId: explicitId.trim(),
+      name: headerName || genMatchedPlayer?.name || cookieName || body?.name || inst?.lastMatchedPlayer?.name,
+      avatar: headerAvatar || genMatchedPlayer?.avatar || body?.avatar || inst?.lastMatchedPlayer?.avatar,
+      isCreator: Boolean(isAuthorizedCreator(req) || genMatchedPlayer?.isCreator || inst?.lastMatchedPlayer?.isCreator),
     };
   };
 
@@ -1058,7 +1147,7 @@ async function startServer() {
     });
   });
 
-  // Background tick loop for active rooms & rooms waiting on 10s disconnect grace timers
+  // Background tick loop for active rooms & rooms waiting on 10s disconnect grace or betting idle timers
   let backgroundLoopCycle = 0;
   setInterval(async () => {
     backgroundLoopCycle++;
@@ -1097,12 +1186,22 @@ async function startServer() {
               (ct: any) =>
                 ct &&
                 ct.status !== "closed" &&
-                (ct.phase === "playing" || ct.phase === "dealer_turn")
+                (ct.phase === "playing" ||
+                  ct.phase === "dealer_turn" ||
+                  Boolean(ct.emptySince) ||
+                  (ct.phase === "betting" &&
+                    Array.isArray(ct.seats) &&
+                    ct.seats.some((s: any) => s?.playerId && !s.isReady)))
             )
           : false;
+      const hasSeatedBettingPlayerOnTable1 =
+        inst.state?.phase === "betting" &&
+        Array.isArray(inst.state?.seats) &&
+        inst.state.seats.some((s: any) => s?.playerId && !s.isReady);
       const hasActivePlayingTable =
         inst.state?.phase === "playing" ||
         inst.state?.phase === "dealer_turn" ||
+        hasSeatedBettingPlayerOnTable1 ||
         hasActiveCustomTable;
       if (inst.sockets.size === 0 && !hasDisconnectedPlayers && !pendingRollover) continue;
       if (!hasActivePlayingTable && !hasDisconnectedPlayers && !pendingRollover) continue;
@@ -1165,12 +1264,18 @@ async function startServer() {
         });
         return;
       }
-      const resolved = resolveAuthenticatedPlatformPlayer(req);
-      const playerId = resolved.playerId;
       const roomId = typeof req.body?.roomId === "string" && req.body.roomId ? req.body.roomId : "room_main";
+      const resolved = resolveAuthenticatedPlatformPlayer(req, roomId);
+      const playerId = resolved.playerId;
+      const isHttps =
+        req.secure ||
+        (typeof req.headers["x-forwarded-proto"] === "string" &&
+          req.headers["x-forwarded-proto"].includes("https"));
       res.setHeader(
         "Set-Cookie",
-        `rs_player_id=${encodeURIComponent(playerId)}; Path=/; SameSite=Lax`
+        `rs_player_id=${encodeURIComponent(playerId)}; Path=/; ${
+          isHttps ? "SameSite=None; Secure" : "SameSite=Lax"
+        }`
       );
       getOrCreateUser(playerId, resolved.name || "Player", Boolean(resolved.isCreator), resolved.avatar);
       const inst = await getOrCreateHostedRoom(
@@ -1180,8 +1285,11 @@ async function startServer() {
         resolved.name,
         resolved.avatar
       );
-      const nextGeneration = (inst.observationGenerations.get(playerId) || 0) + 1;
+      inst.nextGenerationSeq = (inst.nextGenerationSeq || 0) + 1;
+      const nextGeneration = inst.nextGenerationSeq;
       inst.observationGenerations.set(playerId, nextGeneration);
+      inst.generationToPlayer.set(nextGeneration, resolved);
+      inst.lastMatchedPlayer = resolved;
       const wantsObservationAck = req.headers["x-randseed-room-protocol"] === "observation-ack-v1";
       res.json({
         success: true,
@@ -2005,6 +2113,11 @@ async function startServer() {
 
   const httpServer = http.createServer(app);
 
+  // Attach @randseed/server-sdk session-v1 WebSocket stream handler (/stream) for platform Room Host
+  attachStreamUpgradeHandler(httpServer, royalBlackjackGameServer, {
+    ignoreNonStreamPaths: true,
+  });
+
   // Attach WebSocket upgrade handler for RoomClient (/ws/room/:roomId)
   const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
   httpServer.on("upgrade", async (req, socket, head) => {
@@ -2026,7 +2139,7 @@ async function startServer() {
         socket.destroy();
         return;
       }
-      const resolved = resolveAuthenticatedPlatformPlayer(req);
+      const resolved = resolveAuthenticatedPlatformPlayer(req, roomId);
       const playerId = resolved.playerId;
       const inst = await getOrCreateHostedRoom(
         roomId,
