@@ -1673,6 +1673,9 @@ let platformPlayersBackoffUntilMs = 0;
 export async function syncPlatformPlayerProfilesIntoState(
   state: RoyalBlackjackRoomState
 ): Promise<boolean> {
+  if (!process.env.PLATFORM_PLAYERS_URL) {
+    return false;
+  }
   if (Date.now() < platformPlayersBackoffUntilMs) {
     return false;
   }
@@ -2991,187 +2994,6 @@ export const royalBlackjackGameServer: GameServer<
 > = {
   durability: "checkpoint",
 
-  agentCapabilities(): AgentGameCapabilities {
-    return {
-      observationProtocolVersion: 1,
-      actionProtocolVersion: 1,
-      modes: ["copilot", "autoplay", "follow"],
-      maxDecisionHz: 2,
-      backgroundAutoplay: true,
-    };
-  },
-
-  agentPlayerContract(): AgentPlayerContract {
-    return {
-      playerViewProtocolVersion: 1,
-      actionProtocolVersion: 1,
-      playerViewSchemaId: "royal-blackjack.player-view.v1",
-      actionSchemaId: "royal-blackjack.action.v1",
-      modes: ["follow", "autoplay"],
-      maxDecisionHz: 2,
-      independentSeats: true,
-      backgroundAutoplay: true,
-    };
-  },
-
-  projectAgentPlayerView(request: AgentPlayerViewRequest): AgentPlayerViewProjection {
-    const rawState = request.state as unknown as RoyalBlackjackRoomState;
-    const projection = projectBlackjackRoomState(rawState);
-    const playerId = request.context.playerId;
-
-    const { focusTableId, legalActions, deadlineAt } = computeAgentLegalActionsAndFocus(
-      rawState,
-      playerId
-    );
-
-    const basePublic = projection.publicState as Record<string, any>;
-    const publicCustomMap = (basePublic.customTables || {}) as Record<string, Record<string, any>>;
-
-    const focusSource: Record<string, any> =
-      focusTableId !== "table_1" && publicCustomMap[focusTableId]
-        ? publicCustomMap[focusTableId]
-        : basePublic;
-
-    const compactSeats = Array.isArray(focusSource.seats)
-      ? focusSource.seats.map((s: any) => ({
-          seatIndex: s.seatIndex,
-          playerId: s.playerId,
-          isReady: Boolean(s.isReady),
-          hand: s.hand
-            ? {
-                cards: s.hand.cards,
-                bet: s.hand.bet,
-                status: s.hand.status,
-                score: s.hand.score,
-              }
-            : null,
-        }))
-      : [];
-
-    const tableDirectory: Array<Record<string, unknown>> = [
-      {
-        id: "table_1",
-        mode: basePublic.mode,
-        status: basePublic.phase === "playing" || basePublic.phase === "dealer_turn" ? "playing" : "waiting",
-        phase: basePublic.phase,
-        minBet: basePublic.minBet,
-        maxBet: basePublic.maxBet,
-        openSeats: Array.isArray(basePublic.seats)
-          ? basePublic.seats.filter((s: any) => !s?.playerId).length
-          : 0,
-        hasPin: false,
-      },
-    ];
-
-    for (const [tid, ct] of Object.entries(publicCustomMap)) {
-      if (!ct || typeof ct !== "object") continue;
-      if (tableDirectory.length >= 9) break;
-      tableDirectory.push({
-        id: tid,
-        mode: ct.mode,
-        status: ct.status,
-        phase: ct.phase,
-        minBet: ct.minBet,
-        maxBet: ct.maxBet,
-        openSeats: Array.isArray(ct.seats)
-          ? ct.seats.filter((s: any) => !s?.playerId).length
-          : 0,
-        hasPin: Boolean(ct.hasTableCode),
-      });
-    }
-
-    const basePriv = (projection.privateStates[playerId] as Record<string, any>) || {
-      playerId,
-      balance: rawState.balances?.[playerId] || 0,
-      walletCoins: rawState.walletCoins?.[playerId] || 0,
-      mySeats: [],
-      unlockedTableIds: rawState.unlockedTablesByPlayer?.[playerId] || [],
-      ownedTableCodes: {},
-    };
-
-    const focusBalance =
-      focusTableId !== "table_1" && rawState.customTables?.[focusTableId]
-        ? rawState.customTables[focusTableId].mode === "regular"
-          ? rawState.walletCoins?.[playerId] ??
-            rawState.customTables[focusTableId].balances?.[playerId] ??
-            0
-          : rawState.customTables[focusTableId].balances?.[playerId] ?? 0
-        : rawState.walletCoins?.[playerId] ?? rawState.balances?.[playerId] ?? 0;
-
-    const compactPublicState: Record<string, unknown> = {
-      matchId: basePublic.matchId,
-      matchSeq: basePublic.matchSeq,
-      focusTableId,
-      mode: focusSource.mode,
-      winningRule: focusSource.winningRule,
-      minBet: focusSource.minBet,
-      maxBet: focusSource.maxBet,
-      actionTimeLimitSec: focusSource.actionTimeLimitSec,
-      phase: focusSource.phase,
-      currentTurnSeatIndex: focusSource.currentTurnSeatIndex,
-      roundsPlayed: focusSource.roundsPlayed,
-      deckRemainingCount: focusSource.deckRemainingCount,
-      dealerHand: focusSource.dealerHand,
-      seats: compactSeats,
-      tableDirectory,
-      onlinePlayerCount: Array.isArray(basePublic.players) ? basePublic.players.length : 0,
-    };
-
-    const compactPrivateState: Record<string, unknown> = {
-      playerId,
-      walletCoins: basePriv.walletCoins ?? 0,
-      balance: focusBalance,
-      mySeats: Array.isArray(basePriv.mySeats) ? basePriv.mySeats.slice(0, 8) : [],
-      unlockedTableIds: Array.isArray(basePriv.unlockedTableIds)
-        ? basePriv.unlockedTableIds.slice(0, 8)
-        : [],
-      ownedTableCodes: basePriv.ownedTableCodes || {},
-      legalActions: legalActions.slice(0, 12),
-    };
-
-    let visibleEvents = compactCommittedEventsForAgent(request.committedEvents);
-    const decision = {
-      canAct: legalActions.length > 0,
-      deadlineAt,
-    };
-
-    // Enforce strict < 6,000-byte AgentPlayerView envelope limit (keep projection <= 4,800 bytes)
-    const MAX_PROJECTION_BUDGET_BYTES = 4_800;
-    let candidate = {
-      publicState: compactPublicState,
-      privateState: compactPrivateState,
-      visibleEvents,
-      decision,
-    };
-
-    if (utf8ByteLength(candidate) > MAX_PROJECTION_BUDGET_BYTES) {
-      compactPublicState.tableDirectory = tableDirectory.slice(0, 3);
-      visibleEvents = visibleEvents.slice(-1);
-      candidate = {
-        publicState: compactPublicState,
-        privateState: compactPrivateState,
-        visibleEvents,
-        decision,
-      };
-    }
-
-    if (utf8ByteLength(candidate) > MAX_PROJECTION_BUDGET_BYTES) {
-      delete compactPublicState.tableDirectory;
-      compactPrivateState.unlockedTableIds = [];
-      compactPrivateState.ownedTableCodes = {};
-      compactPrivateState.legalActions = legalActions.slice(0, 6);
-      visibleEvents = [];
-      candidate = {
-        publicState: compactPublicState,
-        privateState: compactPrivateState,
-        visibleEvents,
-        decision,
-      };
-    }
-
-    return sanitizeJson(candidate as unknown as AgentPlayerViewProjection);
-  },
-
   manifest(): GameManifest {
     const maxPlayers = resolveRoomMaxPlayers();
     return {
@@ -3179,7 +3001,7 @@ export const royalBlackjackGameServer: GameServer<
       version: "1.2.0",
       minPlayers: 1,
       maxPlayers,
-      tickRateHz: 1,
+      tickRateHz: 4,
       persistentTable: true,
       playerViewMode: "private",
       playerViewSchemaVersion: 1,
@@ -3533,16 +3355,12 @@ export const royalBlackjackGameServer: GameServer<
         ...prevState,
         elapsedSeconds: ctx.elapsedSeconds,
       };
-      const hasPendingDisconnectTimers =
-        Object.keys(idleState.disconnectedAtElapsedSec || {}).length > 0;
       return {
         state: idleState,
         joinable: computeRoomJoinable(idleState, players),
         playerViews: buildCachedRoomPlayerViews(idleState, players) as any,
         broadcasts: [],
-        persist:
-          (hasPendingDisconnectTimers && ctx.tick % 3 === 0) ||
-          ctx.tick % 15 === 0,
+        persist: true,
       };
     }
 
@@ -3823,21 +3641,12 @@ export const royalBlackjackGameServer: GameServer<
 
     state.viewRev = (state.viewRev || 0) + 1;
     const sanitizedState = sanitizeJson(state);
-    const hasPendingDisconnectTimers =
-      Object.keys(sanitizedState.disconnectedAtElapsedSec || {}).length > 0;
-
     return {
       state: sanitizedState,
       joinable: computeRoomJoinable(sanitizedState, players),
       playerViews: buildCachedRoomPlayerViews(sanitizedState, players) as any,
       broadcasts: sanitizeJson(broadcasts),
-      persist:
-        ctx.inputs.length > 0 ||
-        (ctx.commands?.length ?? 0) > 0 ||
-        broadcasts.length > 0 ||
-        resultUnits.length > 0 ||
-        (hasPendingDisconnectTimers && ctx.tick % 3 === 0) ||
-        ctx.tick % 15 === 0,
+      persist: true,
       ...(resultUnits.length > 0 ? { resultUnits: sanitizeJson(resultUnits) } : {}),
       ...(actionResults.length > 0 ? { actionResults: sanitizeJson(actionResults) } : {}),
     };

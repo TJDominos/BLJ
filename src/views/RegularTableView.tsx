@@ -557,7 +557,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     : ((parseInt(betAmountStr.replace(/,/g, '') || '0') + sideBetsTotalStr) * mySeats.length);
 
   const toggleSeatSelection = async (seatIndex: number) => {
-    if (seatActionInFlightRef.current) return;
+    if (seatActionInFlightRef.current || isPlacingBetRef.current || isDealing || pendingSeatIndex !== null) return;
     if (table.status !== 'waiting') {
       setConfirmAction({
         title: table.status === 'playing' ? 'Round in Progress' : 'Table Unavailable',
@@ -572,16 +572,17 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     }
 
     const seat = table.seats[seatIndex];
-    if (!seat) return;
+    if (!seat || seat.isReady) return;
     if (seat.userId !== null && seat.userId !== currentUser.id) {
       return;
     }
 
+    seatActionInFlightRef.current = true;
+    setPendingSeatIndex(seatIndex);
+
     const clickPan = table.seats.length > 1 ? (seatIndex / (table.seats.length - 1)) * 2 - 1 : 0;
     soundManager.playClick(clickPan);
 
-    seatActionInFlightRef.current = true;
-    setPendingSeatIndex(seatIndex);
     try {
       const res =
         seat.userId === null
@@ -625,6 +626,8 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
   };
 
   const handleStartGame = async () => {
+    if (isPlacingBetRef.current || isDealing || seatActionInFlightRef.current) return;
+    if (mySeats.length > 0 && mySeats.every((sIdx) => table.seats[sIdx]?.isReady)) return;
     soundManager.playChip();
     setRecentWinAmount(null);
     if (mySeats.length === 0) {
@@ -1599,6 +1602,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                         actionCountdown={isThisSeatTurn && seatDealRevealed ? actionCountdown : null}
                         shakeSeats={shakeSeats}
                         isPending={pendingSeatIndex === seatIdx}
+                        isInteractionLocked={pendingSeatIndex !== null || isDealing}
                         isDisconnected={Boolean(seat.userId && disconnectedPlayerIds.includes(seat.userId))}
                         onClick={() => toggleSeatSelection(seatIdx)}
                       />

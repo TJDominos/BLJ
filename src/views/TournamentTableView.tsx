@@ -529,7 +529,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
     : ((parseInt(betAmountStr.replace(/,/g, '') || '0') + sideBetsTotalStr) * mySeats.length);
 
   const toggleSeatSelection = async (seatIndex: number) => {
-    if (seatActionInFlightRef.current) return;
+    if (seatActionInFlightRef.current || isPlacingBetRef.current || isDealing || pendingSeatIndex !== null) return;
     if (table.status !== 'waiting') {
       setConfirmAction({
         title: table.status === 'playing' ? 'Round in Progress' : 'Table Unavailable',
@@ -545,10 +545,12 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
     // Requirement 6: For tournament, once a player is seated, they cannot leave or change their seat
     if (mySeats.length > 0) return;
 
+    const seat = table.seats[seatIndex];
+    if (!seat || seat.isReady) return;
+
     const clickPan = table.seats.length > 1 ? (seatIndex / (table.seats.length - 1)) * 2 - 1 : 0;
     soundManager.playClick(clickPan);
     
-    const seat = table.seats[seatIndex];
     if (seat.userId === null) {
        const userBal = table.userBalances?.[currentUser.id]?.balance || 0;
        if (table.settings.mode === 'tournament') {
@@ -651,6 +653,8 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
   };
 
   const handleStartGame = async () => {
+    if (isPlacingBetRef.current || isDealing || seatActionInFlightRef.current) return;
+    if (mySeats.length > 0 && mySeats.every((sIdx) => table.seats[sIdx]?.isReady)) return;
     soundManager.playChip();
     setRecentWinAmount(null);
     if (mySeats.length === 0) {
@@ -1639,6 +1643,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                         actionCountdown={isThisSeatTurn && seatDealRevealed ? actionCountdown : null}
                         shakeSeats={shakeSeats}
                         isPending={pendingSeatIndex === seatIdx}
+                        isInteractionLocked={pendingSeatIndex !== null || isDealing}
                         isDisconnected={Boolean(seat.userId && disconnectedPlayerIds.includes(seat.userId))}
                         onClick={() => toggleSeatSelection(seatIdx)}
                       />

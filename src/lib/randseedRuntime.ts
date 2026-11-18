@@ -6,11 +6,8 @@ import {
   getRandseedGameId,
   getRandseedHostOrigin,
   peekRoomSnapshotState,
-  readAgentPlayerView,
-  classifyAgentPlayerViewUpdate,
   fetchMatchReplay,
   fetchPlayerMatchHistory,
-  type AgentPlayerView,
   type ArchiveHistoryEntry,
   type ArchiveHistoryPage,
   type JsonValue,
@@ -82,8 +79,8 @@ let roomConnectionError: string | null = null;
 let cachedRoomPlayers: RoomPlayer[] = [];
 let cachedRoomAllocation: RoomMatch | undefined = undefined;
 let latestRawSnapshot: RoomSnapshot | undefined = undefined;
-let lastAgentPlayerView: AgentPlayerView | null = null;
 let lastDeliveredSnapshotKey: string | null = null;
+let lastSnapshotReceivedAtMs = 0;
 
 let snapshotListener:
   | ((
@@ -139,17 +136,6 @@ function readSafeRoomPlayers(room: RoomClient | null, snapshot?: RoomSnapshot): 
   return cachedRoomPlayers;
 }
 
-function isAgentPlayerViewEnvelope(val: JsonValue): boolean {
-  if (!val || typeof val !== "object" || Array.isArray(val)) return false;
-  const rec = val as Record<string, JsonValue>;
-  return (
-    rec.protocolVersion === 1 &&
-    typeof rec.schemaId === "string" &&
-    "publicState" in rec &&
-    "self" in rec &&
-    "decision" in rec
-  );
-}
 
 function formatRoomErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof RoomClientError) {
@@ -297,27 +283,18 @@ function getSnapshotKey(snapshot: RoomSnapshot, players?: RoomPlayer[]): string 
         .join(",")
     : "";
   const broadcastLen = Array.isArray(snapshot.broadcasts) ? snapshot.broadcasts.length : 0;
-  return `${snapshot.scope.gameId}:${snapshot.matchId}:${snapshot.matchSeq}:${snapshot.tick}:${rosterSig}:${broadcastLen}`;
+  const stateRec =
+    snapshot.state && typeof snapshot.state === "object" && !Array.isArray(snapshot.state)
+      ? (snapshot.state as Record<string, unknown>)
+      : null;
+  const viewRev = typeof stateRec?.viewRev === "number" ? stateRec.viewRev : 0;
+  const outcomesLen = extractRecentActionOutcomesFromStateObj(stateRec).length;
+  return `${snapshot.scope.gameId}:${snapshot.matchId}:${snapshot.matchSeq}:${snapshot.tick}:${viewRev}:${outcomesLen}:${rosterSig}:${broadcastLen}`;
 }
 
 function extractSnapshotState(
-  snapshot: RoomSnapshot,
-  allocation?: RoomMatch
+  snapshot: RoomSnapshot
 ): Record<string, unknown> | null {
-  if (isAgentPlayerViewEnvelope(snapshot.state)) {
-    const view = readAgentPlayerView(
-      snapshot,
-      allocation?.playerId,
-      allocation?.roomId
-    );
-    const classification = classifyAgentPlayerViewUpdate(lastAgentPlayerView, view);
-    if (classification.kind === "stale" || classification.kind === "duplicate") {
-      return null;
-    }
-    lastAgentPlayerView = view;
-    return view as unknown as Record<string, unknown>;
-  }
-
   const validated = peekRoomSnapshotState<Record<string, JsonValue>>(
     snapshot,
     (val: JsonValue): val is Record<string, JsonValue> =>
@@ -448,8 +425,8 @@ export function disconnectRandseedRoom(): void {
     cachedRoomAllocation = undefined;
     latestRawSnapshot = undefined;
     cachedRoomPlayers = [];
-    lastAgentPlayerView = null;
     lastDeliveredSnapshotKey = null;
+    lastSnapshotReceivedAtMs = 0;
   }
 }
 
@@ -495,7 +472,6 @@ export async function matchRandseedRoom(
   } | null> => {
   try {
     if (!roomClientInstance) {
-      lastAgentPlayerView = null;
       lastDeliveredSnapshotKey = null;
       const baseUrl = new URL("./", window.location.href).href;
       roomClientInstance = new RoomClient({
@@ -541,11 +517,12 @@ export async function matchRandseedRoom(
         onSnapshot: (snapshot) => {
           try {
             latestRawSnapshot = snapshot;
+            lastSnapshotReceivedAtMs = Date.now();
             if (!cachedRoomAllocation && roomClientInstance) {
               cachedRoomAllocation = roomClientInstance.allocation;
             }
             const players = readSafeRoomPlayers(roomClientInstance, snapshot);
-            const nextState = extractSnapshotState(snapshot, cachedRoomAllocation);
+            const nextState = extractSnapshotState(snapshot);
             inspectSnapshotForSocketActionReceipts(nextState, snapshot.tick);
             if (nextState && snapshotListener) {
               lastDeliveredSnapshotKey = getSnapshotKey(snapshot, players);
@@ -562,12 +539,14 @@ export async function matchRandseedRoom(
 
     const snapshot = await roomClientInstance.connect();
     latestRawSnapshot = snapshot;
+    lastSnapshotReceivedAtMs = Date.now();
     cachedRoomAllocation = roomClientInstance.allocation;
+    attachSocketFrameMonitor(roomClientInstance);
     notifyRoomStatusChange("connected", null);
     const players = readSafeRoomPlayers(roomClientInstance, snapshot);
     const snapKey = getSnapshotKey(snapshot, players);
     if (snapKey !== lastDeliveredSnapshotKey) {
-      const nextState = extractSnapshotState(snapshot, cachedRoomAllocation);
+      const nextState = extractSnapshotState(snapshot);
       inspectSnapshotForSocketActionReceipts(nextState, snapshot.tick);
       if (nextState && snapshotListener) {
         lastDeliveredSnapshotKey = snapKey;
@@ -707,21 +686,105 @@ async function waitForMatchRolloverIfOver(maxWaitMs = 3000): Promise<boolean> {
   return !isSnapshotGameOver(latestRawSnapshot ?? roomClientInstance?.snapshot);
 }
 
-function submitActionViaSocketWithReceipt(
+const monitoredSockets = new WeakSet<WebSocket>();
+let refreshStateInFlight: Promise<void> | null = null;
+
+async function refreshRoomClientState(): Promise<void> {
+  if (!roomClientInstance || roomClientInstance.status !== "connected") return;
+  if (refreshStateInFlight) return refreshStateInFlight;
+  refreshStateInFlight = (async () => {
+    try {
+      const clientAny = roomClientInstance as unknown as {
+        refresh?: (signal?: AbortSignal) => Promise<void>;
+        controller?: AbortController;
+      };
+      if (typeof clientAny.refresh === "function") {
+        const sig = clientAny.controller?.signal ?? AbortSignal.timeout(4000);
+        await clientAny.refresh(sig);
+      }
+    } catch {
+      // Ignore transient refresh failures
+    } finally {
+      refreshStateInFlight = null;
+    }
+  })();
+  return refreshStateInFlight;
+}
+
+function attachSocketFrameMonitor(client: RoomClient | null): void {
+  if (!client) return;
+  const rawSocket = (client as unknown as { socket?: WebSocket }).socket;
+  if (!rawSocket || typeof rawSocket.addEventListener !== "function") return;
+  if (monitoredSockets.has(rawSocket)) return;
+  monitoredSockets.add(rawSocket);
+
+  rawSocket.addEventListener("message", (event) => {
+    if (typeof event.data !== "string" || pendingSocketActions.size === 0) return;
+    try {
+      const parsed = JSON.parse(event.data);
+      if (parsed && parsed.type === "error" && parsed.code === "ROOM_CONFLICT") {
+        // RoomClient ignores WS ROOM_CONFLICT without refreshing this.current.tick.
+        // Immediately refresh GET /state (200 OK) and re-transmit pending socket inputs on the fresh tick.
+        void (async () => {
+          await refreshRoomClientState();
+          if (!roomClientInstance || roomClientInstance.status !== "connected") return;
+          attachSocketFrameMonitor(roomClientInstance);
+          const freshSnap = roomClientInstance.snapshot ?? latestRawSnapshot;
+          const freshTick = freshSnap?.tick ?? 0;
+          const stateObj =
+            freshSnap?.state && typeof freshSnap.state === "object" && !Array.isArray(freshSnap.state)
+              ? (freshSnap.state as Record<string, unknown>)
+              : null;
+          inspectSnapshotForSocketActionReceipts(stateObj, freshTick);
+          for (const waiter of Array.from(pendingSocketActions.values())) {
+            if (waiter.resendCount >= 8) continue;
+            const sent = roomClientInstance.sendSocketInput(waiter.actionPayload, {
+              allowSameTick: true,
+              force: true,
+            });
+            if (sent) {
+              waiter.lastSentTick = freshTick;
+              waiter.resendCount += 1;
+            }
+          }
+        })();
+      }
+    } catch {
+      // Ignore non-JSON frame
+    }
+  });
+}
+
+async function submitActionViaSocketWithReceipt(
   actionPayload: Record<string, JsonValue>,
   reqId: string,
   timeoutMs = 3600
 ): Promise<{ status: "applied" | "rejected"; code?: string } | null> {
   if (!roomClientInstance || roomClientInstance.status !== "connected") {
-    return Promise.resolve(null);
+    return null;
   }
-  const initialTick = latestRawSnapshot?.tick ?? 0;
+
+  attachSocketFrameMonitor(roomClientInstance);
+
+  // If no WebSocket snapshot has arrived in the last 600ms, the room host's tick may have advanced while idle.
+  // Refresh GET /state (200 OK) first so expectedTick is fresh before sending over WebSocket.
+  if (Date.now() - lastSnapshotReceivedAtMs > 600) {
+    await refreshRoomClientState();
+  }
+
+  if (!roomClientInstance || roomClientInstance.status !== "connected") {
+    return null;
+  }
+
+  attachSocketFrameMonitor(roomClientInstance);
+
+  const initialTick = roomClientInstance.snapshot?.tick ?? latestRawSnapshot?.tick ?? 0;
   const sent = roomClientInstance.sendSocketInput(actionPayload, {
     allowSameTick: true,
     force: true,
   });
   if (!sent) {
-    return Promise.resolve(null);
+    return null;
   }
 
   return new Promise((resolve) => {
@@ -730,20 +793,56 @@ function submitActionViaSocketWithReceipt(
       if (!waiter || !roomClientInstance || roomClientInstance.status !== "connected") {
         return;
       }
-      if (waiter.resendCount >= 5) return;
-      const currentTick = latestRawSnapshot?.tick ?? waiter.lastSentTick;
-      if (currentTick <= waiter.lastSentTick) {
+
+      const existing = findClientReqOutcomeInSnapshot(
+        latestRawSnapshot ?? roomClientInstance.snapshot,
+        reqId
+      );
+      if (existing) {
+        clearInterval(waiter.retryTimer);
+        clearTimeout(waiter.timeoutTimer);
+        pendingSocketActions.delete(reqId);
+        waiter.resolve(existing);
         return;
       }
-      const ok = roomClientInstance.sendSocketInput(waiter.actionPayload, {
-        allowSameTick: true,
-        force: true,
-      });
-      if (ok) {
-        waiter.lastSentTick = currentTick;
-        waiter.resendCount += 1;
-      }
-    }, 500);
+
+      if (waiter.resendCount >= 8) return;
+
+      void (async () => {
+        if (!pendingSocketActions.has(reqId) || !roomClientInstance) return;
+        let currentTick =
+          roomClientInstance.snapshot?.tick ?? latestRawSnapshot?.tick ?? waiter.lastSentTick;
+        if (currentTick <= waiter.lastSentTick) {
+          await refreshRoomClientState();
+          currentTick =
+            roomClientInstance?.snapshot?.tick ?? latestRawSnapshot?.tick ?? waiter.lastSentTick;
+        }
+        const activeWaiter = pendingSocketActions.get(reqId);
+        if (!activeWaiter || !roomClientInstance || roomClientInstance.status !== "connected") {
+          return;
+        }
+        const postRefreshCheck = findClientReqOutcomeInSnapshot(
+          latestRawSnapshot ?? roomClientInstance.snapshot,
+          reqId
+        );
+        if (postRefreshCheck) {
+          clearInterval(activeWaiter.retryTimer);
+          clearTimeout(activeWaiter.timeoutTimer);
+          pendingSocketActions.delete(reqId);
+          activeWaiter.resolve(postRefreshCheck);
+          return;
+        }
+        attachSocketFrameMonitor(roomClientInstance);
+        const ok = roomClientInstance.sendSocketInput(activeWaiter.actionPayload, {
+          allowSameTick: true,
+          force: true,
+        });
+        if (ok) {
+          activeWaiter.lastSentTick = currentTick;
+          activeWaiter.resendCount += 1;
+        }
+      })();
+    }, 280);
 
     const timeoutTimer = setTimeout(() => {
       const waiter = pendingSocketActions.get(reqId);
@@ -799,132 +898,9 @@ async function executeConfirmedRoomAction(
       clientReqId,
     };
 
-    // 1. Primary Authoritative Path: RoomClient.sendAction (POST /api/room/:roomId/input)
-    //    Triggers an immediate authoritative tick on the room host without pre-locking the tick slot via WS.
-    for (let attempt = 0; attempt < 6; attempt++) {
-      if (!roomClientInstance || roomClientInstance.status !== "connected") {
-        const reconnected = await waitForRandseedRoomConnected(4000);
-        if (!reconnected || !roomClientInstance) {
-          return {
-            ok: false,
-            code: "NOT_CONNECTED",
-            error: "Lost connection to the online room. Please wait for reconnection and try again.",
-          };
-        }
-      }
-
-      if (isSnapshotGameOver(latestRawSnapshot)) {
-        const rolled = await waitForMatchRolloverIfOver(2500);
-        if (!rolled) {
-          return {
-            ok: false,
-            code: "MATCH_TRANSITIONING",
-            error: "The room is transitioning between rounds. Please try again in a moment.",
-          };
-        }
-      }
-
-      const preCheck = findClientReqOutcomeInSnapshot(
-        latestRawSnapshot ?? roomClientInstance.snapshot,
-        clientReqId
-      );
-      if (preCheck) {
-        if (preCheck.status === "applied") {
-          return { ok: true };
-        }
-        return {
-          ok: false,
-          code: preCheck.code,
-          error: formatActionRejectionCode(preCheck.code),
-        };
-      }
-
-      const tickBeforeAttempt =
-        roomClientInstance.snapshot?.tick ?? latestRawSnapshot?.tick ?? 0;
-
-      try {
-        const receipt = await roomClientInstance.sendAction(actionPayload);
-        if (receipt.status === "applied") {
-          return { ok: true };
-        }
-        if (receipt.status === "rejected") {
-          return {
-            ok: false,
-            code: receipt.code,
-            error: formatActionRejectionCode(receipt.code),
-          };
-        }
-        return { ok: true };
-      } catch (err: unknown) {
-        const postErrorCheck = findClientReqOutcomeInSnapshot(
-          latestRawSnapshot ?? roomClientInstance?.snapshot,
-          clientReqId
-        );
-        if (postErrorCheck) {
-          if (postErrorCheck.status === "applied") {
-            return { ok: true };
-          }
-          return {
-            ok: false,
-            code: postErrorCheck.code,
-            error: formatActionRejectionCode(postErrorCheck.code),
-          };
-        }
-
-        if (err instanceof RoomClientError) {
-          if (err.code === "ACTION_RECEIPT_TIMEOUT") {
-            return { ok: true };
-          }
-          if (
-            (err.status === 409 ||
-              err.code === "ROOM_CONFLICT" ||
-              err.code === "INPUT_PENDING") &&
-            attempt < 5
-          ) {
-            const currentTickAfterRefresh =
-              roomClientInstance?.snapshot?.tick ?? latestRawSnapshot?.tick ?? tickBeforeAttempt;
-            if (currentTickAfterRefresh <= tickBeforeAttempt) {
-              // Wait for the in-flight tick on the Room Host to commit before retrying
-              const waitStart = Date.now();
-              let refreshedAgain = false;
-              while (Date.now() - waitStart < 450) {
-                await new Promise((r) => setTimeout(r, 35));
-                const nowTick =
-                  roomClientInstance?.snapshot?.tick ??
-                  latestRawSnapshot?.tick ??
-                  tickBeforeAttempt;
-                if (nowTick > tickBeforeAttempt) {
-                  break;
-                }
-                if (!refreshedAgain && Date.now() - waitStart >= 200 && roomClientInstance) {
-                  refreshedAgain = true;
-                  const refreshFn = (
-                    roomClientInstance as unknown as { refresh?: () => Promise<void> }
-                  ).refresh;
-                  if (typeof refreshFn === "function") {
-                    await refreshFn.call(roomClientInstance).catch(() => {});
-                  }
-                }
-              }
-            } else {
-              await new Promise((r) => setTimeout(r, 40 * (attempt + 1)));
-            }
-            continue;
-          }
-        }
-        if (attempt >= 5) {
-          break;
-        }
-        return {
-          ok: false,
-          code: err instanceof RoomClientError ? err.code : undefined,
-          error: formatRoomErrorMessage(err, "Failed to send action to the room server."),
-        };
-      }
-    }
-
-    // 2. Fallback Path: WebSocket input + idempotent clientReqId receipt check
-    const wsOutcome = await submitActionViaSocketWithReceipt(actionPayload, clientReqId, 1600);
+    // Primary Path: WebSocket sendSocketInput + idempotent clientReqId receipt check.
+    // Avoids HTTP POST /api/room/:roomId/input 409 Conflict responses completely while the room socket is active.
+    const wsOutcome = await submitActionViaSocketWithReceipt(actionPayload, clientReqId, 3500);
     if (wsOutcome) {
       if (wsOutcome.status === "applied") {
         return { ok: true };
@@ -936,6 +912,7 @@ async function executeConfirmedRoomAction(
       };
     }
 
+    await refreshRoomClientState();
     const finalCheck = findClientReqOutcomeInSnapshot(
       latestRawSnapshot ?? roomClientInstance?.snapshot,
       clientReqId
@@ -953,8 +930,8 @@ async function executeConfirmedRoomAction(
 
     return {
       ok: false,
-      code: "ROOM_CONFLICT",
-      error: "Room state updated simultaneously. Please click again.",
+      code: "ACTION_RECEIPT_TIMEOUT",
+      error: "The room did not confirm the action in time. Please try again.",
     };
   } catch (err: unknown) {
     return {

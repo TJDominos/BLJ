@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Loader2, Minus, Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Table } from '@/store/gameStore';
@@ -64,7 +64,46 @@ export function DealControlHUD({
   className
 }: DealControlHUDProps) {
 
-  const isAnySeatNotReady = mySeats.some(sIdx => !table.seats[sIdx].isReady);
+  const isAnySeatNotReady = mySeats.some(sIdx => !table.seats[sIdx]?.isReady);
+  const dealStepKey = `${table.id}:${table.roundsPlayed ?? 0}:${table.status}:${mySeats.join(',')}:${isAnySeatNotReady ? 'unready' : 'ready'}`;
+
+  const lockedDealKeyRef = useRef<string | null>(null);
+  const [lockedDealKey, setLockedDealKey] = useState<string | null>(null);
+  const prevIsDealingRef = useRef<boolean>(isDealing);
+
+  useEffect(() => {
+    if (lockedDealKey && lockedDealKey !== dealStepKey) {
+      lockedDealKeyRef.current = null;
+      setLockedDealKey(null);
+    }
+  }, [dealStepKey, lockedDealKey]);
+
+  useEffect(() => {
+    // If parent finished dealing attempt and seat is still unready (e.g. validation modal or rejected bet), unlock
+    if (prevIsDealingRef.current && !isDealing && isAnySeatNotReady) {
+      lockedDealKeyRef.current = null;
+      setLockedDealKey(null);
+    }
+    prevIsDealingRef.current = isDealing;
+  }, [isDealing, isAnySeatNotReady]);
+
+  const effectiveIsDealing =
+    isDealing ||
+    (mySeats.length > 0 &&
+      (lockedDealKeyRef.current === dealStepKey || lockedDealKey === dealStepKey));
+
+  const handleDealClick = () => {
+    if (effectiveIsDealing) return;
+    if (mySeats.length === 0) {
+      onDeal();
+      return;
+    }
+    if (!isAnySeatNotReady) return;
+    if (lockedDealKeyRef.current === dealStepKey) return;
+    lockedDealKeyRef.current = dealStepKey;
+    setLockedDealKey(dealStepKey);
+    onDeal();
+  };
 
   return (
     <div className={className || "absolute bottom-1 sm:bottom-4 md:-bottom-5 w-full flex flex-col items-center z-30 px-4 pointer-events-none"}>
@@ -92,21 +131,26 @@ export function DealControlHUD({
                 )}
                 <div className="flex items-center bg-gradient-to-b from-[#6e4620] to-[#513518] rounded-full w-[96px] sm:w-[136px] shrink-0 h-[32px] sm:h-[40px] p-0.5 sm:p-1 shadow-[inset_0_3px_5px_rgba(0,0,0,0.6),0_1px_1px_rgba(255,255,255,0.4)] border border-[#3a2510]">
                     <button 
+                      type="button"
+                      disabled={effectiveIsDealing}
                       onClick={onMinus}
-                      className="w-[26px] h-[26px] sm:w-[30px] sm:h-[30px] rounded-[6px] sm:rounded-[8px] bg-gradient-to-b from-[#bd945d] to-[#987241] flex justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
+                      className="w-[26px] h-[26px] sm:w-[30px] sm:h-[30px] rounded-[6px] sm:rounded-[8px] bg-gradient-to-b from-[#bd945d] to-[#987241] flex justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 disabled:opacity-50 disabled:pointer-events-none transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
                     >
                       <Minus className="w-3 h-3 sm:w-4 sm:h-4" />
                     </button>
                     <input 
                         type="text"
-                        className="flex-1 bg-transparent border-none outline-none text-white font-black text-[12px] leading-[16px] sm:text-[16px] sm:leading-[22px] min-w-0 text-center px-0.5 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]"
+                        disabled={effectiveIsDealing}
+                        className="flex-1 bg-transparent border-none outline-none text-white font-black text-[12px] leading-[16px] sm:text-[16px] sm:leading-[22px] min-w-0 text-center px-0.5 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] disabled:opacity-60"
                         value={betAmountStr}
                         onChange={onBetChange}
                         onBlur={onBetBlur}
                     />
                     <button 
+                      type="button"
+                      disabled={effectiveIsDealing}
                       onClick={onPlus}
-                      className="w-[26px] h-[26px] sm:w-[30px] sm:h-[30px] rounded-[6px] sm:rounded-[8px] bg-gradient-to-b from-[#bd945d] to-[#987241] flex justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
+                      className="w-[26px] h-[26px] sm:w-[30px] sm:h-[30px] rounded-[6px] sm:rounded-[8px] bg-gradient-to-b from-[#bd945d] to-[#987241] flex justify-center items-center text-white/90 hover:text-white hover:from-[#cda36c] hover:to-[#a78150] active:scale-95 disabled:opacity-50 disabled:pointer-events-none transition-all shadow-[0_2px_4px_rgba(0,0,0,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] border border-[#836338] shrink-0 font-bold"
                     >
                       <Plus className="w-3 h-3 sm:w-4 sm:h-4" />
                     </button>
@@ -117,8 +161,10 @@ export function DealControlHUD({
               <div className="flex flex-col items-center justify-center shrink-0">
                 <span className="text-[8px] sm:text-[11px] text-white/90 font-black uppercase tracking-wider drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] mb-0.5" style={{WebkitTextStroke: '0.5px rgba(0,0,0,0.5)'}}>Side</span>
                 <button 
+                  type="button"
+                  disabled={effectiveIsDealing}
                   onClick={onSideBetsToggle}
-                  className={cn("w-7 h-3.5 sm:w-11 sm:h-5 rounded-full p-0.5 transition-colors relative shadow-[inset_0_2px_4px_rgba(0,0,0,0.7)] border border-black/30", sideBetsEnabled ? "bg-[#32d5a4]" : "bg-[#454746]")}>
+                  className={cn("w-7 h-3.5 sm:w-11 sm:h-5 rounded-full p-0.5 transition-colors relative shadow-[inset_0_2px_4px_rgba(0,0,0,0.7)] border border-black/30 disabled:opacity-50 disabled:pointer-events-none", sideBetsEnabled ? "bg-[#32d5a4]" : "bg-[#454746]")}>
                     <div className={cn("w-2.5 h-2.5 sm:w-3.5 sm:h-3.5 rounded-full transition-transform shadow-md", sideBetsEnabled ? "bg-white translate-x-3.5 sm:translate-x-5" : "bg-[#c0c0c0] translate-x-0")} />
                 </button>
               </div>
@@ -137,20 +183,21 @@ export function DealControlHUD({
                 
                 return (
                   <button 
-                    onClick={onDeal}
-                    disabled={isDealing}
+                    type="button"
+                    onClick={handleDealClick}
+                    disabled={effectiveIsDealing}
                     className={cn(
-                      "relative overflow-hidden min-w-[66px] sm:min-w-[104px] h-[34px] sm:h-[40px] bg-gradient-to-b from-[#28a19b] to-[#126b6f] text-white rounded-[12px] sm:rounded-[18px] px-2 font-black tracking-widest text-[11px] sm:text-[15px] uppercase transition-all shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border border-[#0d4f52] flex items-center justify-center shrink-0 group hover:from-[#2ebaba] hover:to-[#178287] disabled:opacity-75 disabled:cursor-wait",
-                      dealCountdown !== null && !isDealing ? "animate-pulse shadow-[0_0_15px_rgba(40,161,155,0.8)]" : "active:scale-95"
+                      "relative overflow-hidden min-w-[66px] sm:min-w-[104px] h-[34px] sm:h-[40px] bg-gradient-to-b from-[#28a19b] to-[#126b6f] text-white rounded-[12px] sm:rounded-[18px] px-2 font-black tracking-widest text-[11px] sm:text-[15px] uppercase transition-all shadow-[inset_0_2px_2px_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.4),0_4px_8px_rgba(0,0,0,0.5)] border border-[#0d4f52] flex items-center justify-center shrink-0 group hover:from-[#2ebaba] hover:to-[#178287] disabled:opacity-75 disabled:pointer-events-none disabled:cursor-wait",
+                      dealCountdown !== null && !effectiveIsDealing ? "animate-pulse shadow-[0_0_15px_rgba(40,161,155,0.8)]" : "active:scale-95"
                     )}
                   >
-                    {dealCountdown !== null && !isDealing && (
+                    {dealCountdown !== null && !effectiveIsDealing && (
                        <div className="absolute inset-x-0 bottom-0 h-1 bg-white/20">
                          <div className="h-full bg-white transition-all duration-1000 ease-linear" style={{ width: `${(dealCountdown / (table.settings.actionTimeLimit || 15)) * 100}%` }}></div>
                        </div>
                     )}
                     <span className="drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] z-10 leading-none flex items-center gap-1">
-                      {isDealing ? (
+                      {effectiveIsDealing ? (
                         <Loader2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin" />
                       ) : dealCountdown !== null ? (
                         dealCountdown

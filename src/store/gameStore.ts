@@ -1309,7 +1309,6 @@ function buildOnlinePlayersList(
   }
 
   if (
-    !hasLiveSdkRoster &&
     currentUser?.id &&
     currentUser.id !== 'connecting_player' &&
     !map.has(currentUser.id)
@@ -1484,6 +1483,7 @@ export const useGameStore = create<GameStore>((set, get) => {
     const resolvedId =
       allocation?.playerId ||
       (typeof roomState._privateState?.playerId === 'string' && roomState._privateState.playerId) ||
+      (typeof roomState.self?.playerId === 'string' && roomState.self.playerId) ||
       current?.id ||
       '';
 
@@ -1666,6 +1666,47 @@ export const useGameStore = create<GameStore>((set, get) => {
     return sendRandseedRoomActionConfirmed(actionData);
   };
 
+  const inFlightTableStepPromises = new Map<string, Promise<ActionOutcome>>();
+  const completedTableStepKeys = new Set<string>();
+
+  const markTableStepCompleted = (stepKey: string, ttlMs = 4000) => {
+    completedTableStepKeys.add(stepKey);
+    setTimeout(() => {
+      completedTableStepKeys.delete(stepKey);
+    }, ttlMs);
+  };
+
+  const dispatchTurnStepAction = (
+    tableId: string,
+    seatIndex: number,
+    actionData: Record<string, any>
+  ): Promise<ActionOutcome> => {
+    const t = get().tables[tableId];
+    const seat = t?.seats?.[seatIndex];
+    const hand = seat?.hand;
+    const turnStepKey = `turn:${tableId}:${t?.roundsPlayed ?? 0}:${t?.seats?.length ?? 0}:${seatIndex}:${hand?.cards?.length ?? 0}:${hand?.status ?? ''}:${hand?.insuranceBet ?? 0}`;
+
+    if (completedTableStepKeys.has(turnStepKey)) {
+      return Promise.resolve({ ok: true });
+    }
+    const existing = inFlightTableStepPromises.get(turnStepKey);
+    if (existing) {
+      return existing;
+    }
+    const promise = dispatchConfirmedOnlineAction(actionData)
+      .then((res) => {
+        if (res.ok) {
+          markTableStepCompleted(turnStepKey, 4500);
+        }
+        return res;
+      })
+      .finally(() => {
+        inFlightTableStepPromises.delete(turnStepKey);
+      });
+    inFlightTableStepPromises.set(turnStepKey, promise);
+    return promise;
+  };
+
   const connectAndSyncRoom = async (fallbackName = 'Player', fallbackAvatar?: string) => {
     const res = await matchRandseedRoom(
       (roomState, allocation, _snapshot, players) => {
@@ -1758,6 +1799,18 @@ export const useGameStore = create<GameStore>((set, get) => {
         });
       }
     );
+
+    if (
+      res?.snapshot?.state &&
+      typeof res.snapshot.state === 'object' &&
+      !Array.isArray(res.snapshot.state)
+    ) {
+      applyOnlineRoomSnapshot(
+        res.snapshot.state as Record<string, any>,
+        res.allocation,
+        res.players
+      );
+    }
   };
 
   const initialBootstrapUser: User = {
@@ -2173,24 +2226,37 @@ export const useGameStore = create<GameStore>((set, get) => {
         };
       }
 
+      const seatKey = `seat:${tableId}:${seatIndex}:join`;
+      const existing = inFlightTableStepPromises.get(seatKey);
+      if (existing) {
+        return existing;
+      }
+
       const safeName = (user.name || 'Player').trim().slice(0, 120) || 'Player';
       const safeAvatar =
         typeof user.avatar === 'string' && user.avatar.length > 0 && user.avatar.length <= 4096
           ? user.avatar
           : undefined;
 
-      const res = await dispatchConfirmedOnlineAction({
+      const promise = dispatchConfirmedOnlineAction({
         action: 'join_seat',
         tableId,
         seatIndex,
         playerName: safeName,
         ...(safeAvatar ? { playerAvatar: safeAvatar } : {}),
-      });
+      })
+        .then((res) => {
+          if (res.ok) {
+            set({ activeTableId: tableId });
+          }
+          return res;
+        })
+        .finally(() => {
+          inFlightTableStepPromises.delete(seatKey);
+        });
 
-      if (res.ok) {
-        set({ activeTableId: tableId });
-      }
-      return res;
+      inFlightTableStepPromises.set(seatKey, promise);
+      return promise;
     },
 
     observeTable: (tableId) => {
@@ -2213,28 +2279,46 @@ export const useGameStore = create<GameStore>((set, get) => {
         return { ok: false, code: 'NO_USER', error: 'Player session is not ready.' };
       }
 
-      if (Array.isArray(seatIndex)) {
-        return dispatchConfirmedOnlineAction({
+      const seatTarget = Array.isArray(seatIndex)
+        ? seatIndex.join(',')
+        : seatIndex !== undefined
+        ? String(seatIndex)
+        : 'all';
+      const leaveKey = `seat:${tableId}:${seatTarget}:leave`;
+      const existing = inFlightTableStepPromises.get(leaveKey);
+      if (existing) {
+        return existing;
+      }
+
+      const promise = (async (): Promise<ActionOutcome> => {
+        if (Array.isArray(seatIndex)) {
+          return dispatchConfirmedOnlineAction({
+            action: 'leave_seat',
+            tableId,
+            seatIndices: seatIndex,
+          });
+        }
+        if (seatIndex !== undefined) {
+          return dispatchConfirmedOnlineAction({
+            action: 'leave_seat',
+            tableId,
+            seatIndex,
+          });
+        }
+        const res = await dispatchConfirmedOnlineAction({
           action: 'leave_seat',
           tableId,
-          seatIndices: seatIndex,
         });
-      }
-      if (seatIndex !== undefined) {
-        return dispatchConfirmedOnlineAction({
-          action: 'leave_seat',
-          tableId,
-          seatIndex,
-        });
-      }
-      const res = await dispatchConfirmedOnlineAction({
-        action: 'leave_seat',
-        tableId,
+        if (res.ok) {
+          set({ activeTableId: null });
+        }
+        return res;
+      })().finally(() => {
+        inFlightTableStepPromises.delete(leaveKey);
       });
-      if (res.ok) {
-        set({ activeTableId: null });
-      }
-      return res;
+
+      inFlightTableStepPromises.set(leaveKey, promise);
+      return promise;
     },
 
     unlockTableBalance: async (tableId) => {
@@ -2253,22 +2337,21 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     placeBet: async (tableId, seatIndex, amount, sideBets) => {
-      return dispatchConfirmedOnlineAction({
-        action: 'place_bet',
-        tableId,
-        seatIndex,
-        amount,
-        sideBets: {
-          pair: sideBets?.pair || 0,
-          twentyOnePlusThree: sideBets?.twentyOnePlusThree || 0,
-        },
-        pairBet: sideBets?.pair || 0,
-        plus3Bet: sideBets?.twentyOnePlusThree || 0,
-      });
+      return get().placeBets(tableId, [seatIndex], amount, sideBets);
     },
 
     placeBets: async (tableId, seatIndices, amount, sideBets) => {
-      return dispatchConfirmedOnlineAction({
+      const t = get().tables[tableId];
+      const sortedSeats = [...seatIndices].sort((a, b) => a - b).join(',');
+      const dealStepKey = `deal:${tableId}:${t?.roundsPlayed ?? 0}:${t?.status ?? 'waiting'}:${sortedSeats}`;
+      if (completedTableStepKeys.has(dealStepKey)) {
+        return { ok: true };
+      }
+      const existing = inFlightTableStepPromises.get(dealStepKey);
+      if (existing) {
+        return existing;
+      }
+      const promise = dispatchConfirmedOnlineAction({
         action: 'place_bets',
         tableId,
         seatIndices,
@@ -2279,18 +2362,45 @@ export const useGameStore = create<GameStore>((set, get) => {
         },
         pairBet: sideBets?.pair || 0,
         plus3Bet: sideBets?.twentyOnePlusThree || 0,
+      }).then((res) => {
+        if (res.ok) {
+          markTableStepCompleted(dealStepKey, 4000);
+        }
+        return res;
+      }).finally(() => {
+        inFlightTableStepPromises.delete(dealStepKey);
       });
+      inFlightTableStepPromises.set(dealStepKey, promise);
+      return promise;
     },
 
     startGame: async (tableId) => {
-      return dispatchConfirmedOnlineAction({
+      const t = get().tables[tableId];
+      const startKey = `start:${tableId}:${t?.roundsPlayed ?? 0}:${t?.status ?? 'waiting'}`;
+      if (t?.status === 'playing' || completedTableStepKeys.has(startKey)) {
+        return { ok: true };
+      }
+      const existing = inFlightTableStepPromises.get(startKey);
+      if (existing) {
+        return existing;
+      }
+      const promise = dispatchConfirmedOnlineAction({
         action: 'start_game',
         tableId,
+      }).then((res) => {
+        if (res.ok) {
+          markTableStepCompleted(startKey, 4000);
+        }
+        return res;
+      }).finally(() => {
+        inFlightTableStepPromises.delete(startKey);
       });
+      inFlightTableStepPromises.set(startKey, promise);
+      return promise;
     },
 
     hit: async (tableId, seatIndex) => {
-      return dispatchConfirmedOnlineAction({
+      return dispatchTurnStepAction(tableId, seatIndex, {
         action: 'hit',
         tableId,
         seatIndex,
@@ -2298,7 +2408,7 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     stand: async (tableId, seatIndex) => {
-      return dispatchConfirmedOnlineAction({
+      return dispatchTurnStepAction(tableId, seatIndex, {
         action: 'stand',
         tableId,
         seatIndex,
@@ -2306,7 +2416,7 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     doubleDown: async (tableId, seatIndex) => {
-      return dispatchConfirmedOnlineAction({
+      return dispatchTurnStepAction(tableId, seatIndex, {
         action: 'double_down',
         tableId,
         seatIndex,
@@ -2314,7 +2424,7 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     split: async (tableId, seatIndex) => {
-      return dispatchConfirmedOnlineAction({
+      return dispatchTurnStepAction(tableId, seatIndex, {
         action: 'split',
         tableId,
         seatIndex,
@@ -2322,7 +2432,7 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     buyInsurance: async (tableId, seatIndex) => {
-      return dispatchConfirmedOnlineAction({
+      return dispatchTurnStepAction(tableId, seatIndex, {
         action: 'buy_insurance',
         tableId,
         seatIndex,
