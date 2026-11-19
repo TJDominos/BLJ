@@ -126,12 +126,12 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
 
     if (
       currentUser &&
-      currentUser.id !== 'connecting_player' &&
+      (currentUser.id !== 'connecting_player' || map.size === 0) &&
       !map.has(currentUser.id)
     ) {
       map.set(currentUser.id, {
         userId: currentUser.id,
-        name: currentUser.name,
+        name: currentUser.name || 'Player',
         avatar: currentUser.avatar,
         isGameCreator: Boolean(isGameOwner),
         isPlaying: false,
@@ -926,9 +926,12 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 </div>
 
                 <button
-                  onClick={() => setShowCreateModal(true)}
-                  disabled={roomStatus !== 'connected'}
-                  className="px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-bold text-[#04120b] bg-gradient-to-b from-emerald-400 to-emerald-600 hover:from-emerald-300 hover:to-emerald-500 disabled:opacity-45 disabled:pointer-events-none border border-emerald-300/40 shadow-[0_4px_14px_rgba(16,185,129,0.28)] transition-all flex items-center gap-1 sm:gap-1.5 whitespace-nowrap cursor-pointer shrink-0"
+                  type="button"
+                  onClick={() => {
+                    setCreateError(null);
+                    setShowCreateModal(true);
+                  }}
+                  className="px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-bold text-[#04120b] bg-gradient-to-b from-emerald-400 to-emerald-600 hover:from-emerald-300 hover:to-emerald-500 border border-emerald-300/40 shadow-[0_4px_14px_rgba(16,185,129,0.28)] transition-all flex items-center gap-1 sm:gap-1.5 whitespace-nowrap cursor-pointer shrink-0"
                 >
                   <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5]" />
                   <span>Custom Table</span>
@@ -1208,7 +1211,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 </button>
               </div>
 
-              <form onSubmit={handleCreateRoom} className="p-4 sm:p-6 overflow-y-auto space-y-4 text-sm">
+              <form onSubmit={handleCreateRoom} noValidate className="p-4 sm:p-6 overflow-y-auto space-y-4 text-sm">
                 <div className="grid grid-cols-2 gap-2 p-1.5 bg-black/40 rounded-xl border border-white/10">
                   <button
                     type="button"
@@ -1235,12 +1238,11 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-semibold text-slate-300 mb-1.5">
-                      Table Name <span className="text-rose-400">*</span>
+                      Table Name
                     </label>
                     <input
                       type="text"
-                      required
-                      placeholder="e.g. Table #VIP"
+                      placeholder={`e.g. ${currentUser?.name || 'Creator'}'s Table`}
                       value={roomName}
                       onChange={(e) => setRoomName(e.target.value)}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/15 text-white text-sm focus:outline-none focus:border-[#d4af37]"
@@ -1402,7 +1404,6 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                         <input
                           type="number"
                           min={100}
-                          step={100}
                           value={startingChips}
                           onChange={(e) => setStartingChips(Math.max(100, Number(e.target.value)))}
                           className="w-full px-3 py-2 rounded-lg bg-black/50 border border-emerald-400/30 text-emerald-300 font-mono font-bold text-sm focus:outline-none focus:border-[#d4af37]"

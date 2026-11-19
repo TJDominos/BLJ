@@ -103,6 +103,9 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
   const [pendingSeatIndex, setPendingSeatIndex] = useState<number | null>(null);
   const [isDealing, setIsDealing] = useState(false);
   const [holdCardsForShuffle, setHoldCardsForShuffle] = useState(false);
+  const [isRoundSettlingRevealPending, setIsRoundSettlingRevealPending] = useState(false);
+  const settleRevealTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const winClearTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const table = tables[activeTableId || ''];
   const previousTableId = React.useRef<string | undefined>(table?.id);
@@ -145,7 +148,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
       table?.seats
         .map(
           (s, idx) =>
-            `${idx}:${s.userId || ''}:${s.isReady ? 1 : 0}:${s.hand?.status || ''}:${s.hand?.cards?.length || 0}:${s.hand?.bet || 0}`
+            `${idx}:${s.userId || ''}:${s.isReady ? 1 : 0}:${s.isSplitHand ? 1 : 0}:${s.hand?.status || ''}:${s.hand?.cards?.length || 0}:${s.hand?.bet || 0}`
         )
         .join('|') || '',
     [table?.seats]
@@ -153,7 +156,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
   const mySeats = React.useMemo(
     () =>
       table?.seats
-        .map((s, i) => (s.userId === currentUser?.id ? i : -1))
+        .map((s, i) => (s.userId === currentUser?.id && !s.isSplitHand ? i : -1))
         .filter((i) => i >= 0) || [],
     [seatsSignature, currentUser?.id]
   );
@@ -368,7 +371,28 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
   }, [isMuted]);
 
   useEffect(() => {
+    return () => {
+      if (shuffleTimerRef.current) {
+        clearTimeout(shuffleTimerRef.current);
+      }
+      if (settleRevealTimerRef.current) {
+        clearTimeout(settleRevealTimerRef.current);
+      }
+      if (winClearTimerRef.current) {
+        clearTimeout(winClearTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (shouldHoldDealtCards) return;
+    if (table?.status === 'playing') {
+      if (settleRevealTimerRef.current) {
+        clearTimeout(settleRevealTimerRef.current);
+        settleRevealTimerRef.current = null;
+      }
+      setIsRoundSettlingRevealPending(false);
+    }
     const settledNow =
       table &&
       table.status === 'waiting' &&
@@ -376,40 +400,56 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
         (previousRoundsPlayed.current !== undefined &&
           (table.roundsPlayed || 0) > previousRoundsPlayed.current));
     if (settledNow) {
-       // Find the most recent record
+       const wasInitialDealSettlement = previousStatus.current !== 'playing';
+       const dealerCardsCount = table.dealerHand?.cards?.length || 2;
+       const revealDelayMs = wasInitialDealSettlement
+         ? 1250
+         : Math.max(520, (dealerCardsCount - 1) * 300);
+
+       setIsRoundSettlingRevealPending(true);
+       if (settleRevealTimerRef.current) {
+         clearTimeout(settleRevealTimerRef.current);
+       }
        const lastRecord = gameRecords[0];
-       if (lastRecord && lastRecord.tableId === table.id) {
-           // net win is amount won > bet ? true : false
+       const seatsSnapshot = table.seats;
+       const tableIdSnapshot = table.id;
+       settleRevealTimerRef.current = setTimeout(() => {
+         settleRevealTimerRef.current = null;
+         setIsRoundSettlingRevealPending(false);
+         if (lastRecord && lastRecord.tableId === tableIdSnapshot) {
            const winningSeats: number[] = [];
            let myWon = false;
-           table.seats.forEach((s, idx) => {
-               const res = lastRecord.seatResults?.find(sr => sr.seatIndex === idx);
-               const isHandWin = s.hand && (s.hand.status === 'won' || s.hand.status === 'blackjack');
-               const hasSideOrInsWin = Boolean(
-                 (res && ((res.sideBetWin || 0) > 0 || (res.insuranceWin || 0) > 0 || (res.win || 0) > 0)) ||
-                 (s.hand && ((s.hand.sideBetPairWon || 0) > 0 || (s.hand.sideBetPlus3Won || 0) > 0))
-               );
-               if (isHandWin || (res && res.net > 0) || hasSideOrInsWin) {
-                 winningSeats.push(idx);
-                 if (s.userId === currentUser?.id) myWon = true;
-               }
+           seatsSnapshot.forEach((s, idx) => {
+             const res = lastRecord.seatResults?.find(sr => sr.seatIndex === idx);
+             const isHandWin = s.hand && (s.hand.status === 'won' || s.hand.status === 'blackjack');
+             const hasSideOrInsWin = Boolean(
+               (res && ((res.sideBetWin || 0) > 0 || (res.insuranceWin || 0) > 0 || (res.win || 0) > 0)) ||
+               (s.hand && ((s.hand.sideBetPairWon || 0) > 0 || (s.hand.sideBetPlus3Won || 0) > 0))
+             );
+             if (isHandWin || (res && res.net > 0) || hasSideOrInsWin) {
+               winningSeats.push(idx);
+               if (s.userId === currentUser?.id) myWon = true;
+             }
            });
            setRecentWinAmount({ amount: lastRecord.amountWon || 0, won: myWon, seats: winningSeats });
-           setTimeout(() => {
-              setRecentWinAmount(null);
-           }, table.seats.length * 150 + 5000); // 
+           if (winClearTimerRef.current) {
+             clearTimeout(winClearTimerRef.current);
+           }
+           winClearTimerRef.current = setTimeout(() => {
+             winClearTimerRef.current = null;
+             setRecentWinAmount(null);
+           }, seatsSnapshot.length * 150 + 5000);
 
            if (myWon) {
-               // Calculate pan based on the first winning seat
-               const winPan = table.seats.length > 1 ? (winningSeats[0] / (table.seats.length - 1)) * 2 - 1 : 0;
-               soundManager.playWin(winPan);
+             const winPan = seatsSnapshot.length > 1 ? (winningSeats[0] / (seatsSnapshot.length - 1)) * 2 - 1 : 0;
+             soundManager.playWin(winPan);
            } else {
-               // If there were any active players that lost, just pan to the first active one, otherwise 0
-               const firstActive = lastRecord.seatResults?.[0]?.seatIndex || 0;
-               const losePan = table.seats.length > 1 ? (firstActive / (table.seats.length - 1)) * 2 - 1 : 0;
-               soundManager.playLose(losePan);
+             const firstActive = lastRecord.seatResults?.[0]?.seatIndex || 0;
+             const losePan = seatsSnapshot.length > 1 ? (firstActive / (seatsSnapshot.length - 1)) * 2 - 1 : 0;
+             soundManager.playLose(losePan);
            }
-       }
+         }
+       }, revealDelayMs);
     }
     previousStatus.current = table?.status;
     previousRoundsPlayed.current = table?.roundsPlayed;
@@ -442,7 +482,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
         }
       }, 100);
     }
-  }, [table?.status, table?.currentTurnIndex, mySeats]);
+  }, [table?.status, table?.currentTurnIndex, table?.seats.length, mySeats]);
 
   useEffect(() => {
     if (table?.status === 'playing' && table.currentTurnIndex >= 0) {
@@ -1251,10 +1291,11 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
              name={table.name}
              houseName={table.houseName || (table.houseId === currentUser.id ? currentUser.name : undefined)}
              houseAvatar={table.houseAvatar || (table.houseId === currentUser.id ? currentUser.avatar : undefined)}
-             dealerHand={!shouldHoldDealtCards && (table.status === 'playing' || recentWinAmount !== null || isResolvingRef.current) ? table.dealerHand : null}
+             dealerHand={!shouldHoldDealtCards && (table.status === 'playing' || isRoundSettlingRevealPending || recentWinAmount !== null || isResolvingRef.current) ? table.dealerHand : null}
              totalSeats={table.seats.length}
              recentWinAmount={recentWinAmount}
              mode={table.settings.mode}
+             isInitialDealRevealPending={isRoundSettlingRevealPending}
            />
 
            {/* Base curved lines decoration */}
@@ -1500,21 +1541,26 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                    // const isEmptyInPlaying = !seat.hand && table.status === 'playing';
                    // if (isEmptyInPlaying) return null;
   
+                   const isSplitHandSeat = Boolean(seat.isSplitHand || seat.originalSeatIndex !== undefined);
+                   const hasExtraSplitSeats = table.seats.length > (table.settings.maxSeats || 7);
+                   const effectiveSeats = Math.max(1, Math.min(table.seats.length, 3));
+                   const clampedDelaySeatIdx = Math.max(0, Math.min(seatIdx, effectiveSeats - 1));
+  
                    return (
-                     <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-[6px] sm:pt-[10px] md:pt-[14px] pb-[64px] sm:pb-[74px] md:pb-[82px] [@media(max-height:740px)]:!pb-[64px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[200px] sm:h-[230px] md:h-[255px] [@media(max-height:740px)]:!h-[195px] [@media(max-height:520px)_and_(orientation:landscape)]:!h-[150px] [@media(max-height:520px)_and_(orientation:landscape)]:!pt-[4px] [@media(max-height:520px)_and_(orientation:landscape)]:!pb-[50px] rounded-[16px] sm:rounded-[24px] min-w-[31%] max-w-[31%] md:min-w-[13.5%] md:max-w-[13.5%] shrink-0 snap-center mx-auto", isThisSeatTurn ? "scale-105 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent"))}>
+                     <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-[6px] sm:pt-[10px] md:pt-[14px] pb-[64px] sm:pb-[74px] md:pb-[82px] [@media(max-height:740px)]:!pb-[64px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[200px] sm:h-[230px] md:h-[255px] [@media(max-height:740px)]:!h-[195px] [@media(max-height:520px)_and_(orientation:landscape)]:!h-[150px] [@media(max-height:520px)_and_(orientation:landscape)]:!pt-[4px] [@media(max-height:520px)_and_(orientation:landscape)]:!pb-[50px] rounded-[16px] sm:rounded-[24px] min-w-[31%] max-w-[31%] md:min-w-[13.5%] md:max-w-[13.5%] shrink-0 snap-center mx-auto", isThisSeatTurn ? "scale-105 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && hasExtraSplitSeats ? "hidden" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent")))}>
                      
                      {/* YOU indicator label for played cards */}
 
 
                      {/* If hand exists, render cards and score */}
                      {seat.hand && !shouldHoldDealtCards && (
-                       <div className={cn("flex flex-col items-center justify-end transition-opacity relative z-20 w-full mb-0 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.72] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom", table.status === "waiting" && "pointer-events-none", (table.status === "waiting" && !recentWinAmount && !isResolvingRef.current) && "opacity-20")}>
+                       <div className={cn("flex flex-col items-center justify-end transition-opacity relative z-20 w-full mb-0 [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.72] [@media(max-height:520px)_and_(orientation:landscape)]:origin-bottom", table.status === "waiting" && "pointer-events-none", (table.status === "waiting" && !isRoundSettlingRevealPending && !recentWinAmount && !isResolvingRef.current) && "opacity-20")}>
                           <div className="flex flex-row items-center gap-1.5 z-30 w-full justify-center mb-1.5 sm:mb-2 pointer-events-none relative">
                             <motion.span 
                               key="score"
                               initial={{ scale: 0.5, opacity: 0 }}
                               animate={{ scale: 1, opacity: 1 }}
-                              transition={{ delay: seat.hand.cards.length <= 2 ? ((table.seats.length + 1) + (table.seats.length - 1 - seatIdx)) * 0.15 + 0.2 : 0 }}
+                              transition={{ delay: isSplitHandSeat ? 0.12 : (seat.hand.cards.length <= 2 ? ((effectiveSeats + 1) + (effectiveSeats - 1 - clampedDelaySeatIdx)) * 0.15 + 0.15 : 0) }}
                               className="bg-[#1e2129] border border-emerald-500/40 text-emerald-400 font-mono text-sm font-bold px-3 py-0.5 rounded shadow-lg relative inline-flex items-center justify-center">
                               <DelayedScore 
                                 score={seat.hand.score} 
@@ -1522,13 +1568,15 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                                 seatIdx={seatIdx} 
                                 totalSeats={table.seats.length} 
                                 tableStatus={table.status}
+                                isSplitHand={isSplitHandSeat}
+                                forceInitialDealDelay={isRoundSettlingRevealPending}
                               />
                             </motion.span>
-                            {seat.hand.status !== 'playing' && seat.hand.status !== 'stood' && (
+                            {seat.hand.status !== 'playing' && seat.hand.status !== 'stood' && (!isRoundSettlingRevealPending || (seat.hand.status as string) === 'busted' || (seat.hand.status as string) === 'busted_lost') && (
                               <motion.span 
                                 initial={{ scale: 0, opacity: 0, x: -10 }}
                                 animate={{ scale: 1, opacity: 1, x: 0 }}
-                                transition={{ delay: seat.hand.cards.length <= 2 ? ((table.seats.length + 1) + (table.seats.length - 1 - seatIdx)) * 0.15 + 0.4 : 0 }}
+                                transition={{ delay: 0.15 }}
                                 className={cn(
                                 "text-[10px] font-bold uppercase py-1 px-2 rounded-full tracking-wider shadow-lg",
                                 ['won', 'blackjack'].includes(seat.hand.status) ? "bg-emerald-500 text-black shadow-[0_0_15px_rgba(16,185,129,0.5)]" : (seat.hand.status === 'push' ? "bg-slate-500 text-white" : "bg-red-500 text-white")
@@ -1539,11 +1587,14 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                           </div>
                           
                           <div className={cn("flex shrink-0 relative items-center justify-center", table.seats.length > 5 ? "pl-[10px] sm:pl-[14px] md:pl-[20px]" : "pl-[14px] sm:pl-[20px] md:pl-[26px]")}>
-                            {(seat.hand.status === 'blackjack') && <GoldenWreath delay={seat.hand.cards.length <= 2 ? ((table.seats.length + 1) + (table.seats.length - 1 - seatIdx)) * 0.15 + 0.5 : 0.5} />}
+                            {(seat.hand.status === 'blackjack' && !isRoundSettlingRevealPending) && <GoldenWreath delay={0.15} />}
                             <AnimatePresence>
                               {seat.hand.cards.map((c, idx) => {
                                 const pan = table.seats.length > 1 ? (seatIdx / (table.seats.length - 1)) * 2 - 1 : 0;
-                                return renderCard(c, idx, idx < 2 ? idx * (table.seats.length + 1) + (table.seats.length - 1 - seatIdx) : 0, pan);
+                                const cardDelayIndex = isSplitHandSeat
+                                  ? (idx === 0 ? 0 : 1)
+                                  : (idx < 2 ? idx * (effectiveSeats + 1) + (effectiveSeats - 1 - clampedDelaySeatIdx) : 0);
+                                return renderCard(c, idx, cardDelayIndex, pan);
                               })}
                             </AnimatePresence>
                           </div>
@@ -1599,7 +1650,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                       {(seat.userId !== null) && (seat.hand || (table.status === 'waiting' && gameRecords[0]?.tableId === table.id && gameRecords[0].seatResults?.find(sr => sr.seatIndex === seatIdx))) && (
                         <div className="absolute bottom-[46px] sm:bottom-[54px] md:bottom-[60px] [@media(max-height:520px)_and_(orientation:landscape)]:!bottom-[34px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.82] left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 pointer-events-none z-[100] w-full justify-center">
                           {(()=>{
-                            const isWait = table.status === 'waiting';
+                            const isWait = table.status === 'waiting' && !isRoundSettlingRevealPending;
                             const sr = (isWait && gameRecords[0]?.tableId === table.id) ? gameRecords[0].seatResults?.find(s => s.seatIndex === seatIdx) : null;
                             const betAmount = sr
                               ? ((sr.bet || 0) + (sr.sideBet || 0) + (sr.insuranceBet || 0))
@@ -1633,20 +1684,28 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                      )}
 
                      {/* Seat selection & player profile button */}
-                      <TableSeatButton
-                        seat={seat}
-                        seatIdx={seatIdx}
-                        totalSeats={table.seats.length}
-                        currentUser={currentUser}
-                        isSelected={isSelected}
-                        dealCountdown={dealCountdown}
-                        actionCountdown={isThisSeatTurn && seatDealRevealed ? actionCountdown : null}
-                        shakeSeats={shakeSeats}
-                        isPending={pendingSeatIndex === seatIdx}
-                        isInteractionLocked={pendingSeatIndex !== null || isDealing}
-                        isDisconnected={Boolean(seat.userId && disconnectedPlayerIds.includes(seat.userId))}
-                        onClick={() => toggleSeatSelection(seatIdx)}
-                      />
+                     {seat.isSplitHand ? (
+                       <div className="absolute bottom-1 sm:bottom-1.5 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center pointer-events-none">
+                         <div className="px-2.5 py-1 rounded-full bg-[#13261b]/90 border border-[#d4af37]/50 text-[#f5d97e] text-[10px] font-bold uppercase tracking-wider shadow-md whitespace-nowrap">
+                           Split Hand
+                         </div>
+                       </div>
+                     ) : (
+                       <TableSeatButton
+                         seat={seat}
+                         seatIdx={seatIdx}
+                         totalSeats={table.seats.length}
+                         currentUser={currentUser}
+                         isSelected={isSelected}
+                         dealCountdown={dealCountdown}
+                         actionCountdown={isThisSeatTurn && seatDealRevealed ? actionCountdown : null}
+                         shakeSeats={shakeSeats}
+                         isPending={pendingSeatIndex === seatIdx}
+                         isInteractionLocked={pendingSeatIndex !== null || isDealing}
+                         isDisconnected={Boolean(seat.userId && disconnectedPlayerIds.includes(seat.userId))}
+                         onClick={() => toggleSeatSelection(seatIdx)}
+                       />
+                     )}
                    </div>
                  );
                })}
@@ -1674,7 +1733,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
        </div>
 
                 {/* Bottom Control Overlay (HUD) */}
-         {table.status === 'waiting' && !effectiveIsShuffling && !showRules && !showHistory && !showTournamentHistory && !isCommentsOpen && !confirmAction && !isSidebarOpen && !isTablePlayersOpen && !isStatsOpen && table.seats.some(s => s.userId === currentUser.id || s.userId === null) && (
+         {table.status === 'waiting' && !isRoundSettlingRevealPending && !effectiveIsShuffling && !showRules && !showHistory && !showTournamentHistory && !isCommentsOpen && !confirmAction && !isSidebarOpen && !isTablePlayersOpen && !isStatsOpen && table.seats.some(s => s.userId === currentUser.id || s.userId === null) && (
             <DealControlHUD 
               table={table}
               mySeats={mySeats}

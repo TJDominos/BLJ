@@ -709,6 +709,19 @@ function dealInitialCards(
   target: TableExecutionTarget,
   broadcasts: unknown[]
 ): void {
+  if (target.seats.some((s) => s.isSplitHand || s.originalSeatIndex !== undefined)) {
+    target.seats = target.seats
+      .filter((s) => !s.isSplitHand)
+      .map((s, idx) => {
+        const nextSeat: RoomSeatState = {
+          ...s,
+          seatIndex: idx,
+        };
+        delete nextSeat.isSplitHand;
+        delete nextSeat.originalSeatIndex;
+        return nextSeat;
+      });
+  }
   const rootSeedHex = resolveStateRootSeed(rootState);
   const prevShuffleSeq = target.shuffleSeq || 0;
   // 检查切牌卡渗透率（6 副牌 312 张，达到 75% 渗透率即剩余 <= 78 张时才使用平台初始 VRF ChaCha20Rng 重洗，不每手换种子）
@@ -1077,7 +1090,8 @@ function runDealerAndSettle(
     const isDoubleHand = Boolean(h.isDoubled);
     winnings[pid] = (winnings[pid] || 0) + totalPayout;
     seatResults.push({
-      seatIndex: seat.originalSeatIndex ?? seat.seatIndex,
+      seatIndex: seat.seatIndex,
+      originalSeatIndex: seat.originalSeatIndex ?? seat.seatIndex,
       userId: pid,
       playerName: rootState.playerNames?.[pid] || pid,
       playerAvatar: rootState.playerAvatars?.[pid],
@@ -1116,20 +1130,12 @@ function runDealerAndSettle(
     perPlayerStats.set(pid, pStat);
   }
 
-  // 清理分牌临时座位并恢复主座位状态
-  target.seats = target.seats
-    .filter((s) => !s.isSplitHand)
-    .map((s, idx) => {
-      const nextSeat: RoomSeatState = {
-        ...s,
-        seatIndex: idx,
-        isReady: false,
-      };
-      delete nextSeat.originalSeatIndex;
-      delete nextSeat.isSplitHand;
-      return nextSeat;
-    });
-  target.turnOrder = target.seats.map((_, i) => target.seats.length - 1 - i);
+  // 结算阶段保留分牌座位以便前端完整展示每手分牌的牌面、点数与输赢结果；进入下一局下注阶段时再清理分牌临时座位
+  target.seats = target.seats.map((s, idx) => ({
+    ...s,
+    seatIndex: idx,
+    isReady: false,
+  }));
 
   target.roundsPlayed += 1;
 
@@ -1416,6 +1422,29 @@ function sanitizeAvatarForState(raw: unknown): string | undefined {
   return trimmed;
 }
 
+function mapSeatIndexBeforePreparingSettledTable(
+  target: TableExecutionTarget,
+  rawIdx: number
+): number {
+  const idx = Math.trunc(Number(rawIdx));
+  if (!Number.isSafeInteger(idx) || idx < 0) return -1;
+  if (target.phase !== "settled" || !target.seats.some((s) => s.isSplitHand)) {
+    return idx;
+  }
+  const seatObj = target.seats[idx];
+  if (!seatObj) return idx;
+  if (!seatObj.isSplitHand) {
+    return target.seats.slice(0, idx).filter((s) => !s.isSplitHand).length;
+  }
+  for (let i = idx - 1; i >= 0; i--) {
+    const prev = target.seats[i];
+    if (prev && !prev.isSplitHand && prev.playerId === seatObj.playerId) {
+      return target.seats.slice(0, i).filter((s) => !s.isSplitHand).length;
+    }
+  }
+  return -1;
+}
+
 function prepareNextBettingPhaseIfSettled(
   rootState: RoyalBlackjackRoomState,
   target: TableExecutionTarget
@@ -1425,17 +1454,25 @@ function prepareNextBettingPhaseIfSettled(
   target.dealerHand = null;
   target.currentTurnSeatIndex = -1;
   target.phaseStartElapsedSec = rootState.elapsedSeconds;
-  for (const seat of target.seats) {
-    seat.isReady = false;
-    seat.hand = null;
-    if (seat.playerId) {
-      seat.seatedAtElapsedSec = rootState.elapsedSeconds;
-    } else {
-      delete seat.seatedAtElapsedSec;
-    }
-    delete seat.isSplitHand;
-    delete seat.originalSeatIndex;
-  }
+  target.seats = target.seats
+    .filter((s) => !s.isSplitHand)
+    .map((seat, idx) => {
+      const nextSeat: RoomSeatState = {
+        ...seat,
+        seatIndex: idx,
+        isReady: false,
+        hand: null,
+      };
+      if (nextSeat.playerId) {
+        nextSeat.seatedAtElapsedSec = rootState.elapsedSeconds;
+      } else {
+        delete nextSeat.seatedAtElapsedSec;
+      }
+      delete nextSeat.isSplitHand;
+      delete nextSeat.originalSeatIndex;
+      return nextSeat;
+    });
+  target.turnOrder = target.seats.map((_, i) => target.seats.length - 1 - i);
 }
 
 export const ROYAL_BLACKJACK_RESULT_DEFINITION: GameResultDefinition = {
@@ -2492,6 +2529,7 @@ function applyAuthoritativePlayerInput(
   }
 
   if (data.action === "join_seat") {
+    const mappedJoinSeatIndex = mapSeatIndexBeforePreparingSettledTable(target, data.seatIndex);
     prepareNextBettingPhaseIfSettled(state, target);
     if (
       typeof data.playerName === "string" &&
@@ -2520,7 +2558,7 @@ function applyAuthoritativePlayerInput(
     if (target.phase !== "betting") {
       return { status: "rejected", code: "INVALID_PHASE" };
     }
-    const seat = target.seats[data.seatIndex];
+    const seat = target.seats[mappedJoinSeatIndex];
     if (!seat) {
       return { status: "rejected", code: "INVALID_SEAT" };
     }
@@ -2576,6 +2614,12 @@ function applyAuthoritativePlayerInput(
   }
 
   if (data.action === "leave_seat") {
+    const rawLeaveIndices: number[] | null =
+      Array.isArray(data.seatIndices) && data.seatIndices.length > 0
+        ? data.seatIndices.map((idx) => mapSeatIndexBeforePreparingSettledTable(target, idx))
+        : typeof data.seatIndex === "number"
+        ? [mapSeatIndexBeforePreparingSettledTable(target, data.seatIndex)]
+        : null;
     prepareNextBettingPhaseIfSettled(state, target);
     if (target.mode === "tournament") {
       return { status: "rejected", code: "TOURNAMENT_LOCKED" };
@@ -2583,14 +2627,11 @@ function applyAuthoritativePlayerInput(
     if (target.phase !== "betting") {
       return { status: "rejected", code: "INVALID_PHASE" };
     }
-    const indicesToLeave =
-      Array.isArray(data.seatIndices) && data.seatIndices.length > 0
-        ? data.seatIndices
-        : typeof data.seatIndex === "number"
-        ? [data.seatIndex]
-        : target.seats
-            .map((s, idx) => (s.playerId === playerId ? idx : -1))
-            .filter((idx) => idx >= 0);
+    const indicesToLeave = rawLeaveIndices
+      ? Array.from(new Set(rawLeaveIndices.filter((idx) => idx >= 0)))
+      : target.seats
+          .map((s, idx) => (s.playerId === playerId ? idx : -1))
+          .filter((idx) => idx >= 0);
 
     let leftAny = false;
     for (const sIdx of indicesToLeave) {
@@ -2620,11 +2661,6 @@ function applyAuthoritativePlayerInput(
   }
 
   if (data.action === "place_bet" || data.action === "place_bets") {
-    prepareNextBettingPhaseIfSettled(state, target);
-    if (target.phase !== "betting") {
-      return { status: "rejected", code: "INVALID_PHASE" };
-    }
-
     const rawSeatIndices: number[] =
       data.action === "place_bets"
         ? Array.isArray(data.seatIndices)
@@ -2636,9 +2672,17 @@ function applyAuthoritativePlayerInput(
         ? [data.seatIndex]
         : [];
 
+    const mappedRawIndices = rawSeatIndices.map((idx) =>
+      mapSeatIndexBeforePreparingSettledTable(target, idx)
+    );
+    prepareNextBettingPhaseIfSettled(state, target);
+    if (target.phase !== "betting") {
+      return { status: "rejected", code: "INVALID_PHASE" };
+    }
+
     const seatIndices = Array.from(
       new Set(
-        rawSeatIndices
+        mappedRawIndices
           .map((idx) => Math.trunc(Number(idx)))
           .filter((idx) => Number.isSafeInteger(idx) && idx >= 0)
       )

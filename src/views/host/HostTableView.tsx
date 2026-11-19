@@ -78,19 +78,35 @@ export function HostTableView({ onNavigate, onToggleSidebar, editTableId }: { on
   const handleSubmit = async () => {
     setHasAttemptedSubmit(true);
     setHostError(null);
-    if (!settings.name) return;
-    if (settings.mode !== 'tournament' && (!settings.minBet || !settings.maxBet || settings.maxBet < settings.minBet)) return;
-    if (settings.mode === 'tournament') {
-        if (settings.tournament?.startingChips === '' as any || settings.tournament!.startingChips < 1000) return;
-        if (settings.tournament?.hostFeePct === '' as any) return;
+    const resolvedName = (settings.name || '').trim() || `${currentUser?.name || 'Creator'}'s Table`;
+    const nextSettings: TableSettings = { ...settings, name: resolvedName };
+    if (!settings.name?.trim()) {
+      setSettings(nextSettings);
+    }
+    if (nextSettings.mode !== 'tournament' && (!nextSettings.minBet || !nextSettings.maxBet || nextSettings.maxBet < nextSettings.minBet)) {
+      setExpandedSection('settings');
+      setHostError('Max bet must be greater than or equal to min bet.');
+      return;
+    }
+    if (nextSettings.mode === 'tournament') {
+      if (nextSettings.tournament?.startingChips === '' as any || (nextSettings.tournament?.startingChips ?? 0) < 100) {
+        setExpandedSection('settings');
+        setHostError('Tournament starting allowance must be at least 100.');
+        return;
+      }
+      if (nextSettings.tournament?.hostFeePct === '' as any) {
+        setExpandedSection('settings');
+        setHostError('Please enter a valid host fee percentage.');
+        return;
+      }
     }
     setIsHosting(true);
     try {
       if (editingTable) {
-        await updateTableSettings(editingTable.id, settings);
+        await updateTableSettings(editingTable.id, nextSettings);
         onNavigate('manage_tables');
       } else {
-        const newTableId = await createTable(settings, settings.mode === 'tournament' ? 0 : minLiquidity);
+        const newTableId = await createTable(nextSettings, nextSettings.mode === 'tournament' ? 0 : minLiquidity);
         if (!newTableId) {
           throw new Error('Failed to create custom table.');
         }

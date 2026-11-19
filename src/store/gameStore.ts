@@ -178,6 +178,7 @@ export interface Table {
 
 export interface SeatResult {
   seatIndex: number;
+  originalSeatIndex?: number;
   userId?: string;
   playerName?: string;
   playerAvatar?: string;
@@ -1310,7 +1311,7 @@ function buildOnlinePlayersList(
 
   if (
     currentUser?.id &&
-    currentUser.id !== 'connecting_player' &&
+    (currentUser.id !== 'connecting_player' || map.size === 0) &&
     !map.has(currentUser.id)
   ) {
     const tableInfo = findPlayerTableInfo(currentUser.id);
@@ -1326,7 +1327,7 @@ function buildOnlinePlayersList(
     });
   }
 
-  return Array.from(map.values()).filter((p) => p.userId !== 'connecting_player');
+  return Array.from(map.values());
 }
 
 export function getRuntimeGameStats() {
@@ -1811,6 +1812,19 @@ export const useGameStore = create<GameStore>((set, get) => {
         res.players
       );
     }
+
+    const syncedSelf = get().currentUser;
+    const syncedName =
+      (syncedSelf?.name && syncedSelf.name !== 'Player' ? syncedSelf.name : '') ||
+      (fallbackName && fallbackName !== 'Player' ? fallbackName : '') ||
+      syncedSelf?.name ||
+      'Player';
+    const syncedAvatar = syncedSelf?.avatar || fallbackAvatar;
+    void sendRandseedRoomAction({
+      action: 'sync_profile',
+      name: syncedName,
+      ...(syncedAvatar && syncedAvatar.length <= 4096 ? { avatar: syncedAvatar } : {}),
+    }).catch(() => false);
   };
 
   const initialBootstrapUser: User = {
@@ -2090,12 +2104,6 @@ export const useGameStore = create<GameStore>((set, get) => {
       const user = get().currentUser;
       if (!user) {
         throw new Error('Player session is not ready yet. Please wait a moment and try again.');
-      }
-      if (!isRandseedRoomConnected()) {
-        throw new Error(
-          getRandseedRoomError() ||
-            'Online room is not connected. Please wait for the room connection and try again.'
-        );
       }
 
       const newTableId = `table_${Math.random().toString(36).slice(2, 11)}`;

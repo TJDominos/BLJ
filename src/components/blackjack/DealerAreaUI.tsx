@@ -115,7 +115,8 @@ export function DealerArea({
   totalSeats,
   recentWinAmount,
   mode,
-  liquidity
+  liquidity,
+  isInitialDealRevealPending = false
 }: {
   houseId: string;
   name: string;
@@ -126,10 +127,12 @@ export function DealerArea({
   recentWinAmount?: any;
   mode?: 'regular' | 'tournament';
   liquidity?: number;
+  isInitialDealRevealPending?: boolean;
 }) {
   const [imgError, setImgError] = React.useState(false);
   const resolvedHostName = houseName?.trim() || name.replace("'s Table", "").trim() || 'Host';
   const displayDealerName = houseId === 'system' ? 'Royal BlackJack' : resolvedHostName;
+  const effectiveSeats = Math.max(1, Math.min(totalSeats, 3));
 
   return (
     <div className="w-full flex-[3] flex flex-col items-center justify-start min-h-[108px] sm:min-h-[128px] lg:min-h-[145px] [@media(max-height:740px)]:min-h-[100px] [@media(max-height:740px)]:scale-[0.86] [@media(max-height:740px)]:origin-top [@media(max-height:520px)_and_(orientation:landscape)]:min-h-[68px] [@media(max-height:520px)_and_(orientation:landscape)]:scale-[0.72] [@media(max-height:520px)_and_(orientation:landscape)]:origin-top z-10 pt-0 shadow-none">
@@ -179,7 +182,7 @@ export function DealerArea({
                   card={c}
                   index={i}
                   size="lg"
-                  globalDelayIndex={i < 2 ? i * (totalSeats + 1) + totalSeats : 0}
+                  globalDelayIndex={i < 2 ? i * (effectiveSeats + 1) + effectiveSeats : (i - 1) * 2}
                 />
               ))}
             </AnimatePresence>
@@ -199,6 +202,7 @@ export function DealerArea({
                   totalSeats={totalSeats} 
                   isDealer={true} 
                   tableStatus={dealerHand.cards.some(c => c.isHidden) ? 'playing' : 'dealer_turn'}
+                  forceInitialDealDelay={isInitialDealRevealPending}
                 />
               </motion.div>
             )}

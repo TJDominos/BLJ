@@ -289,7 +289,9 @@ function getSnapshotKey(snapshot: RoomSnapshot, players?: RoomPlayer[]): string 
       : null;
   const viewRev = typeof stateRec?.viewRev === "number" ? stateRec.viewRev : 0;
   const outcomesLen = extractRecentActionOutcomesFromStateObj(stateRec).length;
-  return `${snapshot.scope.gameId}:${snapshot.matchId}:${snapshot.matchSeq}:${snapshot.tick}:${viewRev}:${outcomesLen}:${rosterSig}:${broadcastLen}`;
+  const allocPlayerId =
+    cachedRoomAllocation?.playerId ?? roomClientInstance?.allocation?.playerId ?? "";
+  return `${snapshot.scope.gameId}:${snapshot.matchId}:${snapshot.matchSeq}:${snapshot.tick}:${viewRev}:${outcomesLen}:${allocPlayerId}:${rosterSig}:${broadcastLen}`;
 }
 
 function extractSnapshotState(
@@ -409,7 +411,7 @@ export function getRandseedRoomError(): string | null {
 }
 
 export function getRandseedRoomAllocation(): RoomMatch | undefined {
-  if (!cachedRoomAllocation && roomClientInstance) {
+  if (roomClientInstance?.allocation) {
     cachedRoomAllocation = roomClientInstance.allocation;
   }
   return cachedRoomAllocation;
@@ -504,7 +506,7 @@ export async function matchRandseedRoom(
           );
         },
         onPlayersChanged: (players) => {
-          if (!cachedRoomAllocation && roomClientInstance) {
+          if (roomClientInstance?.allocation) {
             cachedRoomAllocation = roomClientInstance.allocation;
           }
           if (Array.isArray(players)) {
@@ -518,7 +520,7 @@ export async function matchRandseedRoom(
           try {
             latestRawSnapshot = snapshot;
             lastSnapshotReceivedAtMs = Date.now();
-            if (!cachedRoomAllocation && roomClientInstance) {
+            if (roomClientInstance?.allocation) {
               cachedRoomAllocation = roomClientInstance.allocation;
             }
             const players = readSafeRoomPlayers(roomClientInstance, snapshot);
@@ -840,6 +842,9 @@ async function submitActionViaSocketWithReceipt(
         if (ok) {
           activeWaiter.lastSentTick = currentTick;
           activeWaiter.resendCount += 1;
+        }
+        if (activeWaiter.resendCount === 2 && roomClientInstance) {
+          void roomClientInstance.sendInput(activeWaiter.actionPayload).catch(() => {});
         }
       })();
     }, 280);
