@@ -1,8 +1,9 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { PlayingCard as PlayingCardType } from '@/store/gameStore';
 import { soundManager } from '@/lib/sounds';
+import { CARD_DEAL_STEP_MS, CARD_DEAL_STEP_SEC } from './DelayedScore';
 
 export interface PlayingCardProps {
   card: PlayingCardType;
@@ -27,14 +28,27 @@ const getSuitSymbol = (suit: string) => {
   }
 };
 
-export const PlayingCard: React.FC<PlayingCardProps> = ({ card, index, globalDelayIndex = 0, size = 'md', pan = 0 }) => {
+export const PlayingCard: React.FC<PlayingCardProps> = ({
+  card,
+  index,
+  globalDelayIndex = 0,
+  size = 'md',
+  pan = 0,
+}) => {
+  const mountDelayRef = useRef(globalDelayIndex);
+  const mountPanRef = useRef(pan);
+
   useEffect(() => {
-    // Play deal sound with the same delay as the animation
+    // Play deal sound once on mount with the exact sequential dealing delay
     const timeout = setTimeout(() => {
-      soundManager.playCardDeal(pan);
-    }, globalDelayIndex * 150);
+      soundManager.playCardDeal(mountPanRef.current);
+    }, mountDelayRef.current * CARD_DEAL_STEP_MS);
     return () => clearTimeout(timeout);
-  }, [globalDelayIndex, pan]);
+  }, []);
+
+  // Launch each card smoothly from the top-right 6-Deck Shoe position toward its seat
+  const shoeStartX = `${Math.round(32 - pan * 22)}vw`;
+
   // Define different component sizes to be responsive
   const sizeClasses = {
     sm: "w-[40px] h-[60px] sm:w-[50px] sm:h-[75px] md:w-[60px] md:h-[90px] p-1 sm:p-1.5 -ml-[18px] sm:-ml-[25px]",
@@ -56,9 +70,15 @@ export const PlayingCard: React.FC<PlayingCardProps> = ({ card, index, globalDel
 
   return (
     <motion.div
-      initial={{ x: "30vw", y: -300, opacity: 0, scale: 0.5, rotate: -180 }}
+      initial={{ x: shoeStartX, y: -260, opacity: 0, scale: 0.55, rotate: -28 }}
       animate={{ x: 0, y: 0, opacity: 1, scale: 1, rotate: 0 }}
-      transition={{ delay: globalDelayIndex * 0.15, type: "spring", stiffness: 200, damping: 20 }}
+      transition={{
+        delay: mountDelayRef.current * CARD_DEAL_STEP_SEC,
+        type: "spring",
+        stiffness: 210,
+        damping: 22,
+        mass: 0.85,
+      }}
       className={cn(
         "rounded-lg bg-white border border-gray-200 shadow-xl flex flex-col justify-between transform shrink-0",
         sizeClasses[size],

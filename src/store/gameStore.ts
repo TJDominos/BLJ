@@ -155,6 +155,7 @@ export interface Table {
   shuffleSeq?: number;
   discardedCards: PlayingCard[];
   currentTurnIndex: number; // -1 for dealer, 0..maxSeats-1 for players
+  turnOrder?: number[];
   roundsPlayed: number;
   tournamentHistory?: TournamentRecord[];
   emptySince?: number | null;
@@ -1042,6 +1043,9 @@ function mapRoomStateToTable(
       roomState.phase === 'playing'
         ? Number(roomState.currentTurnSeatIndex ?? -1)
         : -1,
+    turnOrder: Array.isArray(roomState.turnOrder)
+      ? roomState.turnOrder.map((n: unknown) => Number(n))
+      : existing?.turnOrder,
     roundsPlayed: Number(roomState.roundsPlayed) || 0,
     tournamentHistory: Array.isArray(roomState.tournamentHistory)
       ? roomState.tournamentHistory

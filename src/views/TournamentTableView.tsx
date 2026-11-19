@@ -8,7 +8,13 @@ import { cn } from '@/lib/utils';
 import { soundManager } from '@/lib/sounds';
 import { RulesModal } from './RulesModal';
 import { PlayingCard } from '@/components/blackjack/PlayingCardUI';
-import { DelayedScore, useDealRevealedSeats } from '@/components/blackjack/DelayedScore';
+import {
+  DelayedScore,
+  useDealRevealedSeats,
+  computeActiveDealtSeatOrder,
+  getInitialDealTotalMs,
+  CARD_DEAL_STEP_SEC,
+} from '@/components/blackjack/DelayedScore';
 import { DealerArea } from '@/components/blackjack/DealerAreaUI';
 import { WinAnimation } from '@/components/blackjack/WinAnimation';
 import { GoldenWreath } from '@/components/blackjack/GoldenWreath';
@@ -138,9 +144,15 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
   const effectiveIsShuffling = isShuffling || isPendingShuffleFrame;
   const shouldHoldDealtCards = (isShuffling && holdCardsForShuffle) || isPendingNewDealShuffle;
 
+  const activeDealtSeatOrder = React.useMemo(
+    () => computeActiveDealtSeatOrder(table?.seats, table?.turnOrder),
+    [table?.seats, table?.turnOrder]
+  );
+  const activeDealtCount = Math.max(1, activeDealtSeatOrder.length);
+
   const isSeatDealRevealed = useDealRevealedSeats(
     table?.status,
-    table?.seats?.length || 7,
+    activeDealtSeatOrder,
     shouldHoldDealtCards
   );
   const seatsSignature = React.useMemo(
@@ -403,8 +415,8 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
        const wasInitialDealSettlement = previousStatus.current !== 'playing';
        const dealerCardsCount = table.dealerHand?.cards?.length || 2;
        const revealDelayMs = wasInitialDealSettlement
-         ? 1250
-         : Math.max(520, (dealerCardsCount - 1) * 300);
+         ? getInitialDealTotalMs(activeDealtCount) + 250
+         : Math.max(520, (dealerCardsCount - 1) * 360);
 
        setIsRoundSettlingRevealPending(true);
        if (settleRevealTimerRef.current) {
@@ -1293,6 +1305,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
              houseAvatar={table.houseAvatar || (table.houseId === currentUser.id ? currentUser.avatar : undefined)}
              dealerHand={!shouldHoldDealtCards && (table.status === 'playing' || isRoundSettlingRevealPending || recentWinAmount !== null || isResolvingRef.current) ? table.dealerHand : null}
              totalSeats={table.seats.length}
+             activeDealtCount={activeDealtCount}
              recentWinAmount={recentWinAmount}
              mode={table.settings.mode}
              isInitialDealRevealPending={isRoundSettlingRevealPending}
@@ -1543,8 +1556,8 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
   
                    const isSplitHandSeat = Boolean(seat.isSplitHand || seat.originalSeatIndex !== undefined);
                    const hasExtraSplitSeats = table.seats.length > (table.settings.maxSeats || 7);
-                   const effectiveSeats = Math.max(1, Math.min(table.seats.length, 3));
-                   const clampedDelaySeatIdx = Math.max(0, Math.min(seatIdx, effectiveSeats - 1));
+                   const foundDealRank = activeDealtSeatOrder.indexOf(seatIdx);
+                   const seatDealRank = foundDealRank >= 0 ? foundDealRank : 0;
   
                    return (
                      <div key={seatIdx} id={`seat-${seatIdx}`} className={cn("relative flex flex-col items-center pt-[6px] sm:pt-[10px] md:pt-[14px] pb-[64px] sm:pb-[74px] md:pb-[82px] [@media(max-height:740px)]:!pb-[64px] px-0 justify-end sm:px-2 md:px-[6px] transition-all h-[200px] sm:h-[230px] md:h-[255px] [@media(max-height:740px)]:!h-[195px] [@media(max-height:520px)_and_(orientation:landscape)]:!h-[150px] [@media(max-height:520px)_and_(orientation:landscape)]:!pt-[4px] [@media(max-height:520px)_and_(orientation:landscape)]:!pb-[50px] rounded-[16px] sm:rounded-[24px] min-w-[31%] max-w-[31%] md:min-w-[13.5%] md:max-w-[13.5%] shrink-0 snap-center mx-auto", isThisSeatTurn ? "scale-105 z-30 shadow-[0_0_50px_rgba(16,185,129,0.15)] border border-emerald-500/30 bg-white/5" : (!seat.userId && hasExtraSplitSeats ? "hidden" : (!seat.userId && table.status !== "waiting" ? "opacity-0 pointer-events-none scale-95" : "border border-transparent")))}>
@@ -1560,13 +1573,15 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                               key="score"
                               initial={{ scale: 0.5, opacity: 0 }}
                               animate={{ scale: 1, opacity: 1 }}
-                              transition={{ delay: isSplitHandSeat ? 0.12 : (seat.hand.cards.length <= 2 ? ((effectiveSeats + 1) + (effectiveSeats - 1 - clampedDelaySeatIdx)) * 0.15 + 0.15 : 0) }}
+                              transition={{ delay: isSplitHandSeat ? 0.12 : (seat.hand.cards.length <= 2 ? ((activeDealtCount + 1) + seatDealRank) * CARD_DEAL_STEP_SEC + 0.18 : 0) }}
                               className="bg-[#1e2129] border border-emerald-500/40 text-emerald-400 font-mono text-sm font-bold px-3 py-0.5 rounded shadow-lg relative inline-flex items-center justify-center">
                               <DelayedScore 
                                 score={seat.hand.score} 
                                 cardsLength={seat.hand.cards.length} 
                                 seatIdx={seatIdx} 
-                                totalSeats={table.seats.length} 
+                                totalSeats={table.seats.length}
+                                dealRank={seatDealRank}
+                                activeDealtCount={activeDealtCount}
                                 tableStatus={table.status}
                                 isSplitHand={isSplitHandSeat}
                                 forceInitialDealDelay={isRoundSettlingRevealPending}
@@ -1593,7 +1608,7 @@ export function TournamentTableView({ onNavigate, onToggleSidebar, isSidebarOpen
                                 const pan = table.seats.length > 1 ? (seatIdx / (table.seats.length - 1)) * 2 - 1 : 0;
                                 const cardDelayIndex = isSplitHandSeat
                                   ? (idx === 0 ? 0 : 1)
-                                  : (idx < 2 ? idx * (effectiveSeats + 1) + (effectiveSeats - 1 - clampedDelaySeatIdx) : 0);
+                                  : (idx < 2 ? idx * (activeDealtCount + 1) + seatDealRank : 0);
                                 return renderCard(c, idx, cardDelayIndex, pan);
                               })}
                             </AnimatePresence>
