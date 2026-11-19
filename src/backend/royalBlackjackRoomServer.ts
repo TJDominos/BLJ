@@ -105,21 +105,28 @@ export function buildRoomPlayerViews(
   const targetRoster = rosterPlayers !== undefined ? rosterPlayers : state.players || [];
   for (const pid of targetRoster) {
     if (!pid) continue;
+    const basePriv = (projection.privateStates[pid] as Record<string, unknown> | undefined) || {
+      playerId: pid,
+      isGameOwner: ownerSet.has(pid),
+      balance: state.balances?.[pid] || 0,
+      walletCoins: state.walletCoins?.[pid] || 0,
+      mySeats: [],
+      unlockedTableIds: state.unlockedTablesByPlayer?.[pid] || [],
+      ownedTableCodes: {},
+      recentActionOutcomes: state.recentClientActionOutcomes?.[pid] || [],
+    };
+    const recentOutcomes =
+      Array.isArray(basePriv.recentActionOutcomes) && basePriv.recentActionOutcomes.length > 0
+        ? basePriv.recentActionOutcomes
+        : state.recentClientActionOutcomes?.[pid] || [];
     views[pid] = {
       ...(projection.publicState as Record<string, unknown>),
       self: {
         playerId: pid,
-        privateState:
-          projection.privateStates[pid] || {
-            playerId: pid,
-            isGameOwner: ownerSet.has(pid),
-            balance: state.balances?.[pid] || 0,
-            walletCoins: state.walletCoins?.[pid] || 0,
-            mySeats: [],
-            unlockedTableIds: state.unlockedTablesByPlayer?.[pid] || [],
-            ownedTableCodes: {},
-            recentActionOutcomes: state.recentClientActionOutcomes?.[pid] || [],
-          },
+        privateState: {
+          ...basePriv,
+          recentActionOutcomes: recentOutcomes,
+        },
       },
     };
   }
@@ -320,7 +327,7 @@ export type BlackjackPlayerInput =
   | { action: "buy_insurance"; tableId?: string; seatIndex: number }
   | { action: "claim_refill"; tableId?: string }
   | { action: "ready_next"; tableId?: string }
-  | { action: "sync_profile"; name?: string; avatar?: string }
+  | { action: "sync_profile"; name?: string; avatar?: string; restoredWalletCoins?: number }
   | {
       action: "create_table";
       tableId?: string;
@@ -542,6 +549,7 @@ export interface RoyalBlackjackRoomState {
     string,
     Array<{ reqId: string; status: "applied" | "rejected"; code?: string }>
   >;
+  durableWalletLoadedByPlayer?: Record<string, boolean>;
   viewRev?: number;
   forceClose: boolean;
 }
@@ -1310,7 +1318,7 @@ function runDealerAndSettle(
     dealerScore: dScore,
   };
   target.lastRoundSummary = summaryObj;
-  target.roundHistory = [summaryObj, ...(target.roundHistory || [])].slice(0, 20);
+  target.roundHistory = [summaryObj, ...(target.roundHistory || [])].slice(0, 50);
 
   if (!Array.isArray(rootState.matchSettledRounds)) {
     rootState.matchSettledRounds = [];
@@ -1330,7 +1338,7 @@ function runDealerAndSettle(
       seatResults: compactSeatResults,
       settlementUnit: target.lastSettlementUnit,
     },
-  ].slice(-30);
+  ].slice(-100);
 
   if (isSubTable(target)) {
     if (target.status === "closing") {
@@ -1842,6 +1850,401 @@ export async function ensureBlackjackGameDataSchema(): Promise<boolean> {
   }
 }
 
+interface DurableAccountSnapshot {
+  walletCoins: number;
+  liquidWalletCoins: number;
+  activeMatchId?: string;
+  netProfit: number;
+  handsPlayed: number;
+  handsWon: number;
+  blackjacks: number;
+  revision: number;
+  updatedAtMs: number;
+}
+
+const inMemoryPlayerAccountLedger = new Map<string, DurableAccountSnapshot>();
+let persistedPrimaryRoundHistory: RoomRoundSummary[] = [];
+let persistedRecentSettledRounds: ArchivedRoundPayload[] = [];
+let diskLedgerLoaded = false;
+const DISK_LEDGER_PATH = "/tmp/royal-blackjack-account-ledger.json";
+
+function getNodeFs(): any | null {
+  try {
+    const proc = (globalThis as any).process;
+    if (proc && typeof proc.getBuiltinModule === "function") {
+      return proc.getBuiltinModule("node:fs");
+    }
+  } catch {
+    // Ignore in environments without node:fs
+  }
+  return null;
+}
+
+function loadDiskLedgerOnce(): void {
+  if (diskLedgerLoaded) return;
+  diskLedgerLoaded = true;
+  const fs = getNodeFs();
+  if (!fs) return;
+  try {
+    if (!fs.existsSync(DISK_LEDGER_PATH)) return;
+    const raw = fs.readFileSync(DISK_LEDGER_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      if (parsed.accounts && typeof parsed.accounts === "object") {
+        for (const [pid, entry] of Object.entries(parsed.accounts)) {
+          if (
+            pid &&
+            entry &&
+            typeof entry === "object" &&
+            typeof (entry as any).walletCoins === "number"
+          ) {
+            inMemoryPlayerAccountLedger.set(pid, entry as DurableAccountSnapshot);
+          }
+        }
+      }
+      if (Array.isArray(parsed.primaryRoundHistory)) {
+        persistedPrimaryRoundHistory = parsed.primaryRoundHistory.slice(0, 50);
+      }
+      if (Array.isArray(parsed.recentSettledRounds)) {
+        persistedRecentSettledRounds = parsed.recentSettledRounds.slice(-100);
+      }
+    }
+  } catch {
+    // Ignore disk read error
+  }
+}
+
+function saveDiskLedger(): void {
+  const fs = getNodeFs();
+  if (!fs) return;
+  try {
+    const accounts: Record<string, DurableAccountSnapshot> = {};
+    for (const [pid, snap] of inMemoryPlayerAccountLedger.entries()) {
+      accounts[pid] = snap;
+    }
+    fs.writeFileSync(
+      DISK_LEDGER_PATH,
+      JSON.stringify({
+        accounts,
+        primaryRoundHistory: persistedPrimaryRoundHistory.slice(0, 50),
+        recentSettledRounds: persistedRecentSettledRounds.slice(-100),
+      }),
+      "utf8"
+    );
+  } catch {
+    // Ignore disk write error
+  }
+}
+
+function computePlayerTotalAccountCoinsInRoom(
+  state: RoyalBlackjackRoomState,
+  playerId: string
+): number {
+  const liquid =
+    typeof state.walletCoins?.[playerId] === "number"
+      ? state.walletCoins[playerId]
+      : typeof state.balances?.[playerId] === "number"
+      ? state.balances[playerId]
+      : DEFAULT_GAME_COINS;
+
+  let locked = 0;
+  // 1. Undealt regular bets on Table #1 during betting phase
+  if (state.mode === "regular" && state.phase === "betting" && Array.isArray(state.seats)) {
+    for (const s of state.seats) {
+      if (s && s.playerId === playerId && s.hand) {
+        locked +=
+          (Number(s.hand.bet) || 0) +
+          (Number(s.hand.sideBets?.pair) || 0) +
+          (Number(s.hand.sideBets?.twentyOnePlusThree) || 0);
+      }
+    }
+  }
+
+  // 2. Custom tables: undealt regular bets, redeemable host liquidity, or unstarted tournament tickets
+  if (state.customTables && typeof state.customTables === "object") {
+    for (const ct of Object.values(state.customTables)) {
+      if (!ct || ct.status === "closed") continue;
+      if (ct.mode === "regular" && ct.phase === "betting" && Array.isArray(ct.seats)) {
+        for (const s of ct.seats) {
+          if (s && s.playerId === playerId && s.hand) {
+            locked +=
+              (Number(s.hand.bet) || 0) +
+              (Number(s.hand.sideBets?.pair) || 0) +
+              (Number(s.hand.sideBets?.twentyOnePlusThree) || 0);
+          }
+        }
+      }
+      if (ct.houseId === playerId && ct.liquidity > 0) {
+        const unbackedBase = Math.max(0, ct.initialLiquidity - (ct.stakedFromWallet || 0));
+        const redeemable = Math.max(0, ct.liquidity - unbackedBase);
+        locked += redeemable;
+      }
+      if (
+        ct.mode === "tournament" &&
+        ct.roundsPlayed === 0 &&
+        ct.prizePoolCoins > 0 &&
+        ct.balances &&
+        typeof ct.balances[playerId] === "number"
+      ) {
+        locked += Number(ct.tournament?.ticketPrice) || 0;
+      }
+    }
+  }
+
+  return Math.max(0, Math.round(liquid + locked));
+}
+
+function getSynchronousDurableWallet(
+  playerId: string,
+  currentMatchId?: string
+): { walletCoins: number; found: boolean } {
+  loadDiskLedgerOnce();
+  const cleanId = (playerId || "").trim();
+  if (!cleanId || cleanId.startsWith("bot_")) {
+    return { walletCoins: DEFAULT_GAME_COINS, found: false };
+  }
+  const local = inMemoryPlayerAccountLedger.get(cleanId);
+  if (!local || typeof local.walletCoins !== "number" || local.walletCoins <= 0) {
+    return { walletCoins: DEFAULT_GAME_COINS, found: false };
+  }
+  const resolvedCoins =
+    currentMatchId && local.activeMatchId === currentMatchId && local.liquidWalletCoins > 0
+      ? local.liquidWalletCoins
+      : local.walletCoins;
+  return { walletCoins: resolvedCoins, found: true };
+}
+
+async function loadDurablePlayerWallet(
+  playerId: string,
+  currentMatchId?: string
+): Promise<{ walletCoins: number; found: boolean }> {
+  loadDiskLedgerOnce();
+  const cleanId = (playerId || "").trim();
+  if (!cleanId || cleanId.startsWith("bot_")) {
+    return { walletCoins: DEFAULT_GAME_COINS, found: false };
+  }
+
+  let bestSnap = inMemoryPlayerAccountLedger.get(cleanId) || null;
+
+  if (!gameDataDisabled) {
+    try {
+      const schemaOk = await Promise.race<boolean>([
+        ensureBlackjackGameDataSchema(),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 800)),
+      ]);
+      if (schemaOk) {
+        const remoteRec = await Promise.race([
+          randseedPlatformClient.data.get<BlackjackDurablePlayerStanding>(
+            PLAYER_STANDINGS_COLLECTION,
+            cleanId
+          ),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 800)),
+        ]);
+        if (
+          remoteRec &&
+          !remoteRec.deleted &&
+          remoteRec.value &&
+          typeof remoteRec.value.walletCoins === "number" &&
+          remoteRec.value.walletCoins > 0
+        ) {
+          const remoteUpdated = Number(remoteRec.value.updatedAtMs) || 0;
+          if (!bestSnap || remoteUpdated >= (bestSnap.updatedAtMs || 0)) {
+            bestSnap = {
+              walletCoins: Math.round(remoteRec.value.walletCoins),
+              liquidWalletCoins: Math.round(remoteRec.value.walletCoins),
+              activeMatchId: bestSnap?.activeMatchId,
+              netProfit: Math.round(Number(remoteRec.value.netProfit) || 0),
+              handsPlayed: Math.round(Number(remoteRec.value.handsPlayed) || 0),
+              handsWon: Math.round(Number(remoteRec.value.handsWon) || 0),
+              blackjacks: Math.round(Number(remoteRec.value.blackjacks) || 0),
+              revision: typeof remoteRec.revision === "number" ? remoteRec.revision : 0,
+              updatedAtMs: remoteUpdated || Date.now(),
+            };
+            inMemoryPlayerAccountLedger.set(cleanId, bestSnap);
+            saveDiskLedger();
+          }
+        }
+      }
+    } catch {
+      // Fall back to in-memory / disk ledger
+    }
+  }
+
+  if (bestSnap && typeof bestSnap.walletCoins === "number" && bestSnap.walletCoins > 0) {
+    const resolvedCoins =
+      currentMatchId && bestSnap.activeMatchId === currentMatchId && bestSnap.liquidWalletCoins > 0
+        ? bestSnap.liquidWalletCoins
+        : bestSnap.walletCoins;
+    return { walletCoins: resolvedCoins, found: true };
+  }
+
+  return { walletCoins: DEFAULT_GAME_COINS, found: false };
+}
+
+async function syncStandingToPlatformDataAsync(
+  playerId: string,
+  snap: DurableAccountSnapshot
+): Promise<void> {
+  if (gameDataDisabled) return;
+  try {
+    const ok = await ensureBlackjackGameDataSchema();
+    if (!ok) return;
+    const cleanInt = (n: number) => {
+      const v = Math.round(Number(n) || 0);
+      return Object.is(v, -0) ? 0 : v;
+    };
+    const standingValue: BlackjackDurablePlayerStanding = {
+      season: 1,
+      netProfit: cleanInt(snap.netProfit),
+      handsPlayed: cleanInt(snap.handsPlayed),
+      handsWon: cleanInt(snap.handsWon),
+      blackjacks: cleanInt(snap.blackjacks),
+      walletCoins: Math.max(1, cleanInt(snap.walletCoins)),
+      updatedAtMs: cleanInt(snap.updatedAtMs),
+    };
+    const idempotencyKey = `wb_${playerId.slice(0, 32)}_${snap.updatedAtMs}_${Math.random()
+      .toString(36)
+      .slice(2, 7)}`.replace(/[^A-Za-z0-9._:-]/g, "_");
+    try {
+      const receipt = await randseedPlatformClient.data.put<BlackjackDurablePlayerStanding>({
+        idempotencyKey,
+        collection: PLAYER_STANDINGS_COLLECTION,
+        id: playerId,
+        expectedRevision: snap.revision || 0,
+        value: standingValue,
+      });
+      const newRev = receipt?.items?.[0]?.revision;
+      if (typeof newRev === "number") {
+        const cur = inMemoryPlayerAccountLedger.get(playerId);
+        if (cur) cur.revision = newRev;
+      }
+    } catch (putErr) {
+      if (putErr instanceof PlatformDataError && putErr.status === 409) {
+        const latest = await randseedPlatformClient.data.get<BlackjackDurablePlayerStanding>(
+          PLAYER_STANDINGS_COLLECTION,
+          playerId
+        );
+        const latestRev = typeof latest?.revision === "number" ? latest.revision : 0;
+        const retryReceipt = await randseedPlatformClient.data.put<BlackjackDurablePlayerStanding>({
+          idempotencyKey: `${idempotencyKey}_r`,
+          collection: PLAYER_STANDINGS_COLLECTION,
+          id: playerId,
+          expectedRevision: latestRev,
+          value: standingValue,
+        });
+        const newRev = retryReceipt?.items?.[0]?.revision;
+        if (typeof newRev === "number") {
+          const cur = inMemoryPlayerAccountLedger.get(playerId);
+          if (cur) cur.revision = newRev;
+        }
+      }
+    }
+  } catch {
+    // Non-fatal background sync
+  }
+}
+
+function persistRoomWalletsToDurableStore(
+  state: RoyalBlackjackRoomState,
+  onlyPlayerIds?: string[]
+): void {
+  loadDiskLedgerOnce();
+  if (Array.isArray(state.roundHistory) && state.roundHistory.length > 0) {
+    const seen = new Set<string>();
+    const merged: RoomRoundSummary[] = [];
+    for (const r of [...state.roundHistory, ...persistedPrimaryRoundHistory]) {
+      if (!r || !r.roundId || seen.has(r.roundId)) continue;
+      seen.add(r.roundId);
+      merged.push(r);
+    }
+    persistedPrimaryRoundHistory = merged.slice(0, 50);
+  }
+  if (Array.isArray(state.matchSettledRounds) && state.matchSettledRounds.length > 0) {
+    const seen = new Set<string>();
+    const merged: ArchivedRoundPayload[] = [];
+    for (const r of [...persistedRecentSettledRounds, ...state.matchSettledRounds]) {
+      if (!r || !r.roundId || seen.has(r.roundId)) continue;
+      seen.add(r.roundId);
+      merged.push(r);
+    }
+    persistedRecentSettledRounds = merged.slice(-100);
+  }
+
+  const candidateIds =
+    onlyPlayerIds && onlyPlayerIds.length > 0
+      ? onlyPlayerIds
+      : Array.from(
+          new Set([
+            ...(state.players || []),
+            ...Object.keys(state.walletCoins || {}),
+          ])
+        );
+
+  let changedAny = false;
+  const nowMs = Date.now();
+
+  for (const rawPid of candidateIds) {
+    const pid = (rawPid || "").trim();
+    if (!pid || pid.startsWith("bot_")) continue;
+    if (typeof state.walletCoins?.[pid] !== "number") continue;
+
+    const totalAccountCoins = computePlayerTotalAccountCoinsInRoom(state, pid);
+    const liquidCoins = Math.max(0, Math.round(state.walletCoins[pid]));
+    if (totalAccountCoins <= 0) continue;
+
+    const prev = inMemoryPlayerAccountLedger.get(pid);
+    // Calculate career stats from persistedRecentSettledRounds
+    let handsPlayed = 0;
+    let handsWon = 0;
+    let blackjacks = 0;
+    let netProfit = totalAccountCoins - DEFAULT_GAME_COINS;
+    for (const r of persistedRecentSettledRounds) {
+      for (const sr of r.seatResults || []) {
+        if (sr.userId !== pid) continue;
+        handsPlayed += 1;
+        const act = String(sr.action || "").toLowerCase();
+        if (act.includes("won") || act.includes("blackjack") || (sr.net || 0) > 0) {
+          handsWon += 1;
+        }
+        if (act.includes("blackjack")) {
+          blackjacks += 1;
+        }
+      }
+    }
+
+    const walletChanged =
+      !prev ||
+      prev.walletCoins !== totalAccountCoins ||
+      prev.liquidWalletCoins !== liquidCoins ||
+      prev.activeMatchId !== state.matchId ||
+      prev.handsPlayed !== handsPlayed;
+
+    if (!walletChanged) continue;
+
+    const nextSnap: DurableAccountSnapshot = {
+      walletCoins: totalAccountCoins,
+      liquidWalletCoins: liquidCoins,
+      activeMatchId: state.matchId,
+      netProfit,
+      handsPlayed: Math.max(handsPlayed, prev?.handsPlayed || 0),
+      handsWon: Math.max(handsWon, prev?.handsWon || 0),
+      blackjacks: Math.max(blackjacks, prev?.blackjacks || 0),
+      revision: prev?.revision || 0,
+      updatedAtMs: nowMs,
+    };
+    inMemoryPlayerAccountLedger.set(pid, nextSnap);
+    changedAny = true;
+
+    if (!prev || prev.walletCoins !== totalAccountCoins || prev.handsPlayed !== nextSnap.handsPlayed) {
+      void syncStandingToPlatformDataAsync(pid, nextSnap);
+    }
+  }
+
+  if (changedAny) {
+    saveDiskLedger();
+  }
+}
+
 export interface AgentLegalActionDescriptor {
   action:
     | "join_seat"
@@ -2129,9 +2532,16 @@ function applyAuthoritativePlayerInput(
   if (!state.players.includes(playerId)) {
     state.players.push(playerId);
   }
+  if (!state.durableWalletLoadedByPlayer) {
+    state.durableWalletLoadedByPlayer = {};
+  }
   if (typeof state.walletCoins[playerId] !== "number") {
-    state.walletCoins[playerId] = DEFAULT_GAME_COINS;
-    state.totalTokensIssued = (state.totalTokensIssued || 0) + DEFAULT_GAME_COINS;
+    const syncLoaded = getSynchronousDurableWallet(playerId, state.matchId);
+    state.walletCoins[playerId] = syncLoaded.walletCoins;
+    state.durableWalletLoadedByPlayer[playerId] = syncLoaded.found;
+    if (!syncLoaded.found) {
+      state.totalTokensIssued = (state.totalTokensIssued || 0) + DEFAULT_GAME_COINS;
+    }
   }
   if (state.mode === "regular" && typeof state.balances[playerId] !== "number") {
     state.balances[playerId] = state.walletCoins[playerId];
@@ -2144,6 +2554,21 @@ function applyAuthoritativePlayerInput(
     const cleanAvatar = sanitizeAvatarForState(data.avatar);
     if (cleanAvatar) {
       state.playerAvatars![playerId] = cleanAvatar;
+    }
+    if (
+      !state.durableWalletLoadedByPlayer[playerId] &&
+      typeof data.restoredWalletCoins === "number" &&
+      Number.isFinite(data.restoredWalletCoins) &&
+      data.restoredWalletCoins > 0
+    ) {
+      const currentTotal = computePlayerTotalAccountCoinsInRoom(state, playerId);
+      const currentLiquid = state.walletCoins[playerId] ?? DEFAULT_GAME_COINS;
+      if (currentTotal === currentLiquid && currentLiquid === DEFAULT_GAME_COINS) {
+        const restored = Math.min(100_000_000, Math.max(1, Math.round(data.restoredWalletCoins)));
+        syncPlayerRegularBalanceAcrossTables(state, playerId, restored);
+        state.durableWalletLoadedByPlayer[playerId] = true;
+        persistRoomWalletsToDurableStore(state, [playerId]);
+      }
     }
     for (const ct of Object.values(state.customTables!)) {
       if (ct.houseId === playerId) {
@@ -3045,7 +3470,7 @@ export const royalBlackjackGameServer: GameServer<
       version: "1.2.0",
       minPlayers: 1,
       maxPlayers,
-      tickRateHz: 4,
+      tickRateHz: 2,
       persistentTable: true,
       playerViewMode: "private",
       playerViewSchemaVersion: 1,
@@ -3146,14 +3571,24 @@ export const royalBlackjackGameServer: GameServer<
       ...initialWallets,
       ...(carryover?.walletCoins || {}),
     };
+    const durableWalletLoadedByPlayer: Record<string, boolean> = {};
+    for (const [pid, val] of Object.entries(walletCoins)) {
+      if (typeof val === "number" && val > 0) {
+        durableWalletLoadedByPlayer[pid] = true;
+      }
+    }
     const playerNames: Record<string, string> = { ...(carryover?.playerNames || {}) };
     const playerAvatars: Record<string, string> = { ...(carryover?.playerAvatars || {}) };
     let totalTokensIssued = carryover?.totalTokensIssued || 0;
 
     for (const pid of config.players) {
       if (typeof walletCoins[pid] !== "number" || walletCoins[pid] <= 0) {
-        walletCoins[pid] = DEFAULT_GAME_COINS;
-        totalTokensIssued += DEFAULT_GAME_COINS;
+        const loaded = await loadDurablePlayerWallet(pid, config.matchId);
+        walletCoins[pid] = loaded.walletCoins;
+        durableWalletLoadedByPlayer[pid] = loaded.found;
+        if (!loaded.found) {
+          totalTokensIssued += DEFAULT_GAME_COINS;
+        }
       }
       if (mode === "regular" && (typeof balances[pid] !== "number" || balances[pid] <= 0)) {
         balances[pid] = walletCoins[pid];
@@ -3238,10 +3673,14 @@ export const royalBlackjackGameServer: GameServer<
       elapsedSeconds: 0,
       roundsPlayed: carryover?.roundsPlayed || 0,
       lastSettlementUnit: null,
-      lastRoundSummary: carryover?.lastRoundSummary || null,
-      roundHistory: Array.isArray(carryover?.roundHistory) ? carryover.roundHistory.slice(0, 20) : [],
-      matchSettledRounds: [],
+      lastRoundSummary:
+        carryover?.lastRoundSummary || persistedPrimaryRoundHistory[0] || null,
+      roundHistory: Array.isArray(carryover?.roundHistory) && carryover.roundHistory.length > 0
+        ? carryover.roundHistory.slice(0, 50)
+        : persistedPrimaryRoundHistory.slice(0, 50),
+      matchSettledRounds: persistedRecentSettledRounds.slice(-100),
       matchTournamentResults: [],
+      durableWalletLoadedByPlayer,
       customTables: (() => {
         if (!carryover?.customTables) return {};
         const next: Record<string, OnlineSubTableState> = {};
@@ -3683,6 +4122,8 @@ export const royalBlackjackGameServer: GameServer<
       state.players = [...players];
     }
 
+    persistRoomWalletsToDurableStore(state);
+
     state.viewRev = (state.viewRev || 0) + 1;
     const sanitizedState = sanitizeJson(state);
     return {
@@ -3716,6 +4157,7 @@ export const royalBlackjackGameServer: GameServer<
     }
     if (!state.playerNames) state.playerNames = {};
     if (!state.playerAvatars) state.playerAvatars = {};
+    if (!state.durableWalletLoadedByPlayer) state.durableWalletLoadedByPlayer = {};
     if (!Array.isArray(state.ownerPlayerIds)) {
       state.ownerPlayerIds = resolveConfiguredOwnerPlayerIds();
     }
@@ -3723,16 +4165,21 @@ export const royalBlackjackGameServer: GameServer<
       state.playerNames[playerId] = formatDefaultOpaquePlayerName(playerId);
     }
     await syncPlatformPlayerProfilesIntoState(state);
-    if (typeof state.walletCoins[playerId] !== "number" || state.walletCoins[playerId] <= 0) {
-      state.walletCoins[playerId] = DEFAULT_GAME_COINS;
-      state.totalTokensIssued = (state.totalTokensIssued || 0) + DEFAULT_GAME_COINS;
+    if (typeof state.walletCoins[playerId] !== "number") {
+      const loaded = await loadDurablePlayerWallet(playerId, state.matchId);
+      state.walletCoins[playerId] = loaded.walletCoins;
+      state.durableWalletLoadedByPlayer[playerId] = loaded.found;
+      if (!loaded.found) {
+        state.totalTokensIssued = (state.totalTokensIssued || 0) + DEFAULT_GAME_COINS;
+      }
+      syncPlayerRegularBalanceAcrossTables(state, playerId, state.walletCoins[playerId]);
+    } else {
+      state.durableWalletLoadedByPlayer[playerId] = true;
+      if (state.mode === "regular" && typeof state.balances[playerId] !== "number") {
+        state.balances[playerId] = state.walletCoins[playerId];
+      }
     }
-    if (
-      state.mode === "regular" &&
-      (typeof state.balances[playerId] !== "number" || state.balances[playerId] <= 0)
-    ) {
-      state.balances[playerId] = state.walletCoins[playerId];
-    }
+    persistRoomWalletsToDurableStore(state, [playerId]);
     state.viewRev = (state.viewRev || 0) + 1;
     const sanitizedState = sanitizeJson(state);
     return {
@@ -3761,6 +4208,7 @@ export const royalBlackjackGameServer: GameServer<
       state.disconnectedAtElapsedSec[playerId] = state.elapsedSeconds;
     }
     reconcileOnlineRoomTables(state);
+    persistRoomWalletsToDurableStore(state, [playerId]);
     state.viewRev = (state.viewRev || 0) + 1;
     const sanitizedState = sanitizeJson(state);
     return {

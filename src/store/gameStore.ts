@@ -1128,8 +1128,13 @@ function appendRoundRecordIfNew(
     const mySeatResults = userId
       ? allSeatResults.filter((sr) => sr.userId === userId)
       : allSeatResults;
-    const amountWon = userId ? summary.winnings?.[userId] || 0 : 0;
+    if (userId && mySeatResults.length === 0) continue;
+
     const totalNet = mySeatResults.reduce((sum, sr) => sum + (sr.net || 0), 0);
+    const amountWon =
+      userId && typeof summary.winnings?.[userId] === 'number'
+        ? summary.winnings[userId]
+        : totalNet;
     const hasBlackjack = mySeatResults.some((sr) => sr.action === 'blackjack');
     const resType: 'win' | 'lose' | 'push' | 'blackjack' = hasBlackjack
       ? 'blackjack'
@@ -1144,10 +1149,13 @@ function appendRoundRecordIfNew(
       {
         id: summary.roundId,
         tableId: table.id,
+        tableName: table.name,
+        tableMode: table.settings.mode,
+        tableMinBet: table.settings.minBet,
         result: resType,
         amountWon,
         timestamp: summary.timestamp || Date.now(),
-        seatResults: allSeatResults,
+        seatResults: mySeatResults,
         dealerScore: summary.dealerScore,
         currency: 'Gcoin' as const,
       },
@@ -1156,6 +1164,85 @@ function appendRoundRecordIfNew(
   }
 
   return nextRecords.slice(0, 100);
+}
+
+function appendMatchSettledRoundsIfNew(
+  currentRecords: GameRecord[],
+  rawSettledRounds: unknown,
+  userId?: string
+): GameRecord[] {
+  if (!Array.isArray(rawSettledRounds) || rawSettledRounds.length === 0) {
+    return currentRecords;
+  }
+  let nextRecords = currentRecords;
+  const existingIds = new Set(currentRecords.map((r) => r.id));
+
+  for (const item of rawSettledRounds) {
+    if (!item || typeof item !== 'object') continue;
+    const r = item as Record<string, any>;
+    const roundId = typeof r.roundId === 'string' && r.roundId ? r.roundId : '';
+    if (!roundId || existingIds.has(roundId)) continue;
+
+    const allSeats: any[] = Array.isArray(r.seatResults) ? r.seatResults : [];
+    const mySeats = userId ? allSeats.filter((sr) => sr?.userId === userId) : allSeats;
+    if (mySeats.length === 0) continue;
+
+    const seatResults: SeatResult[] = mySeats.map((sr: any) => ({
+      seatIndex: Number(sr.seatIndex) || 0,
+      ...(typeof sr.originalSeatIndex === 'number' ? { originalSeatIndex: sr.originalSeatIndex } : {}),
+      userId: String(sr.userId || userId || ''),
+      playerName: String(sr.playerName || 'Player'),
+      bet: Number(sr.bet) || 0,
+      sideBet: Number(sr.sideBet) || 0,
+      sideBetWin: Number(sr.sideBetWin) || 0,
+      pairBet: Number(sr.pairBet) || 0,
+      pairWin: Number(sr.pairWin) || 0,
+      plus3Bet: Number(sr.plus3Bet) || 0,
+      plus3Win: Number(sr.plus3Win) || 0,
+      insuranceBet: Number(sr.insuranceBet) || 0,
+      insuranceWin: Number(sr.insuranceWin) || 0,
+      isSplit: Boolean(sr.isSplit ?? sr.isSplitHand),
+      isDouble: Boolean(sr.isDouble),
+      win: Number(sr.win) || 0,
+      net: Number(sr.net) || 0,
+      action: String(sr.action || ''),
+      score: typeof sr.score === 'number' ? sr.score : undefined,
+    }));
+
+    const totalNet = seatResults.reduce((sum, sr) => sum + (sr.net || 0), 0);
+    const hasBlackjack = seatResults.some((sr) =>
+      String(sr.action || '').toLowerCase().includes('blackjack')
+    );
+    const resType: 'win' | 'lose' | 'push' | 'blackjack' = hasBlackjack
+      ? 'blackjack'
+      : totalNet > 0
+      ? 'win'
+      : totalNet < 0
+      ? 'lose'
+      : 'push';
+
+    existingIds.add(roundId);
+    nextRecords = [
+      {
+        id: roundId,
+        tableId: typeof r.tableId === 'string' ? r.tableId : 'table_1',
+        tableName: typeof r.tableName === 'string' ? r.tableName : 'Table #1',
+        tableMode: r.tableMode === 'tournament' ? 'tournament' : 'regular',
+        tableMinBet: typeof r.tableMinBet === 'number' ? r.tableMinBet : 10,
+        result: resType,
+        amountWon: totalNet,
+        timestamp: typeof r.timestamp === 'number' ? r.timestamp : Date.now(),
+        seatResults,
+        dealerScore: typeof r.dealerScore === 'number' ? r.dealerScore : undefined,
+        currency: 'Gcoin' as const,
+      },
+      ...nextRecords,
+    ];
+  }
+
+  return nextRecords
+    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+    .slice(0, 100);
 }
 
 function buildOnlinePlayersList(
@@ -1435,8 +1522,86 @@ interface GameStore {
   addGameRecord: (record: GameRecord) => void;
 }
 
+const CLIENT_ACCOUNT_STORAGE_KEY = 'rs_royal_bj_account_v1';
+
+interface ClientPersistedAccount {
+  userId: string;
+  name: string;
+  avatar?: string;
+  balance: number;
+  isCreator: boolean;
+  records: GameRecord[];
+  updatedAt: number;
+}
+
+function readClientAccountsMap(): Record<string, ClientPersistedAccount> {
+  if (typeof window === 'undefined' || !window.localStorage) return {};
+  try {
+    const raw = window.localStorage.getItem(CLIENT_ACCOUNT_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, ClientPersistedAccount>;
+    }
+  } catch {
+    // Ignore storage read error
+  }
+  return {};
+}
+
+function getClientPersistedAccount(userId?: string): ClientPersistedAccount | null {
+  if (!userId || userId === 'connecting_player') return null;
+  const map = readClientAccountsMap();
+  return map[userId] || null;
+}
+
+function getLastClientPersistedAccount(): ClientPersistedAccount | null {
+  const map = readClientAccountsMap();
+  let latest: ClientPersistedAccount | null = null;
+  for (const entry of Object.values(map)) {
+    if (
+      entry &&
+      typeof entry.userId === 'string' &&
+      entry.userId !== 'connecting_player' &&
+      typeof entry.balance === 'number'
+    ) {
+      if (!latest || (entry.updatedAt || 0) > (latest.updatedAt || 0)) {
+        latest = entry;
+      }
+    }
+  }
+  return latest;
+}
+
+function saveClientPersistedAccount(user: User, records: GameRecord[]): void {
+  if (
+    typeof window === 'undefined' ||
+    !window.localStorage ||
+    !user?.id ||
+    user.id === 'connecting_player'
+  ) {
+    return;
+  }
+  try {
+    const map = readClientAccountsMap();
+    map[user.id] = {
+      userId: user.id,
+      name: user.name || 'Player',
+      avatar: user.avatar,
+      balance: Math.max(0, Math.round(Number(user.balance) || 0)),
+      isCreator: Boolean(user.isCreator),
+      records: Array.isArray(records) ? records.slice(0, 100) : [],
+      updatedAt: Date.now(),
+    };
+    window.localStorage.setItem(CLIENT_ACCOUNT_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // Ignore storage write error
+  }
+}
+
 export const useGameStore = create<GameStore>((set, get) => {
   let lastAppliedRoomSnapshotSig = '';
+  let lastSentWalletRestoreKey = '';
 
   const applyOnlineRoomSnapshot = (
     rawRoomState: Record<string, any>,
@@ -1554,12 +1719,39 @@ export const useGameStore = create<GameStore>((set, get) => {
 
     const walletMap = (roomState.walletCoins || roomState.balances || {}) as Record<string, number>;
     const balMap = (roomState.balances || {}) as Record<string, number>;
-    const effectiveBalance =
+    const serverBalance =
       typeof walletMap[resolvedId] === 'number'
         ? walletMap[resolvedId]
         : typeof balMap[resolvedId] === 'number'
         ? balMap[resolvedId]
         : current?.balance ?? DEFAULT_GAME_COINS;
+
+    const durableLoaded = Boolean(roomState.durableWalletLoadedByPlayer?.[resolvedId]);
+    const persistedClientAcct = getClientPersistedAccount(resolvedId);
+    const shouldRestoreFromClientCache =
+      !durableLoaded &&
+      serverBalance === DEFAULT_GAME_COINS &&
+      persistedClientAcct &&
+      typeof persistedClientAcct.balance === 'number' &&
+      persistedClientAcct.balance > 0 &&
+      persistedClientAcct.balance !== DEFAULT_GAME_COINS;
+
+    const effectiveBalance = shouldRestoreFromClientCache
+      ? persistedClientAcct!.balance
+      : serverBalance;
+
+    if (shouldRestoreFromClientCache) {
+      const restoreKey = `${roomState.matchId || 'room'}:${resolvedId}`;
+      if (lastSentWalletRestoreKey !== restoreKey) {
+        lastSentWalletRestoreKey = restoreKey;
+        void sendRandseedRoomAction({
+          action: 'sync_profile',
+          name: resolvedName,
+          ...(resolvedAvatar && resolvedAvatar.length <= 4096 ? { avatar: resolvedAvatar } : {}),
+          restoredWalletCoins: persistedClientAcct!.balance,
+        }).catch(() => false);
+      }
+    }
 
     const syncedUser: User = {
       id: resolvedId,
@@ -1574,8 +1766,26 @@ export const useGameStore = create<GameStore>((set, get) => {
     const nextTables = mapAllRoomTablesFromSnapshot(roomState, get().tables);
 
     let updatedRecords = get().gameRecords;
+    if (persistedClientAcct?.records && persistedClientAcct.records.length > 0) {
+      const existingIds = new Set(updatedRecords.map((r) => r.id));
+      for (const cachedRec of persistedClientAcct.records) {
+        if (cachedRec?.id && !existingIds.has(cachedRec.id)) {
+          existingIds.add(cachedRec.id);
+          updatedRecords = [...updatedRecords, cachedRec];
+        }
+      }
+    }
     for (const t of Object.values(nextTables)) {
       updatedRecords = appendRoundRecordIfNew(updatedRecords, t, resolvedId);
+    }
+    updatedRecords = appendMatchSettledRoundsIfNew(
+      updatedRecords,
+      roomState.matchSettledRounds,
+      resolvedId
+    );
+
+    if (durableLoaded || effectiveBalance !== DEFAULT_GAME_COINS || updatedRecords.length > 0) {
+      saveClientPersistedAccount(syncedUser, updatedRecords);
     }
 
     const nextUnlocked = { ...get().unlockedTableIds };
@@ -1820,20 +2030,30 @@ export const useGameStore = create<GameStore>((set, get) => {
       syncedSelf?.name ||
       'Player';
     const syncedAvatar = syncedSelf?.avatar || fallbackAvatar;
+    const cachedAcct = syncedSelf?.id ? getClientPersistedAccount(syncedSelf.id) : null;
     void sendRandseedRoomAction({
       action: 'sync_profile',
       name: syncedName,
       ...(syncedAvatar && syncedAvatar.length <= 4096 ? { avatar: syncedAvatar } : {}),
+      ...(cachedAcct && typeof cachedAcct.balance === 'number' && cachedAcct.balance > 0
+        ? { restoredWalletCoins: cachedAcct.balance }
+        : {}),
     }).catch(() => false);
   };
 
+  const lastCachedAccount = getLastClientPersistedAccount();
+
   const initialBootstrapUser: User = {
-    id: 'connecting_player',
-    name: 'Player',
-    balance: DEFAULT_GAME_COINS,
+    id: lastCachedAccount?.userId || 'connecting_player',
+    name: lastCachedAccount?.name || 'Player',
+    avatar: lastCachedAccount?.avatar,
+    balance:
+      typeof lastCachedAccount?.balance === 'number' && lastCachedAccount.balance > 0
+        ? lastCachedAccount.balance
+        : DEFAULT_GAME_COINS,
     bonusBalance: 0,
-    role: 'player',
-    isCreator: false,
+    role: lastCachedAccount?.isCreator ? 'creator' : 'player',
+    isCreator: Boolean(lastCachedAccount?.isCreator),
   };
 
   const initialBootstrapTable1 = mapRoomStateToTable(
@@ -1868,10 +2088,10 @@ export const useGameStore = create<GameStore>((set, get) => {
 
   return {
     currentUser: initialBootstrapUser,
-    isGameOwner: false,
+    isGameOwner: Boolean(lastCachedAccount?.isCreator),
     tables: { table_1: initialBootstrapTable1 },
     activeTableId: null,
-    gameRecords: [],
+    gameRecords: lastCachedAccount?.records || [],
     onlinePlayers: [],
     disconnectedPlayerIds: [],
     unlockedTableIds: {},
@@ -2125,7 +2345,9 @@ export const useGameStore = create<GameStore>((set, get) => {
         ...(safeAvatar ? { playerAvatar: safeAvatar } : {}),
       });
 
-      if (!dispatchRes.ok) {
+      await get().syncStateFromServer();
+
+      if (!dispatchRes.ok && !get().tables[newTableId]) {
         throw new Error(dispatchRes.error || 'Failed to create custom table.');
       }
 

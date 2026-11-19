@@ -204,7 +204,7 @@ function projectSingleSubTablePublic(
     tournament: ct.tournament || null,
     tournamentHistory: Array.isArray(ct.tournamentHistory) ? ct.tournamentHistory.slice(0, 10) : [],
     lastRoundSummary: ct.lastRoundSummary || null,
-    roundHistory: Array.isArray(ct.roundHistory) ? ct.roundHistory.slice(0, 10) : [],
+    roundHistory: Array.isArray(ct.roundHistory) ? ct.roundHistory.slice(0, 50) : [],
   };
 }
 
@@ -293,7 +293,11 @@ export function projectBlackjackRoomState(state: RoyalBlackjackRoomState): State
     tournament: state.tournament || null,
     tournamentHistory: Array.isArray(state.tournamentHistory) ? state.tournamentHistory.slice(0, 10) : [],
     lastRoundSummary: state.lastRoundSummary || null,
-    roundHistory: Array.isArray(state.roundHistory) ? state.roundHistory.slice(0, 10) : [],
+    roundHistory: Array.isArray(state.roundHistory) ? state.roundHistory.slice(0, 50) : [],
+    matchSettledRounds: Array.isArray(state.matchSettledRounds) ? state.matchSettledRounds.slice(0, 100) : [],
+    matchTournamentResults: Array.isArray(state.matchTournamentResults) ? state.matchTournamentResults.slice(0, 30) : [],
+    recentClientActionOutcomes: state.recentClientActionOutcomes || {},
+    durableWalletLoadedByPlayer: state.durableWalletLoadedByPlayer || {},
     customTables: publicCustomTables,
     players: state.players || [],
     playerNames,

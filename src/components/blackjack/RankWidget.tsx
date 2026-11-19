@@ -26,6 +26,7 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
     fetchPersonalArchive,
     currentUser,
     tables,
+    gameRecords,
   } = useGameStore();
   const navigate = useNavigate();
   const [internalOpen, setInternalOpen] = useState(false);
@@ -65,11 +66,134 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
     }
   }, [isOpen, fetchPersonalArchive]);
 
-  const playerRecords = personalArchive.records;
+  // Unified, deduplicated round records combining live tables' roundHistory,
+  // live gameRecords, and detailed cross-match personalArchive records.
+  const playerRecords = useMemo(() => {
+    const recordMap = new Map<string, typeof gameRecords[number]>();
+    const myId = currentUser?.id;
 
-  // Aggregate personal stats strictly from the persistent cross-room archive
+    // 1. Live table roundHistory across all active tables in the room
+    for (const table of Object.values(tables)) {
+      const history = Array.isArray(table.roundHistory) ? table.roundHistory : [];
+      for (const summary of history) {
+        if (!summary || !summary.roundId || !Array.isArray(summary.seatResults)) continue;
+        const mySeats = myId
+          ? summary.seatResults.filter((sr) => sr.userId === myId || sr.userId === 'me')
+          : summary.seatResults;
+        if (mySeats.length === 0) continue;
+
+        const totalNet = mySeats.reduce((sum, sr) => sum + (sr.net || 0), 0);
+        const amountWon =
+          myId && typeof summary.winnings?.[myId] === 'number'
+            ? summary.winnings[myId]
+            : totalNet;
+        const hasBlackjack = mySeats.some((sr) =>
+          String(sr.action || '').toLowerCase().includes('blackjack')
+        );
+        const resType: 'win' | 'lose' | 'push' | 'blackjack' = hasBlackjack
+          ? 'blackjack'
+          : totalNet > 0
+          ? 'win'
+          : totalNet < 0
+          ? 'lose'
+          : 'push';
+
+        recordMap.set(summary.roundId, {
+          id: summary.roundId,
+          tableId: table.id,
+          tableName: table.name,
+          tableMode: table.settings.mode,
+          tableMinBet: table.settings.minBet,
+          result: resType,
+          amountWon,
+          timestamp: summary.timestamp || Date.now(),
+          seatResults: mySeats,
+          dealerScore: summary.dealerScore,
+          currency: 'Gcoin',
+        });
+      }
+    }
+
+    // 2. Live session gameRecords captured in store
+    for (const rec of gameRecords) {
+      if (!rec || !rec.id || rec.id.startsWith('archive_')) continue;
+      const key = rec.id.replace(/^rec_/, '');
+      if (recordMap.has(key)) continue;
+      const mySeats = (rec.seatResults || []).filter((sr) =>
+        myId ? sr.userId === myId || sr.userId === 'me' : true
+      );
+      if (mySeats.length === 0) continue;
+      const liveTable = tables[rec.tableId];
+      recordMap.set(key, {
+        ...rec,
+        id: key,
+        tableName: rec.tableName || liveTable?.name || 'Table #1',
+        tableMode: rec.tableMode || liveTable?.settings.mode || 'regular',
+        tableMinBet: rec.tableMinBet || liveTable?.settings.minBet || 10,
+        seatResults: mySeats,
+      });
+    }
+
+    // 3. Detailed cross-match persisted records from personalArchive
+    for (const rec of personalArchive.records) {
+      if (!rec || !rec.id || rec.id.startsWith('archive_')) continue;
+      const key = rec.id.replace(/^rec_/, '');
+      if (recordMap.has(key)) continue;
+      const mySeats = (rec.seatResults || []).filter((sr) =>
+        myId ? sr.userId === myId || sr.userId === 'me' : sr.userId === 'me'
+      );
+      if (mySeats.length === 0) continue;
+      recordMap.set(key, {
+        ...rec,
+        id: key,
+        seatResults: mySeats,
+      });
+    }
+
+    // Fallback: only if there are zero detailed round records at all, include legacy archive_* rows
+    if (recordMap.size === 0) {
+      for (const rec of personalArchive.records) {
+        if (!rec || !rec.id) continue;
+        recordMap.set(rec.id, rec);
+      }
+    }
+
+    return Array.from(recordMap.values()).sort(
+      (a, b) => (b.timestamp || 0) - (a.timestamp || 0)
+    );
+  }, [tables, gameRecords, personalArchive.records, currentUser?.id]);
+
+  // Aggregate personal stats from the unified, deduplicated round records
+  // (using the exact same per-hand calculation as Play Board)
   const stats = useMemo(() => {
-    const legacy = personalArchive.legacyAggregates;
+    const hasDetailedRecords = playerRecords.some((r) => !r.id.startsWith('archive_'));
+    const legacy = hasDetailedRecords
+      ? {
+          regularRounds: 0,
+          regularWins: 0,
+          regularNet: 0,
+          regularBlackjacks: 0,
+          regularDoubles: 0,
+          regularSplits: 0,
+          regularSideBetHands: 0,
+          regularSideBetWins: 0,
+          regularSideBetNet: 0,
+          regularSideBetGrossWin: 0,
+          regularPairWins: 0,
+          regularPlus3Wins: 0,
+          bestSingleWin: 0,
+          tournamentRounds: 0,
+          tournamentWins: 0,
+          tournamentNet: 0,
+          tournamentBlackjacks: 0,
+          tournamentSideBetHands: 0,
+          tournamentSideBetWins: 0,
+          tournamentSideBetNet: 0,
+          tournamentSideBetGrossWin: 0,
+          tournamentPairWins: 0,
+          tournamentPlus3Wins: 0,
+        }
+      : personalArchive.legacyAggregates;
 
     let regularRounds = legacy.regularRounds;
     let regularWins = legacy.regularWins;
@@ -97,7 +221,6 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
     let tournamentPlus3Wins = legacy.tournamentPlus3Wins;
 
     for (const record of playerRecords) {
-      // Legacy summary rows (archive_*) are already accounted for in legacyAggregates
       if (record.id.startsWith('archive_')) continue;
 
       const isTournament = record.tableMode === 'tournament';
@@ -109,8 +232,8 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
       );
 
       for (const seat of mySeats) {
-        const net = seat.net || 0;
-        const actionLower = (seat.action || '').toLowerCase();
+        const net = Number(seat.net || 0);
+        const actionLower = String(seat.action || '').toLowerCase();
         const isWin =
           actionLower.includes('won') || actionLower.includes('blackjack') || net > 0;
         const isBJ = actionLower.includes('blackjack');
@@ -163,9 +286,36 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
       }
     }
 
-    const tournamentsEntered = personalArchive.tournamentsEntered;
-    const tournamentsWon = personalArchive.tournamentsWon;
-    const tournamentPrizeCoinsWon = personalArchive.tournamentPrizeCoinsWon;
+    // Merge live tournament history across tables with archived tournaments
+    const seenTournamentIds = new Set<string>();
+    let tournamentsEntered = 0;
+    let tournamentsWon = 0;
+    let tournamentPrizeCoinsWon = 0;
+    const myId = currentUser?.id;
+
+    for (const table of Object.values(tables)) {
+      for (const tr of table.tournamentHistory || []) {
+        if (!tr || !tr.id || seenTournamentIds.has(tr.id)) continue;
+        const myWinnerIdx = Array.isArray(tr.winners)
+          ? tr.winners.findIndex((w) => w.userId === myId)
+          : -1;
+        if (myWinnerIdx >= 0) {
+          seenTournamentIds.add(tr.id);
+          tournamentsEntered += 1;
+          const myEntry = tr.winners[myWinnerIdx];
+          const prize = Number(myEntry?.prizeCoins) || 0;
+          if (myWinnerIdx === 0 || prize > 0) {
+            tournamentsWon += 1;
+          }
+          tournamentPrizeCoinsWon += prize - (Number(tr.ticketPrice) || 0);
+        }
+      }
+    }
+    if (seenTournamentIds.size === 0) {
+      tournamentsEntered = personalArchive.tournamentsEntered;
+      tournamentsWon = personalArchive.tournamentsWon;
+      tournamentPrizeCoinsWon = personalArchive.tournamentPrizeCoinsWon;
+    }
 
     const totalRounds = regularRounds + tournamentRounds;
     const totalWins = regularWins + tournamentWins;
@@ -219,9 +369,9 @@ export const RankWidget: React.FC<RankWidgetProps> = ({
         plus3Wins: tournamentPlus3Wins,
       },
     };
-  }, [personalArchive, playerRecords, currentUser]);
+  }, [personalArchive, playerRecords, currentUser, tables]);
 
-  // Filtered recent game records from persistent archive
+  // Filtered recent game records
   const filteredRecords = useMemo(() => {
     return playerRecords.filter((r) => {
       const isTournament = r.tableMode === 'tournament';

@@ -207,30 +207,68 @@ function extractRecentActionOutcomesFromStateObj(
       ? (stateObj._privateState as Record<string, unknown>)
       : null);
 
-  if (!Array.isArray(privObj?.recentActionOutcomes)) return [];
-  return privObj!.recentActionOutcomes.filter(
-    (item: any): item is { reqId: string; status: "applied" | "rejected"; code?: string } =>
-      Boolean(
+  const combined: Array<{ reqId: string; status: "applied" | "rejected"; code?: string }> = [];
+  if (Array.isArray(privObj?.recentActionOutcomes)) {
+    for (const item of privObj!.recentActionOutcomes) {
+      if (
         item &&
+        typeof item === "object" &&
+        typeof (item as any).reqId === "string" &&
+        ((item as any).status === "applied" || (item as any).status === "rejected")
+      ) {
+        combined.push(item as { reqId: string; status: "applied" | "rejected"; code?: string });
+      }
+    }
+  }
+  const publicMap = stateObj.recentClientActionOutcomes;
+  if (publicMap && typeof publicMap === "object" && !Array.isArray(publicMap)) {
+    for (const list of Object.values(publicMap as Record<string, unknown>)) {
+      if (!Array.isArray(list)) continue;
+      for (const item of list) {
+        if (
+          item &&
           typeof item === "object" &&
-          typeof item.reqId === "string" &&
-          (item.status === "applied" || item.status === "rejected")
-      )
-  );
+          typeof (item as any).reqId === "string" &&
+          ((item as any).status === "applied" || (item as any).status === "rejected")
+        ) {
+          combined.push(item as { reqId: string; status: "applied" | "rejected"; code?: string });
+        }
+      }
+    }
+  }
+  return combined;
+}
+
+function isActionEffectVisibleInStateObj(
+  stateObj: Record<string, unknown> | null,
+  actionPayload?: Record<string, JsonValue>
+): { status: "applied" } | null {
+  if (!stateObj || !actionPayload) return null;
+  const act = actionPayload.action;
+  if (act === "create_table" && typeof actionPayload.tableId === "string" && actionPayload.tableId) {
+    const customTables = stateObj.customTables as Record<string, unknown> | undefined;
+    if (customTables && typeof customTables === "object" && customTables[actionPayload.tableId]) {
+      return { status: "applied" };
+    }
+  }
+  return null;
 }
 
 function findClientReqOutcomeInSnapshot(
   snapshot: RoomSnapshot | undefined,
-  reqId: string
+  reqId: string,
+  actionPayload?: Record<string, JsonValue>
 ): { status: "applied" | "rejected"; code?: string } | null {
   if (!snapshot || !snapshot.state || typeof snapshot.state !== "object" || Array.isArray(snapshot.state)) {
     return null;
   }
-  const outcomes = extractRecentActionOutcomesFromStateObj(
-    snapshot.state as Record<string, unknown>
-  );
+  const stateObj = snapshot.state as Record<string, unknown>;
+  const outcomes = extractRecentActionOutcomesFromStateObj(stateObj);
   const matched = outcomes.find((item) => item.reqId === reqId);
-  return matched ? { status: matched.status, code: matched.code } : null;
+  if (matched) {
+    return { status: matched.status, code: matched.code };
+  }
+  return isActionEffectVisibleInStateObj(stateObj, actionPayload);
 }
 
 function inspectSnapshotForSocketActionReceipts(
@@ -241,13 +279,15 @@ function inspectSnapshotForSocketActionReceipts(
   const rawOutcomes = extractRecentActionOutcomesFromStateObj(stateObj);
 
   for (const [reqId, waiter] of Array.from(pendingSocketActions.entries())) {
-    const matched = rawOutcomes.find((item) => item.reqId === reqId);
+    const matched =
+      rawOutcomes.find((item) => item.reqId === reqId) ||
+      isActionEffectVisibleInStateObj(stateObj, waiter.actionPayload);
 
     if (matched) {
       clearInterval(waiter.retryTimer);
       clearTimeout(waiter.timeoutTimer);
       pendingSocketActions.delete(reqId);
-      waiter.resolve({ status: matched.status, code: matched.code });
+      waiter.resolve({ status: matched.status, code: (matched as any).code });
       continue;
     }
 
@@ -768,9 +808,8 @@ async function submitActionViaSocketWithReceipt(
 
   attachSocketFrameMonitor(roomClientInstance);
 
-  // If no WebSocket snapshot has arrived in the last 600ms, the room host's tick may have advanced while idle.
-  // Refresh GET /state (200 OK) first so expectedTick is fresh before sending over WebSocket.
-  if (Date.now() - lastSnapshotReceivedAtMs > 600) {
+  // Only block on refreshRoomClientState if we don't have a snapshot at all yet.
+  if (!roomClientInstance.snapshot && !latestRawSnapshot) {
     await refreshRoomClientState();
   }
 
@@ -786,7 +825,7 @@ async function submitActionViaSocketWithReceipt(
     force: true,
   });
   if (!sent) {
-    return null;
+    void roomClientInstance.sendInput(actionPayload).catch(() => {});
   }
 
   return new Promise((resolve) => {
@@ -798,7 +837,8 @@ async function submitActionViaSocketWithReceipt(
 
       const existing = findClientReqOutcomeInSnapshot(
         latestRawSnapshot ?? roomClientInstance.snapshot,
-        reqId
+        reqId,
+        waiter.actionPayload
       );
       if (existing) {
         clearInterval(waiter.retryTimer);
@@ -812,20 +852,17 @@ async function submitActionViaSocketWithReceipt(
 
       void (async () => {
         if (!pendingSocketActions.has(reqId) || !roomClientInstance) return;
-        let currentTick =
-          roomClientInstance.snapshot?.tick ?? latestRawSnapshot?.tick ?? waiter.lastSentTick;
-        if (currentTick <= waiter.lastSentTick) {
-          await refreshRoomClientState();
-          currentTick =
-            roomClientInstance?.snapshot?.tick ?? latestRawSnapshot?.tick ?? waiter.lastSentTick;
-        }
+        await refreshRoomClientState();
+        const currentTick =
+          roomClientInstance?.snapshot?.tick ?? latestRawSnapshot?.tick ?? waiter.lastSentTick;
         const activeWaiter = pendingSocketActions.get(reqId);
         if (!activeWaiter || !roomClientInstance || roomClientInstance.status !== "connected") {
           return;
         }
         const postRefreshCheck = findClientReqOutcomeInSnapshot(
           latestRawSnapshot ?? roomClientInstance.snapshot,
-          reqId
+          reqId,
+          activeWaiter.actionPayload
         );
         if (postRefreshCheck) {
           clearInterval(activeWaiter.retryTimer);
@@ -839,15 +876,13 @@ async function submitActionViaSocketWithReceipt(
           allowSameTick: true,
           force: true,
         });
-        if (ok) {
-          activeWaiter.lastSentTick = currentTick;
-          activeWaiter.resendCount += 1;
-        }
-        if (activeWaiter.resendCount === 2 && roomClientInstance) {
+        activeWaiter.lastSentTick = currentTick;
+        activeWaiter.resendCount += 1;
+        if (!ok || activeWaiter.resendCount === 1 || activeWaiter.resendCount === 3) {
           void roomClientInstance.sendInput(activeWaiter.actionPayload).catch(() => {});
         }
       })();
-    }, 280);
+    }, 320);
 
     const timeoutTimer = setTimeout(() => {
       const waiter = pendingSocketActions.get(reqId);
