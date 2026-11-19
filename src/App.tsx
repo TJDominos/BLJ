@@ -263,9 +263,9 @@ function GameLayout() {
     proceedToTable(id);
   };
 
-  const handleVerifyTableCodeSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!pendingCodeTableId) return;
+  const handleVerifyTableCodeSubmit = async (e?: React.SyntheticEvent) => {
+    e?.preventDefault();
+    if (!pendingCodeTableId || isVerifyingCode) return;
     const trimmed = codeInput.trim();
     if (!/^\d{4}$/.test(trimmed)) {
       setCodeError('Please enter a 4-digit Code (0-9).');
@@ -346,7 +346,7 @@ function GameLayout() {
                   <X className="w-5 h-5" />
                 </button>
               </div>
-              <form onSubmit={handleVerifyTableCodeSubmit} className="p-5 space-y-4 text-sm">
+              <div className="p-5 space-y-4 text-sm">
                 <p className="text-slate-300 leading-relaxed">
                   Enter the 4-digit Code to join <span className="font-bold text-white">{tables[pendingCodeTableId].name}</span>:
                 </p>
@@ -358,6 +358,11 @@ function GameLayout() {
                   placeholder="0000"
                   value={codeInput}
                   onChange={(e) => setCodeInput(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && codeInput.length === 4 && !isVerifyingCode) {
+                      void handleVerifyTableCodeSubmit(e);
+                    }
+                  }}
                   className="w-full px-4 py-3 rounded-xl bg-black/50 border border-amber-400/40 text-amber-300 font-mono text-2xl font-bold tracking-[0.5em] text-center focus:outline-none focus:border-[#d4af37]"
                 />
                 {codeError && (
@@ -374,14 +379,15 @@ function GameLayout() {
                     Cancel
                   </button>
                   <button
-                    type="submit"
+                    type="button"
+                    onClick={handleVerifyTableCodeSubmit}
                     disabled={isVerifyingCode || codeInput.length !== 4}
                     className="px-5 py-2 rounded-xl font-bold text-[#090d0b] bg-[#e5c158] hover:bg-[#f5d97e] disabled:opacity-50 cursor-pointer"
                   >
                     {isVerifyingCode ? 'Verifying...' : 'Unlock & Enter'}
                   </button>
                 </div>
-              </form>
+              </div>
             </div>
           </div>
         )}

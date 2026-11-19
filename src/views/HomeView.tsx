@@ -236,8 +236,8 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     void loadRuntimeStats(true);
   };
 
-  const handleCreatorLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreatorLogin = async (e?: React.SyntheticEvent) => {
+    e?.preventDefault();
     setCreatorAuthError(null);
     const ok = await verifyPublisher();
     if (ok) {
@@ -254,8 +254,9 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     setRandseedMuted(next).catch(() => {});
   };
 
-  const handleCreateRoom = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateRoom = async (e?: React.SyntheticEvent) => {
+    e?.preventDefault();
+    if (isCreating) return;
     const trimmedName = roomName.trim() || `${currentUser?.name || 'Creator'}'s Table`;
     const trimmedCode = tableCode.trim();
     if (trimmedCode.length > 0 && !/^\d{4}$/.test(trimmedCode)) {
@@ -1211,7 +1212,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 </button>
               </div>
 
-              <form onSubmit={handleCreateRoom} noValidate className="p-4 sm:p-6 overflow-y-auto space-y-4 text-sm">
+              <div className="p-4 sm:p-6 overflow-y-auto space-y-4 text-sm">
                 <div className="grid grid-cols-2 gap-2 p-1.5 bg-black/40 rounded-xl border border-white/10">
                   <button
                     type="button"
@@ -1619,14 +1620,15 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                     Cancel
                   </button>
                   <button
-                    type="submit"
+                    type="button"
+                    onClick={handleCreateRoom}
                     disabled={isCreating}
                     className="px-6 py-2.5 rounded-xl text-sm font-bold text-[#090d0b] bg-gradient-to-b from-[#f5d97e] to-[#c69c3a] hover:from-[#fae396] hover:to-[#d4ab46] transition-all cursor-pointer disabled:opacity-50"
                   >
                     {isCreating ? 'Creating...' : 'Create & Enter'}
                   </button>
                 </div>
-              </form>
+              </div>
             </motion.div>
           </div>
         )}
@@ -1661,7 +1663,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 </button>
               </div>
 
-              <form onSubmit={handleCreatorLogin} className="p-5 space-y-4 text-sm">
+              <div className="p-5 space-y-4 text-sm">
                 <p className="text-slate-300 leading-relaxed">
                   Switch to Creator perspective to view runtime statistics and table management.
                 </p>
@@ -1679,13 +1681,14 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                     Cancel
                   </button>
                   <button
-                    type="submit"
+                    type="button"
+                    onClick={handleCreatorLogin}
                     className="px-5 py-2 rounded-xl font-bold text-[#090d0b] bg-[#d4af37] hover:bg-[#f5d97e] cursor-pointer"
                   >
                     Enable Creator View
                   </button>
                 </div>
-              </form>
+              </div>
             </motion.div>
           </div>
         )}
