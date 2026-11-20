@@ -1696,7 +1696,7 @@ export const useGameStore = create<GameStore>((set, get) => {
         ? { ...roomState.playerAvatars }
         : {};
 
-    // Merge trusted public display profiles (`displayName`, `avatarUrl`, `isGameCreator`) from @randseed/game-sdk@0.8.0
+    // Merge trusted public display profiles (`displayName`, `avatarUrl`, `isGameCreator`) from @randseed/game-sdk@0.9.0
     const sdkRosterById = new Map<string, RoomPlayer>();
     if (Array.isArray(sdkPlayers)) {
       for (const rp of sdkPlayers) {

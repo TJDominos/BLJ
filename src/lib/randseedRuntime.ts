@@ -431,7 +431,7 @@ export function getRandseedOnlinePlayers(): RoomPlayer[] {
 
 /**
  * Read the current player's trusted public profile & owner display hint
- * (`displayName`, `avatarUrl`, `isGameCreator`) from @randseed/game-sdk@0.8.0 RoomClient.getPlayers().
+ * (`displayName`, `avatarUrl`, `isGameCreator`) from @randseed/game-sdk@0.9.0 RoomClient.getPlayers().
  */
 export function getRandseedCurrentPlayerProfile(playerIdOverride?: string): RoomPlayer | null {
   const targetId =
@@ -445,7 +445,7 @@ export function getRandseedCurrentPlayerProfile(playerIdOverride?: string): Room
 }
 
 /**
- * Initialize RandSeed RuntimeClient (@randseed/game-sdk@0.8.0) for responsive shell viewport,
+ * Initialize RandSeed RuntimeClient (@randseed/game-sdk@0.9.0) for responsive shell viewport,
  * room session refresh, fullscreen & audio mute bridging.
  */
 export async function initRandseedRuntime(): Promise<RuntimeClient | null> {
@@ -562,7 +562,7 @@ let matchInFlightPromise: Promise<{
 } | null> | null = null;
 
 /**
- * Connect to the full-stack RandSeed Room backend via RoomClient (@randseed/game-sdk@0.7.0).
+ * Connect to the full-stack RandSeed Room backend via RoomClient (@randseed/game-sdk@0.9.0).
  */
 export async function matchRandseedRoom(
   onSnapshotUpdate?: (
