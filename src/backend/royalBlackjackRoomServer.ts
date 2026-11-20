@@ -114,11 +114,16 @@ export function buildRoomPlayerViews(
       unlockedTableIds: state.unlockedTablesByPlayer?.[pid] || [],
       ownedTableCodes: {},
       recentActionOutcomes: state.recentClientActionOutcomes?.[pid] || [],
+      recentPrivateSettlements: state.recentPrivateSettlements?.[pid] || [],
     };
     const recentOutcomes =
       Array.isArray(basePriv.recentActionOutcomes) && basePriv.recentActionOutcomes.length > 0
         ? basePriv.recentActionOutcomes
         : state.recentClientActionOutcomes?.[pid] || [];
+    const recentSettlements =
+      Array.isArray(basePriv.recentPrivateSettlements) && basePriv.recentPrivateSettlements.length > 0
+        ? basePriv.recentPrivateSettlements
+        : state.recentPrivateSettlements?.[pid] || [];
     views[pid] = {
       ...(projection.publicState as Record<string, unknown>),
       self: {
@@ -126,6 +131,7 @@ export function buildRoomPlayerViews(
         privateState: {
           ...basePriv,
           recentActionOutcomes: recentOutcomes,
+          recentPrivateSettlements: recentSettlements,
         },
       },
     };
@@ -298,7 +304,9 @@ export type BlackjackPlayerInput =
       playerName?: string;
       playerAvatar?: string;
       tableCode?: string;
+      buyInAmount?: number;
     }
+  | { action: "table_buy_in"; tableId: string; amount: number }
   | { action: "leave_seat"; tableId?: string; seatIndex?: number; seatIndices?: number[] }
   | {
       action: "place_bet";
@@ -407,6 +415,18 @@ export interface ArchivedTournamentPayload {
   participantIds: string[];
 }
 
+export interface PrivateSessionSettlement {
+  id: string;
+  tableId: string;
+  tableName: string;
+  role: "player" | "host";
+  buyIn: number;
+  cashOut: number;
+  net: number;
+  reason: "leave_table" | "table_closed" | "timeout" | "disconnect_timeout";
+  timestamp: number;
+}
+
 export interface OnlineSubTableState {
   id: string;
   name: string;
@@ -435,6 +455,7 @@ export interface OnlineSubTableState {
   actionTimeLimitSec: number;
   phase: "betting" | "playing" | "dealer_turn" | "settled";
   balances: Record<string, number>;
+  buyInsByPlayer?: Record<string, number>;
   prizePoolCoins: number;
   tournament?: TournamentSettings;
   tournamentParticipants?: string[];
@@ -549,6 +570,7 @@ export interface RoyalBlackjackRoomState {
     string,
     Array<{ reqId: string; status: "applied" | "rejected"; code?: string }>
   >;
+  recentPrivateSettlements?: Record<string, PrivateSessionSettlement[]>;
   durableWalletLoadedByPlayer?: Record<string, boolean>;
   viewRev?: number;
   forceClose: boolean;
@@ -657,6 +679,171 @@ function resolveTableTarget(
   return state.customTables[tableId] || null;
 }
 
+function isPrivateBankrollRegularTable(
+  target: TableExecutionTarget
+): boolean {
+  return (
+    isSubTable(target) &&
+    target.mode === "regular" &&
+    target.houseId !== "system" &&
+    Boolean(target.hasTableCode || target.tableCode)
+  );
+}
+
+function recordPrivateSettlement(
+  state: RoyalBlackjackRoomState,
+  playerId: string,
+  settlement: PrivateSessionSettlement,
+  broadcasts?: unknown[]
+): void {
+  if (!state.recentPrivateSettlements) {
+    state.recentPrivateSettlements = {};
+  }
+  const existing = state.recentPrivateSettlements[playerId] || [];
+  const next = [settlement, ...existing].slice(0, 10);
+  state.recentPrivateSettlements[playerId] = next;
+  if (broadcasts) {
+    broadcasts.push({
+      type: "table:session_settled",
+      playerId,
+      settlement,
+    });
+  }
+}
+
+function settleAndCashOutPrivatePlayer(
+  state: RoyalBlackjackRoomState,
+  target: OnlineSubTableState,
+  playerId: string,
+  broadcasts?: unknown[],
+  reason: PrivateSessionSettlement["reason"] = "leave_table",
+  forceEvenIfSeated = false
+): PrivateSessionSettlement | null {
+  if (!isPrivateBankrollRegularTable(target)) return null;
+  if (!forceEvenIfSeated && target.seats.some((s) => s.playerId === playerId)) {
+    return null;
+  }
+  const hasBalanceEntry = Object.prototype.hasOwnProperty.call(target.balances, playerId);
+  const remainingChips = Math.max(0, Math.round((target.balances[playerId] || 0) * 100) / 100);
+  const totalBuyIn = Math.max(
+    0,
+    Math.round((target.buyInsByPlayer?.[playerId] || 0) * 100) / 100
+  );
+  if (!hasBalanceEntry && remainingChips === 0 && totalBuyIn === 0) {
+    return null;
+  }
+
+  delete target.balances[playerId];
+  if (target.buyInsByPlayer) {
+    delete target.buyInsByPlayer[playerId];
+  }
+
+  if (remainingChips > 0) {
+    const nextWallet = (state.walletCoins[playerId] ?? 0) + remainingChips;
+    syncPlayerRegularBalanceAcrossTables(state, playerId, nextWallet);
+  }
+
+  const net = Math.round((remainingChips - totalBuyIn) * 100) / 100;
+  const settlement: PrivateSessionSettlement = {
+    id: `ps_${target.id}_${playerId}_${state.matchSeq}_${Math.round(state.elapsedSeconds * 1000)}`,
+    tableId: target.id,
+    tableName: target.name,
+    role: "player",
+    buyIn: totalBuyIn,
+    cashOut: remainingChips,
+    net,
+    reason,
+    timestamp: deterministicTimestampMs(state),
+  };
+  recordPrivateSettlement(state, playerId, settlement, broadcasts);
+  persistRoomWalletsToDurableStore(state, [playerId]);
+  return settlement;
+}
+
+function settleAndClosePrivateRegularTable(
+  state: RoyalBlackjackRoomState,
+  ct: OnlineSubTableState,
+  broadcasts?: unknown[],
+  reason: PrivateSessionSettlement["reason"] = "table_closed"
+): void {
+  const affectedPlayers = new Set<string>();
+  if (ct.houseId && ct.houseId !== "system") {
+    affectedPlayers.add(ct.houseId);
+  }
+
+  // 1. Refund any undealt bets from betting phase back into player's table stack
+  if (ct.phase === "betting") {
+    for (const seat of ct.seats) {
+      if (seat.playerId && seat.hand && seat.hand.bet > 0) {
+        const refund =
+          seat.hand.bet +
+          (seat.hand.sideBets?.pair || 0) +
+          (seat.hand.sideBets?.twentyOnePlusThree || 0);
+        ct.balances[seat.playerId] = (ct.balances[seat.playerId] || 0) + refund;
+        ct.liquidity = Math.max(0, ct.liquidity - refund);
+      }
+    }
+  }
+
+  // 2. Clear seats and settle every player's independent table chip stack back to their wallet
+  ct.seats = ct.seats.map((s) => ({
+    ...s,
+    playerId: null,
+    hand: null,
+    isReady: false,
+  }));
+
+  const participantIds = Array.from(
+    new Set<string>([
+      ...Object.keys(ct.balances || {}),
+      ...Object.keys(ct.buyInsByPlayer || {}),
+    ])
+  );
+  for (const pid of participantIds) {
+    affectedPlayers.add(pid);
+    settleAndCashOutPrivatePlayer(state, ct, pid, broadcasts, reason, true);
+  }
+
+  // 3. Return host's remaining real-wallet bankroll (liquidity) and emit host settlement receipt
+  if (ct.houseId && ct.houseId !== "system") {
+    const staked = Math.max(0, Math.round((ct.stakedFromWallet || 0) * 100) / 100);
+    const unbackedBase = Math.max(0, ct.initialLiquidity - staked);
+    const redeemable = Math.max(0, Math.round((ct.liquidity - unbackedBase) * 100) / 100);
+    ct.liquidity = 0;
+    ct.stakedFromWallet = 0;
+    if (redeemable > 0) {
+      syncPlayerRegularBalanceAcrossTables(
+        state,
+        ct.houseId,
+        (state.walletCoins[ct.houseId] || 0) + redeemable
+      );
+    }
+    if (staked > 0 || redeemable > 0) {
+      const hostSettlement: PrivateSessionSettlement = {
+        id: `hs_${ct.id}_${ct.houseId}_${state.matchSeq}_${Math.round(state.elapsedSeconds * 1000)}`,
+        tableId: ct.id,
+        tableName: ct.name,
+        role: "host",
+        buyIn: staked,
+        cashOut: redeemable,
+        net: Math.round((redeemable - staked) * 100) / 100,
+        reason,
+        timestamp: deterministicTimestampMs(state),
+      };
+      recordPrivateSettlement(state, ct.houseId, hostSettlement, broadcasts);
+    }
+  }
+
+  ct.balances = {};
+  ct.buyInsByPlayer = {};
+  ct.deck = [];
+  ct.roundHistory = [];
+  ct.status = "closed";
+  if (affectedPlayers.size > 0) {
+    persistRoomWalletsToDurableStore(state, Array.from(affectedPlayers));
+  }
+}
+
 function syncPlayerRegularBalanceAcrossTables(
   state: RoyalBlackjackRoomState,
   playerId: string,
@@ -669,8 +856,14 @@ function syncPlayerRegularBalanceAcrossTables(
   }
   if (state.customTables) {
     for (const ct of Object.values(state.customTables)) {
-      if (ct.mode === "regular") {
-        ct.balances[playerId] = clamped;
+      if (ct.mode === "regular" && !isPrivateBankrollRegularTable(ct)) {
+        const hasJoinedTable =
+          ct.houseId === playerId ||
+          Object.prototype.hasOwnProperty.call(ct.balances, playerId) ||
+          ct.seats.some((s) => s.playerId === playerId);
+        if (hasJoinedTable) {
+          ct.balances[playerId] = clamped;
+        }
       }
     }
   }
@@ -1086,7 +1279,9 @@ function runDealerAndSettle(
     }
 
     if (target.mode === "regular") {
-      syncPlayerRegularBalanceAcrossTables(rootState, pid, target.balances[pid]);
+      if (!isPrivateBankrollRegularTable(target)) {
+        syncPlayerRegularBalanceAcrossTables(rootState, pid, target.balances[pid]);
+      }
       if (totalPayout > totalWager) {
         rootState.totalTokensPaidOut =
           (rootState.totalTokensPaidOut || 0) + (totalPayout - totalWager);
@@ -1147,8 +1342,8 @@ function runDealerAndSettle(
 
   target.roundsPlayed += 1;
 
-  // 常规模式自动破产保护：局末若筹码输光（<= 0）自动补发 5,000 游戏币
-  if (target.mode === "regular") {
+  // 常规模式自动破产保护：局末若筹码输光（<= 0）自动补发 5,000 游戏币（私密房主资金桌独立筹码不自动发免费币）
+  if (target.mode === "regular" && !isPrivateBankrollRegularTable(target)) {
     for (const pid of rootState.players) {
       if ((rootState.walletCoins[pid] ?? target.balances[pid] ?? 0) <= 0) {
         syncPlayerRegularBalanceAcrossTables(rootState, pid, DEFAULT_GAME_COINS);
@@ -1342,26 +1537,30 @@ function runDealerAndSettle(
 
   if (isSubTable(target)) {
     if (target.status === "closing") {
-      if (target.houseId !== "system" && target.liquidity > 0) {
-        const unbackedBase = Math.max(0, target.initialLiquidity - (target.stakedFromWallet || 0));
-        const redeemable = Math.max(0, target.liquidity - unbackedBase);
-        target.liquidity = 0;
-        target.stakedFromWallet = 0;
-        if (redeemable > 0) {
-          syncPlayerRegularBalanceAcrossTables(
-            rootState,
-            target.houseId,
-            (rootState.walletCoins[target.houseId] || 0) + redeemable
-          );
+      if (isPrivateBankrollRegularTable(target)) {
+        settleAndClosePrivateRegularTable(rootState, target, broadcasts, "table_closed");
+      } else {
+        if (target.houseId !== "system" && target.liquidity > 0) {
+          const unbackedBase = Math.max(0, target.initialLiquidity - (target.stakedFromWallet || 0));
+          const redeemable = Math.max(0, target.liquidity - unbackedBase);
+          target.liquidity = 0;
+          target.stakedFromWallet = 0;
+          if (redeemable > 0) {
+            syncPlayerRegularBalanceAcrossTables(
+              rootState,
+              target.houseId,
+              (rootState.walletCoins[target.houseId] || 0) + redeemable
+            );
+          }
         }
+        target.seats = target.seats.map((s) => ({
+          ...s,
+          playerId: null,
+          hand: null,
+          isReady: false,
+        }));
+        target.status = "closed";
       }
-      target.seats = target.seats.map((s) => ({
-        ...s,
-        playerId: null,
-        hand: null,
-        isReady: false,
-      }));
-      target.status = "closed";
     } else if (target.houseId !== "system" && target.mode === "regular" && target.liquidity <= 0) {
       target.status = "paused";
     } else {
@@ -1587,37 +1786,41 @@ function reconcileOnlineRoomTables(state: RoyalBlackjackRoomState): void {
       }
       ct.expiresAt = ct.emptySince + maxHostingMs;
       if (nowMs >= ct.expiresAt && ct.emptySince > 0 && nowMs > ct.emptySince) {
-        if (ct.mode === "tournament" && ct.roundsPlayed === 0 && ct.prizePoolCoins > 0) {
-          for (const [uid] of Object.entries(ct.balances)) {
-            const refund = ct.tournament?.ticketPrice || 0;
-            if (refund > 0) {
+        if (isPrivateBankrollRegularTable(ct)) {
+          settleAndClosePrivateRegularTable(state, ct, undefined, "table_closed");
+        } else {
+          if (ct.mode === "tournament" && ct.roundsPlayed === 0 && ct.prizePoolCoins > 0) {
+            for (const [uid] of Object.entries(ct.balances)) {
+              const refund = ct.tournament?.ticketPrice || 0;
+              if (refund > 0) {
+                syncPlayerRegularBalanceAcrossTables(
+                  state,
+                  uid,
+                  (state.walletCoins[uid] || 0) + refund
+                );
+              }
+            }
+            ct.balances = {};
+            ct.prizePoolCoins = 0;
+          }
+          if (ct.liquidity > 0 && ct.houseId !== "system") {
+            const unbackedBase = Math.max(0, ct.initialLiquidity - (ct.stakedFromWallet || 0));
+            const redeemable = Math.max(0, ct.liquidity - unbackedBase);
+            ct.liquidity = 0;
+            ct.stakedFromWallet = 0;
+            if (redeemable > 0) {
               syncPlayerRegularBalanceAcrossTables(
                 state,
-                uid,
-                (state.walletCoins[uid] || 0) + refund
+                ct.houseId,
+                (state.walletCoins[ct.houseId] || 0) + redeemable
               );
             }
           }
-          ct.balances = {};
-          ct.prizePoolCoins = 0;
+          ct.seats = ct.seats.map((s) => ({ ...s, playerId: null, hand: null, isReady: false }));
+          ct.deck = [];
+          ct.roundHistory = [];
+          ct.status = "closed";
         }
-        if (ct.liquidity > 0 && ct.houseId !== "system") {
-          const unbackedBase = Math.max(0, ct.initialLiquidity - (ct.stakedFromWallet || 0));
-          const redeemable = Math.max(0, ct.liquidity - unbackedBase);
-          ct.liquidity = 0;
-          ct.stakedFromWallet = 0;
-          if (redeemable > 0) {
-            syncPlayerRegularBalanceAcrossTables(
-              state,
-              ct.houseId,
-              (state.walletCoins[ct.houseId] || 0) + redeemable
-            );
-          }
-        }
-        ct.seats = ct.seats.map((s) => ({ ...s, playerId: null, hand: null, isReady: false }));
-        ct.deck = [];
-        ct.roundHistory = [];
-        ct.status = "closed";
       }
     }
   }
@@ -1960,10 +2163,16 @@ function computePlayerTotalAccountCoinsInRoom(
     }
   }
 
-  // 2. Custom tables: undealt regular bets, redeemable host liquidity, or unstarted tournament tickets
+  // 2. Custom tables: undealt regular bets, private session table stacks, redeemable host liquidity, or unstarted tournament tickets
   if (state.customTables && typeof state.customTables === "object") {
     for (const ct of Object.values(state.customTables)) {
       if (!ct || ct.status === "closed") continue;
+      if (isPrivateBankrollRegularTable(ct)) {
+        const stack = Number(ct.balances?.[playerId]) || 0;
+        if (stack > 0) {
+          locked += stack;
+        }
+      }
       if (ct.mode === "regular" && ct.phase === "betting" && Array.isArray(ct.seats)) {
         for (const s of ct.seats) {
           if (s && s.playerId === playerId && s.hand) {
@@ -2640,7 +2849,26 @@ function applyAuthoritativePlayerInput(
     const actionTimeLimitSec = Math.max(5, Number(s.actionTimeLimit) || 20);
     const winningRule = s.winningRule === "dealer_wins_ties" ? "dealer_wins_ties" : "standard";
     const order = s.order === "random" ? "random" : "sequential";
-    const requestedLiq = mode === "tournament" ? 0 : Math.max(0, Number(data.liquidity) || 0);
+    const requestedLiq = mode === "tournament" ? 0 : Math.max(0, Math.round(Number(data.liquidity) || 0));
+    const isPrivateBankroll = hasCode && mode === "regular";
+    let actualLiquidity = requestedLiq;
+    let stakedFromWallet = 0;
+
+    const minHostDeposit = minBet * 10 * maxSeats;
+    if (isPrivateBankroll) {
+      const hostWallet = state.walletCoins[playerId] ?? DEFAULT_GAME_COINS;
+      if (requestedLiq < minHostDeposit) {
+        return { status: "rejected", code: "INVALID_LIQUIDITY" };
+      }
+      if (requestedLiq > hostWallet) {
+        return { status: "rejected", code: "INSUFFICIENT_FUNDS" };
+      }
+      syncPlayerRegularBalanceAcrossTables(state, playerId, hostWallet - requestedLiq);
+      actualLiquidity = requestedLiq;
+      stakedFromWallet = requestedLiq;
+    } else if (mode === "regular") {
+      actualLiquidity = Math.max(minHostDeposit, requestedLiq);
+    }
 
     const customTableRng = ChaCha20Rng.fromDerived(
       resolveStateRootSeed(state),
@@ -2671,9 +2899,9 @@ function applyAuthoritativePlayerInput(
       houseAvatar: sanitizeAvatarForState(state.playerAvatars![playerId]),
       createdAt: nowMs,
       visits: 1,
-      liquidity: requestedLiq,
-      initialLiquidity: requestedLiq,
-      stakedFromWallet: 0,
+      liquidity: actualLiquidity,
+      initialLiquidity: actualLiquidity,
+      stakedFromWallet,
       status: "waiting",
       tableCode: hasCode ? rawCode : undefined,
       hasTableCode: hasCode,
@@ -2690,9 +2918,10 @@ function applyAuthoritativePlayerInput(
       actionTimeLimitSec,
       phase: "betting",
       balances:
-        mode === "regular"
+        mode === "regular" && !isPrivateBankroll
           ? { [playerId]: state.walletCoins[playerId] || DEFAULT_GAME_COINS }
           : {},
+      buyInsByPlayer: {},
       prizePoolCoins: 0,
       ...(s.tournament ? { tournament: s.tournament } : {}),
       tournamentHistory: [],
@@ -2720,6 +2949,9 @@ function applyAuthoritativePlayerInput(
     }
     if (!state.unlockedTablesByPlayer![playerId].includes(newTableId)) {
       state.unlockedTablesByPlayer![playerId].push(newTableId);
+    }
+    if (isPrivateBankroll) {
+      persistRoomWalletsToDurableStore(state, [playerId]);
     }
 
     broadcasts.push({
@@ -2762,10 +2994,20 @@ function applyAuthoritativePlayerInput(
       if (rawCode.length > 0 && !/^\d{4}$/.test(rawCode)) {
         return { status: "rejected", code: "INVALID_TABLE_CODE" };
       }
+      const prevCode = typeof ct.tableCode === "string" ? ct.tableCode.trim() : "";
       if (/^\d{4}$/.test(rawCode)) {
         ct.tableCode = rawCode;
         ct.hasTableCode = true;
         ct.isPublic = false;
+        if (rawCode !== prevCode && state.unlockedTablesByPlayer) {
+          const seatedSet = new Set(
+            ct.seats.map((seat) => seat.playerId).filter((pid): pid is string => Boolean(pid))
+          );
+          for (const [pid, list] of Object.entries(state.unlockedTablesByPlayer)) {
+            if (pid === ct.houseId || seatedSet.has(pid) || !Array.isArray(list)) continue;
+            state.unlockedTablesByPlayer[pid] = list.filter((tid) => tid !== ct.id);
+          }
+        }
       } else {
         delete ct.tableCode;
         ct.hasTableCode = false;
@@ -2790,11 +3032,28 @@ function applyAuthoritativePlayerInput(
 
   if (data.action === "deposit_liquidity") {
     const ct = state.customTables![data.tableId];
-    if (!ct) return { status: "rejected", code: "TABLE_NOT_FOUND" };
+    if (!ct || ct.status === "closed") return { status: "rejected", code: "TABLE_NOT_FOUND" };
     if (ct.houseId !== playerId) return { status: "rejected", code: "UNAUTHORIZED" };
-    const amt = Math.max(0, Number(data.amount) || 0);
+    const amt = Math.max(0, Math.round(Number(data.amount) || 0));
     if (amt <= 0) return { status: "rejected", code: "INVALID_AMOUNT" };
     const availWallet = state.walletCoins[playerId] || 0;
+    if (isPrivateBankrollRegularTable(ct)) {
+      if (availWallet < amt) {
+        return { status: "rejected", code: "INSUFFICIENT_FUNDS" };
+      }
+      syncPlayerRegularBalanceAcrossTables(state, playerId, availWallet - amt);
+      ct.stakedFromWallet = (ct.stakedFromWallet || 0) + amt;
+      ct.initialLiquidity += amt;
+      ct.liquidity += amt;
+      if (ct.liquidity >= ct.minBet && ct.status === "paused") {
+        if (!Array.isArray(ct.deck) || ct.deck.length === 0) {
+          reshuffleTargetShoeWithVrf(ct, resolveStateRootSeed(state));
+        }
+        ct.status = "waiting";
+      }
+      persistRoomWalletsToDurableStore(state, [playerId]);
+      return { status: "applied" };
+    }
     const walletDeducted = Math.min(availWallet, amt);
     if (walletDeducted > 0) {
       syncPlayerRegularBalanceAcrossTables(state, playerId, availWallet - walletDeducted);
@@ -2804,7 +3063,7 @@ function applyAuthoritativePlayerInput(
     }
     ct.liquidity += amt;
     const req = ct.maxBet * ct.seats.length;
-    if (ct.liquidity >= req && (ct.status === "paused" || ct.status === "closed")) {
+    if (ct.liquidity >= req && ct.status === "paused") {
       if (!Array.isArray(ct.deck) || ct.deck.length === 0) {
         reshuffleTargetShoeWithVrf(ct, resolveStateRootSeed(state));
       }
@@ -2817,9 +3076,27 @@ function applyAuthoritativePlayerInput(
     const ct = state.customTables![data.tableId];
     if (!ct || ct.status === "closed") return { status: "rejected", code: "TABLE_NOT_FOUND" };
     if (ct.houseId !== playerId) return { status: "rejected", code: "UNAUTHORIZED" };
-    const amt = Math.max(0, Number(data.amount) || 0);
+    if (ct.phase === "playing" || ct.phase === "dealer_turn") {
+      return { status: "rejected", code: "INVALID_PHASE" };
+    }
+    const amt = Math.max(0, Math.round(Number(data.amount) || 0));
     if (amt <= 0 || amt > ct.liquidity) {
       return { status: "rejected", code: "INSUFFICIENT_LIQUIDITY" };
+    }
+    if (isPrivateBankrollRegularTable(ct)) {
+      ct.liquidity -= amt;
+      ct.stakedFromWallet = Math.max(0, (ct.stakedFromWallet || 0) - amt);
+      ct.initialLiquidity = Math.max(0, ct.initialLiquidity - amt);
+      syncPlayerRegularBalanceAcrossTables(
+        state,
+        playerId,
+        (state.walletCoins[playerId] || 0) + amt
+      );
+      if (ct.liquidity <= 0) {
+        ct.status = "paused";
+      }
+      persistRoomWalletsToDurableStore(state, [playerId]);
+      return { status: "applied" };
     }
     const unbackedBase = Math.max(0, ct.initialLiquidity - (ct.stakedFromWallet || 0));
     const maxRedeemableToWallet = Math.max(0, ct.liquidity - unbackedBase);
@@ -2867,6 +3144,8 @@ function applyAuthoritativePlayerInput(
     if (ct.houseId !== playerId) return { status: "rejected", code: "UNAUTHORIZED" };
     if (ct.phase === "playing" || ct.phase === "dealer_turn") {
       ct.status = "closing";
+    } else if (isPrivateBankrollRegularTable(ct)) {
+      settleAndClosePrivateRegularTable(state, ct, broadcasts, "table_closed");
     } else {
       if (ct.mode === "tournament" && ct.roundsPlayed === 0) {
         for (const [uid] of Object.entries(ct.balances)) {
@@ -2912,6 +3191,14 @@ function applyAuthoritativePlayerInput(
     const target = resolveTableTarget(state, data.tableId);
     if (!target) return { status: "rejected", code: "TABLE_NOT_FOUND" };
     if (isSubTable(target)) {
+      if (
+        target.tableCode &&
+        target.houseId !== playerId &&
+        !state.unlockedTablesByPlayer?.[playerId]?.includes(target.id) &&
+        !target.seats.some((s) => s.playerId === playerId)
+      ) {
+        return { status: "rejected", code: "INVALID_TABLE_CODE" };
+      }
       target.visits = (target.visits || 0) + 1;
     } else {
       state.visits = (state.visits || 0) + 1;
@@ -2926,9 +3213,52 @@ function applyAuthoritativePlayerInput(
   if (isSubTable(target) && (target.status === "closed" || target.status === "paused")) {
     return { status: "rejected", code: "TABLE_UNAVAILABLE" };
   }
+  if (
+    isSubTable(target) &&
+    target.tableCode &&
+    target.houseId !== playerId &&
+    data.action !== "join_seat" &&
+    data.action !== "leave_seat" &&
+    data.action !== "claim_refill"
+  ) {
+    const isUnlocked = Boolean(state.unlockedTablesByPlayer?.[playerId]?.includes(target.id));
+    const isSeated = target.seats.some((s) => s.playerId === playerId);
+    if (!isUnlocked && !isSeated) {
+      return { status: "rejected", code: "INVALID_TABLE_CODE" };
+    }
+  }
 
   if (data.action === "ready_next" || data.action === "unlock_table_balance") {
     prepareNextBettingPhaseIfSettled(state, target);
+    if (data.action === "unlock_table_balance" && isSubTable(target) && isPrivateBankrollRegularTable(target)) {
+      if (target.phase === "betting" && !target.seats.some((s) => s.playerId === playerId)) {
+        settleAndCashOutPrivatePlayer(state, target, playerId, broadcasts, "leave_table");
+      }
+    }
+    return { status: "applied" };
+  }
+
+  if (data.action === "table_buy_in") {
+    if (!isSubTable(target) || !isPrivateBankrollRegularTable(target)) {
+      return { status: "rejected", code: "UNSUPPORTED_TABLE" };
+    }
+    prepareNextBettingPhaseIfSettled(state, target);
+    if (target.phase !== "betting") {
+      return { status: "rejected", code: "INVALID_PHASE" };
+    }
+    const amt = Math.max(0, Math.round(Number(data.amount) || 0));
+    if (amt < target.minBet) {
+      return { status: "rejected", code: "INVALID_AMOUNT" };
+    }
+    const walletBal = state.walletCoins[playerId] ?? 0;
+    if (walletBal < amt) {
+      return { status: "rejected", code: "INSUFFICIENT_FUNDS" };
+    }
+    syncPlayerRegularBalanceAcrossTables(state, playerId, walletBal - amt);
+    target.balances[playerId] = (target.balances[playerId] || 0) + amt;
+    if (!target.buyInsByPlayer) target.buyInsByPlayer = {};
+    target.buyInsByPlayer[playerId] = (target.buyInsByPlayer[playerId] || 0) + amt;
+    persistRoomWalletsToDurableStore(state, [playerId]);
     return { status: "applied" };
   }
 
@@ -3025,6 +3355,30 @@ function applyAuthoritativePlayerInput(
       }
       seat.playerId = playerId;
       seat.seatedAtElapsedSec = state.elapsedSeconds;
+    } else if (isSubTable(target) && isPrivateBankrollRegularTable(target)) {
+      const hasActiveStack =
+        typeof target.balances[playerId] === "number" && target.balances[playerId] > 0;
+      if (!hasActiveStack) {
+        const playerWallet = state.walletCoins[playerId] ?? 0;
+        const defaultBuyIn = Math.min(playerWallet, Math.max(target.minBet * 10, target.minBet));
+        const requestedBuyIn =
+          typeof data.buyInAmount === "number" && Number.isFinite(data.buyInAmount)
+            ? Math.round(data.buyInAmount)
+            : defaultBuyIn;
+        if (requestedBuyIn < target.minBet) {
+          return { status: "rejected", code: "INVALID_BUY_IN" };
+        }
+        if (playerWallet < requestedBuyIn) {
+          return { status: "rejected", code: "INSUFFICIENT_FUNDS" };
+        }
+        syncPlayerRegularBalanceAcrossTables(state, playerId, playerWallet - requestedBuyIn);
+        target.balances[playerId] = requestedBuyIn;
+        if (!target.buyInsByPlayer) target.buyInsByPlayer = {};
+        target.buyInsByPlayer[playerId] = (target.buyInsByPlayer[playerId] || 0) + requestedBuyIn;
+        persistRoomWalletsToDurableStore(state, [playerId]);
+      }
+      seat.playerId = playerId;
+      seat.seatedAtElapsedSec = state.elapsedSeconds;
     } else {
       seat.playerId = playerId;
       seat.seatedAtElapsedSec = state.elapsedSeconds;
@@ -3058,6 +3412,7 @@ function applyAuthoritativePlayerInput(
           .map((s, idx) => (s.playerId === playerId ? idx : -1))
           .filter((idx) => idx >= 0);
 
+    const isPrivateSession = isPrivateBankrollRegularTable(target);
     let leftAny = false;
     for (const sIdx of indicesToLeave) {
       const seat = target.seats[sIdx];
@@ -3071,7 +3426,7 @@ function applyAuthoritativePlayerInput(
           if (isSubTable(target) && target.houseId !== "system" && target.mode === "regular") {
             target.liquidity = Math.max(0, target.liquidity - refund);
           }
-          if (target.mode === "regular") {
+          if (target.mode === "regular" && !isPrivateSession) {
             syncPlayerRegularBalanceAcrossTables(state, playerId, target.balances[playerId]);
           }
         }
@@ -3079,6 +3434,18 @@ function applyAuthoritativePlayerInput(
         seat.isReady = false;
         seat.hand = null;
         delete seat.seatedAtElapsedSec;
+        leftAny = true;
+      }
+    }
+    if (isSubTable(target) && isPrivateSession) {
+      const settled = settleAndCashOutPrivatePlayer(
+        state,
+        target,
+        playerId,
+        broadcasts,
+        "leave_table"
+      );
+      if (settled) {
         leftAny = true;
       }
     }
@@ -3154,7 +3521,8 @@ function applyAuthoritativePlayerInput(
       }
     }
 
-    if (target.mode === "regular") {
+    const isPrivateSession = isPrivateBankrollRegularTable(target);
+    if (target.mode === "regular" && !isPrivateSession) {
       target.balances[playerId] =
         state.walletCoins[playerId] ?? target.balances[playerId] ?? DEFAULT_GAME_COINS;
     }
@@ -3162,6 +3530,9 @@ function applyAuthoritativePlayerInput(
     const effectiveAvail = baseBal + totalPrevCost;
     if (effectiveAvail < totalNewCost) {
       return { status: "rejected", code: "INSUFFICIENT_FUNDS" };
+    }
+    if (isSubTable(target) && isPrivateSession && target.liquidity < Math.max(0, totalNewCost - totalPrevCost)) {
+      return { status: "rejected", code: "HOUSE_INSUFFICIENT_LIQUIDITY" };
     }
 
     if (
@@ -3177,7 +3548,7 @@ function applyAuthoritativePlayerInput(
     if (isSubTable(target) && target.houseId !== "system" && target.mode === "regular") {
       target.liquidity += totalNewCost;
     }
-    if (target.mode === "regular") {
+    if (target.mode === "regular" && !isPrivateSession) {
       syncPlayerRegularBalanceAcrossTables(state, playerId, target.balances[playerId]);
     }
 
@@ -3298,7 +3669,7 @@ function applyAuthoritativePlayerInput(
       if (isSubTable(target) && target.houseId !== "system" && target.mode === "regular") {
         target.liquidity += extraBet;
       }
-      if (target.mode === "regular") {
+      if (target.mode === "regular" && !isPrivateBankrollRegularTable(target)) {
         syncPlayerRegularBalanceAcrossTables(state, playerId, target.balances[playerId]);
       }
       seat.hand.bet += extraBet;
@@ -3334,7 +3705,7 @@ function applyAuthoritativePlayerInput(
       if (isSubTable(target) && target.houseId !== "system" && target.mode === "regular") {
         target.liquidity += splitBet;
       }
-      if (target.mode === "regular") {
+      if (target.mode === "regular" && !isPrivateBankrollRegularTable(target)) {
         syncPlayerRegularBalanceAcrossTables(state, playerId, target.balances[playerId]);
       }
       const [c1, c2] = seat.hand.cards;
@@ -3404,7 +3775,7 @@ function applyAuthoritativePlayerInput(
       if (isSubTable(target) && target.houseId !== "system" && target.mode === "regular") {
         target.liquidity += insCost;
       }
-      if (target.mode === "regular") {
+      if (target.mode === "regular" && !isPrivateBankrollRegularTable(target)) {
         syncPlayerRegularBalanceAcrossTables(state, playerId, target.balances[playerId]);
       }
       seat.hand.insuranceBet = insCost;
@@ -3453,6 +3824,256 @@ export function buildBlackjackAgentObservation(
 
 export const projectAgentPlayerView = buildBlackjackAgentObservation;
 
+function encodeAgentCard(card: PlayingCard | undefined | null): string {
+  if (!card || card.isHidden) return "??";
+  const suitCode =
+    card.suit === "spades"
+      ? "S"
+      : card.suit === "hearts"
+      ? "H"
+      : card.suit === "diamonds"
+      ? "D"
+      : "C";
+  return `${card.value}${suitCode}`;
+}
+
+function buildCompactServerAgentPlayerViewProjection(
+  request: AgentPlayerViewRequest
+): AgentPlayerViewProjection {
+  const playerId = request.context.playerId;
+  const rawState = request.state as unknown as Partial<RoyalBlackjackRoomState> | null;
+
+  if (!rawState || typeof rawState !== "object") {
+    return {
+      publicState: { tableId: "table_1", phase: "betting", seats: [] },
+      privateState: {
+        playerId,
+        walletCoins: 0,
+        tableBalance: 0,
+        mySeatIndices: [],
+        legalActions: [],
+      },
+      visibleEvents: [],
+      decision: { canAct: false, deadlineAt: null },
+    };
+  }
+
+  // Locate the active table where this player is seated (check custom tables first, fallback to main table_1)
+  let targetTableId = "table_1";
+  let target: {
+    mode: "regular" | "tournament";
+    minBet: number;
+    maxBet: number;
+    phase: "betting" | "playing" | "dealer_turn" | "settled";
+    balances: Record<string, number>;
+    seats: RoomSeatState[];
+    dealerHand: { cards: PlayingCard[]; score: number; status: HandStatus } | null;
+    deck: PlayingCard[];
+    currentTurnSeatIndex: number;
+    roundsPlayed: number;
+    status?: string;
+  } = {
+    mode: rawState.mode === "tournament" ? "tournament" : "regular",
+    minBet: Number(rawState.minBet) || 10,
+    maxBet: Number(rawState.maxBet) || 500,
+    phase: rawState.phase || "betting",
+    balances: rawState.balances || {},
+    seats: Array.isArray(rawState.seats) ? rawState.seats : [],
+    dealerHand: rawState.dealerHand || null,
+    deck: Array.isArray(rawState.deck) ? rawState.deck : [],
+    currentTurnSeatIndex:
+      typeof rawState.currentTurnSeatIndex === "number" ? rawState.currentTurnSeatIndex : -1,
+    roundsPlayed: Number(rawState.roundsPlayed) || 0,
+  };
+
+  if (rawState.customTables && typeof rawState.customTables === "object") {
+    for (const [subId, sub] of Object.entries(rawState.customTables)) {
+      if (!sub || sub.status === "closed") continue;
+      if (Array.isArray(sub.seats) && sub.seats.some((s) => s.playerId === playerId)) {
+        targetTableId = subId;
+        target = {
+          mode: sub.mode === "tournament" ? "tournament" : "regular",
+          minBet: Number(sub.minBet) || 10,
+          maxBet: Number(sub.maxBet) || 500,
+          phase: sub.phase || "betting",
+          balances: sub.balances || {},
+          seats: sub.seats,
+          dealerHand: sub.dealerHand || null,
+          deck: Array.isArray(sub.deck) ? sub.deck : [],
+          currentTurnSeatIndex:
+            typeof sub.currentTurnSeatIndex === "number" ? sub.currentTurnSeatIndex : -1,
+          roundsPlayed: Number(sub.roundsPlayed) || 0,
+          status: sub.status,
+        };
+        break;
+      }
+    }
+  }
+
+  const walletCoins = Math.floor(Number(rawState.walletCoins?.[playerId]) || 0);
+  const tableBalance =
+    target.balances[playerId] !== undefined ? Math.floor(Number(target.balances[playerId]) || 0) : walletCoins;
+  const hideSecretBets = target.mode === "tournament" && target.phase === "betting";
+  const revealDealerHole = target.phase === "dealer_turn" || target.phase === "settled";
+
+  const mySeatIndices: number[] = [];
+  const myHands: Array<{
+    seatIndex: number;
+    cards: string[];
+    score: number;
+    bet: number;
+    ins: number;
+    status: string;
+  }> = [];
+
+  const compactSeats = target.seats.map((seat, idx) => {
+    const isMine = seat.playerId === playerId;
+    if (isMine) {
+      mySeatIndices.push(idx);
+      if (seat.hand) {
+        myHands.push({
+          seatIndex: idx,
+          cards: (seat.hand.cards || []).map((c) => encodeAgentCard(c)),
+          score: seat.hand.score,
+          bet: seat.hand.bet,
+          ins: seat.hand.insuranceBet || 0,
+          status: seat.hand.status,
+        });
+      }
+    }
+    return {
+      i: idx,
+      p: seat.playerId || null,
+      r: Boolean(seat.isReady),
+      sp: Boolean(seat.isSplitHand),
+      h: seat.hand
+        ? {
+            c: (seat.hand.cards || []).map((c) => encodeAgentCard(c)),
+            s: seat.hand.score,
+            b: hideSecretBets ? 0 : seat.hand.bet,
+            st: seat.hand.status,
+          }
+        : null,
+    };
+  });
+
+  const dealerCards = target.dealerHand
+    ? (target.dealerHand.cards || []).map((card, idx) =>
+        idx === 1 && !revealDealerHole ? "??" : encodeAgentCard(card)
+      )
+    : [];
+  const dealerVisibleScore =
+    target.dealerHand && !revealDealerHole && target.dealerHand.cards?.[0]
+      ? target.dealerHand.cards[0].value === "A"
+        ? 11
+        : ["K", "Q", "J", "10"].includes(target.dealerHand.cards[0].value)
+        ? 10
+        : Number(target.dealerHand.cards[0].value) || 0
+      : target.dealerHand?.score || 0;
+
+  const legalActions: string[] = [];
+  const isPlaying = target.phase === "playing";
+  const isTournament = target.mode === "tournament";
+
+  if (target.status !== "closed" && target.status !== "paused") {
+    if (target.phase === "betting" || target.phase === "settled") {
+      if (target.seats.some((s) => !s.playerId)) {
+        legalActions.push("join_seat");
+      }
+      if (mySeatIndices.length > 0) {
+        if (!isTournament) legalActions.push("leave_seat");
+        if (
+          mySeatIndices.some((idx) => {
+            const s = target.seats[idx];
+            return !s?.isReady || !s.hand || s.hand.bet <= 0;
+          })
+        ) {
+          legalActions.push("place_bet");
+        }
+        if (mySeatIndices.some((idx) => target.seats[idx]?.isReady)) {
+          legalActions.push("start_game");
+        }
+      }
+      if (target.phase === "settled") {
+        legalActions.push("ready_next");
+      }
+    } else if (isPlaying) {
+      const activeSeat =
+        target.currentTurnSeatIndex >= 0 ? target.seats[target.currentTurnSeatIndex] : null;
+      if (activeSeat && activeSeat.playerId === playerId && activeSeat.hand?.status === "playing") {
+        legalActions.push("hit", "stand");
+        const hand = activeSeat.hand;
+        if (hand.cards.length === 2 && tableBalance >= hand.bet) {
+          legalActions.push("double_down");
+          if (
+            hand.cards[0]?.value &&
+            hand.cards[0].value === hand.cards[1]?.value &&
+            target.seats.filter((s) => s.playerId === playerId && s.hand).length < 4
+          ) {
+            legalActions.push("split");
+          }
+        }
+        const upCard = target.dealerHand?.cards?.[0];
+        if (
+          upCard?.value === "A" &&
+          hand.cards.length === 2 &&
+          !activeSeat.isSplitHand &&
+          !hand.insuranceBet &&
+          tableBalance >= Math.floor(hand.bet / 2)
+        ) {
+          legalActions.push("buy_insurance");
+        }
+      }
+    }
+  }
+
+  const isMyTurn =
+    isPlaying &&
+    target.currentTurnSeatIndex >= 0 &&
+    target.seats[target.currentTurnSeatIndex]?.playerId === playerId;
+  const canAct = legalActions.length > 0;
+
+  // Include at most 4 recent sanitized events so the entire view stays well under 6,000 bytes
+  const visibleEvents = Array.isArray(request.committedEvents)
+    ? request.committedEvents.slice(-4)
+    : [];
+
+  return {
+    publicState: {
+      tableId: targetTableId,
+      mode: target.mode,
+      phase: target.phase,
+      minBet: target.minBet,
+      maxBet: target.maxBet,
+      roundsPlayed: target.roundsPlayed,
+      deckRemaining: target.deck.length,
+      activeSeatIndex: target.currentTurnSeatIndex,
+      dealer: target.dealerHand
+        ? {
+            cards: dealerCards,
+            score: dealerVisibleScore,
+            status: target.dealerHand.status,
+          }
+        : null,
+      seats: compactSeats,
+    },
+    privateState: {
+      playerId,
+      walletCoins,
+      tableBalance,
+      mySeatIndices,
+      isMyTurn,
+      legalActions,
+      myHands,
+    },
+    visibleEvents,
+    decision: {
+      canAct,
+      deadlineAt: null,
+    },
+  };
+}
+
 /**
  * Royal BlackJack 标准 RandSeed 房间服务端实现（Node.js / TypeScript，严格遵循 RandSeed Server SDK 契约）
  */
@@ -3491,6 +4112,33 @@ export const royalBlackjackGameServer: GameServer<
         },
       },
     };
+  },
+
+  agentCapabilities(): AgentGameCapabilities {
+    return {
+      observationProtocolVersion: 1,
+      actionProtocolVersion: 1,
+      modes: ["copilot", "autoplay", "follow"],
+      maxDecisionHz: 2,
+      backgroundAutoplay: false,
+    };
+  },
+
+  agentPlayerContract(): AgentPlayerContract {
+    return {
+      playerViewProtocolVersion: 1,
+      actionProtocolVersion: 1,
+      playerViewSchemaId: "royal-blackjack.player-view.v1",
+      actionSchemaId: "royal-blackjack.action.v1",
+      modes: ["follow", "autoplay"],
+      maxDecisionHz: 2,
+      independentSeats: true,
+      backgroundAutoplay: false,
+    };
+  },
+
+  projectAgentPlayerView(request: AgentPlayerViewRequest): AgentPlayerViewProjection {
+    return buildCompactServerAgentPlayerViewProjection(request);
   },
 
   async init(config: MatchConfig): Promise<InitResult<RoyalBlackjackRoomState>> {
@@ -4024,12 +4672,17 @@ export const royalBlackjackGameServer: GameServer<
               if (isSubTable(target) && target.houseId !== "system" && target.mode === "regular") {
                 target.liquidity = Math.max(0, target.liquidity - refund);
               }
-              syncPlayerRegularBalanceAcrossTables(state, evictedPid, target.balances[evictedPid]);
+              if (!isPrivateBankrollRegularTable(target)) {
+                syncPlayerRegularBalanceAcrossTables(state, evictedPid, target.balances[evictedPid]);
+              }
             }
             seat.playerId = null;
             seat.isReady = false;
             seat.hand = null;
             delete seat.seatedAtElapsedSec;
+            if (isSubTable(target) && isPrivateBankrollRegularTable(target)) {
+              settleAndCashOutPrivatePlayer(state, target, evictedPid, broadcasts, "timeout");
+            }
             removedUnreadySeat = true;
             broadcasts.push({
               type: "seat:bet_timeout",
@@ -4075,6 +4728,7 @@ export const royalBlackjackGameServer: GameServer<
       if (state.customTables) {
         for (const ct of Object.values(state.customTables)) {
           if (ct.mode !== "tournament" && (ct.phase === "betting" || ct.phase === "settled")) {
+            const isPriv = isPrivateBankrollRegularTable(ct);
             for (const seat of ct.seats) {
               if (seat.playerId === pid) {
                 if (seat.hand && seat.hand.bet > 0 && ct.phase === "betting") {
@@ -4086,13 +4740,18 @@ export const royalBlackjackGameServer: GameServer<
                   if (ct.houseId !== "system") {
                     ct.liquidity = Math.max(0, ct.liquidity - refund);
                   }
-                  syncPlayerRegularBalanceAcrossTables(state, pid, ct.balances[pid]);
+                  if (!isPriv) {
+                    syncPlayerRegularBalanceAcrossTables(state, pid, ct.balances[pid]);
+                  }
                 }
                 seat.playerId = null;
                 seat.isReady = false;
                 seat.hand = null;
                 delete seat.seatedAtElapsedSec;
               }
+            }
+            if (isPriv) {
+              settleAndCashOutPrivatePlayer(state, ct, pid, broadcasts, "disconnect_timeout");
             }
           }
         }

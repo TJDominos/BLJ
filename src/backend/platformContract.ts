@@ -163,7 +163,6 @@ function projectSingleSubTablePublic(
   }));
 
   const hasPin = Boolean(ct.tableCode && /^\d{4}$/.test(String(ct.tableCode)));
-  const tableCodeHash = hasPin ? computeTableCodeHash(ct.id, String(ct.tableCode)) : undefined;
 
   return {
     id: ct.id,
@@ -176,10 +175,10 @@ function projectSingleSubTablePublic(
     visits: ct.visits || 0,
     liquidity: ct.liquidity,
     initialLiquidity: ct.initialLiquidity,
+    stakedFromWallet: ct.stakedFromWallet || 0,
     status: ct.status,
     hasTableCode: hasPin,
     tableCode: hasPin ? '****' : undefined,
-    tableCodeHash,
     isPublic: hasPin ? false : Boolean(ct.isPublic ?? true),
     emptySince: ct.emptySince ?? null,
     maxHostingTimeMs: ct.maxHostingTimeMs,
@@ -200,6 +199,7 @@ function projectSingleSubTablePublic(
     dealerHand: sanitizedDealer,
     seats: publicSeats,
     balances: ct.balances || {},
+    buyInsByPlayer: ct.buyInsByPlayer || {},
     prizePoolCoins: ct.prizePoolCoins || 0,
     tournament: ct.tournament || null,
     tournamentHistory: Array.isArray(ct.tournamentHistory) ? ct.tournamentHistory.slice(0, 10) : [],
@@ -352,6 +352,7 @@ export function projectBlackjackRoomState(state: RoyalBlackjackRoomState): State
       unlockedTableIds: state.unlockedTablesByPlayer?.[pid] || [],
       ownedTableCodes,
       recentActionOutcomes: state.recentClientActionOutcomes?.[pid] || [],
+      recentPrivateSettlements: state.recentPrivateSettlements?.[pid] || [],
     };
   }
 

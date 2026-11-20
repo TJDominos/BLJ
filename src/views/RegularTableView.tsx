@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { useGameStore, PlayingCard as PlayingCardType } from '@/store/gameStore';
+import { useGameStore, isPrivateSessionRegularTable, PlayingCard as PlayingCardType } from '@/store/gameStore';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
-import { Coins, Crown, Loader2, LogOut, Volume2, Bell, Heart, RefreshCw, Minus, Plus, ArrowDown, Menu, ChevronLeft, ChevronRight, User, Check, Gift } from 'lucide-react';
+import { Coins, Crown, Landmark, Loader2, LogOut, Volume2, Bell, Heart, RefreshCw, Minus, Plus, ArrowDown, Menu, ChevronLeft, ChevronRight, User, Check, Gift } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { soundManager } from '@/lib/sounds';
 import { RulesModal } from './RulesModal';
+import { PrivateBuyInModal, PrivateHostBankrollModal } from '@/components/blackjack/PrivateTableFinanceModals';
 import { PlayingCard } from '@/components/blackjack/PlayingCardUI';
 import {
   DelayedScore,
@@ -56,7 +57,9 @@ import {
 } from '@/store/uiStore';
 
 export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }: { onNavigate: (view: 'lobby' | 'create' | 'table' | 'host_table' | 'manage_tables') => boolean | void, onToggleSidebar?: () => void, isSidebarOpen?: boolean }) {
-  const { tables, activeTableId, currentUser, disconnectedPlayerIds, leaveTable, joinTable, placeBet, placeBets, startGame, hit, stand, doubleDown, split, buyInsurance, gameRecords: allGameRecords, unlockTableBalance, refillGameCoins } = useGameStore();
+  const { tables, activeTableId, currentUser, disconnectedPlayerIds, leaveTable, joinTable, buyInTableChips, depositLiquidity, withdrawLiquidity, closeTable, placeBet, placeBets, startGame, hit, stand, doubleDown, split, buyInsurance, gameRecords: allGameRecords, unlockTableBalance, refillGameCoins } = useGameStore();
+  const [buyInModalState, setBuyInModalState] = useState<{ mode: 'sit' | 'topup'; seatIndex?: number } | null>(null);
+  const [showHostBankrollModal, setShowHostBankrollModal] = useState(false);
 
   const userHostedTables = Object.values(tables).filter(t => t.houseId === currentUser?.id);
   const hasHostedTables = userHostedTables.length > 0;
@@ -570,10 +573,19 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     );
   }
 
+  const isPrivateSession = isPrivateSessionRegularTable(table);
+  const isHostOfThisTable = table.houseId === currentUser.id;
   const activeSeatIndex = table.currentTurnIndex;
   const isMyTurn = table.status === 'playing' && activeSeatIndex >= 0 && table.seats[activeSeatIndex]?.userId === currentUser.id;
   const activeHand = isMyTurn ? table.seats[activeSeatIndex].hand : null;
-  const myUserBal = table.userBalances?.[currentUser.id]?.balance || 0;
+  const mySessionBuyIn = isPrivateSession ? (table.buyInsByPlayer?.[currentUser.id] || 0) : 0;
+  const hasActiveTableStack = isPrivateSession
+    ? Boolean(table.userBalances?.[currentUser.id]) || mySessionBuyIn > 0
+    : true;
+  const myUserBal = isPrivateSession
+    ? (table.userBalances?.[currentUser.id]?.balance ?? 0)
+    : (table.userBalances?.[currentUser.id]?.balance ?? currentUser.balance);
+  const mySessionNet = myUserBal - mySessionBuyIn;
   const canDouble = isMyTurn && activeHand?.cards.length === 2 && myUserBal >= (activeHand?.bet || 0);
   const isPlayerDealt = table.status === 'playing' && mySeats.some(sIdx => table.seats[sIdx].hand !== null);
   
@@ -618,6 +630,14 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
     const seat = table.seats[seatIndex];
     if (!seat || seat.isReady) return;
     if (seat.userId !== null && seat.userId !== currentUser.id) {
+      return;
+    }
+
+    // For Private Regular Tables, prompt for independent table chip Buy-In before taking first seat
+    if (isPrivateSession && seat.userId === null && myUserBal <= 0) {
+      const clickPan = table.seats.length > 1 ? (seatIndex / (table.seats.length - 1)) * 2 - 1 : 0;
+      soundManager.playClick(clickPan);
+      setBuyInModalState({ mode: 'sit', seatIndex });
       return;
     }
 
@@ -716,6 +736,8 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
         isPlacingBetRef.current = false;
         setIsDealing(false);
       }
+    } else if (!canAfford && isPrivateSession) {
+      setBuyInModalState({ mode: 'topup' });
     } else if (!canAfford && myUserBal < table.settings.minBet) {
       setConfirmAction({
         title: 'Free 5,000 Game Coins Refill',
@@ -736,8 +758,10 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
   };
 
   const getEffectiveSteps = () => {
-    const playerBal = table.userBalances?.[currentUser.id]?.balance || 0;
-    const maxVal = Math.floor(Math.min(table.settings.maxBet, playerBal || (playMode === 'Bonus' ? (currentUser.bonusBalance || 0) : currentUser.balance)));
+    const playerBal = isPrivateSession
+      ? myUserBal
+      : (table.userBalances?.[currentUser.id]?.balance || (playMode === 'Bonus' ? (currentUser.bonusBalance || 0) : currentUser.balance));
+    const maxVal = Math.floor(Math.min(table.settings.maxBet, Math.max(0, playerBal)));
     const minBet = table.settings.minBet;
     
     let baseSteps = [minBet, minBet * 2, minBet * 5, minBet * 10, minBet * 20, minBet * 50, minBet * 100];
@@ -954,15 +978,45 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                <div className="flex items-center gap-1 sm:gap-1.5 text-[10px] sm:text-[11px] font-bold tracking-wider truncate">
                   {(() => {
                     const userBal = table.userBalances?.[currentUser.id];
-                    const displayBalance = userBal ? userBal.balance : currentUser.balance;
-                    const isOutOfCoins = displayBalance < table.settings.minBet && (table.status === 'waiting' || myTotalBet === 0);
+                    const displayBalance = isPrivateSession
+                      ? (hasActiveTableStack ? myUserBal : currentUser.balance)
+                      : (userBal ? userBal.balance : currentUser.balance);
+                    const isOutOfCoins = !isPrivateSession && displayBalance < table.settings.minBet && (table.status === 'waiting' || myTotalBet === 0);
                     return (
                       <>
                         <CurrencyIcon currency="Chip" className="w-3.5 h-3.5 shrink-0" />
-                        <div className="flex items-center truncate">
+                        <div className="flex items-center gap-1 truncate">
+                          {isPrivateSession && (
+                            <span className="hidden sm:inline text-[9px] uppercase text-amber-200/75 font-bold shrink-0">
+                              {hasActiveTableStack ? 'Chips' : 'Wallet'}
+                            </span>
+                          )}
                           <span className="text-[13px] sm:text-[15px] md:text-[16px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-mono text-[#ffc53d] truncate">
                             {displayBalance.toLocaleString('en-US', {minimumFractionDigits: displayBalance % 1 !== 0 ? 2 : 0, maximumFractionDigits: 2})}
                           </span>
+                          {isPrivateSession && hasActiveTableStack && mySessionBuyIn > 0 && mySessionNet !== 0 && (
+                            <span
+                              className={cn(
+                                'hidden md:inline font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0',
+                                mySessionNet > 0
+                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/30'
+                                  : 'bg-rose-500/20 text-rose-300 border border-rose-400/30'
+                              )}
+                            >
+                              {mySessionNet > 0 ? '+' : ''}
+                              {mySessionNet.toLocaleString()}
+                            </span>
+                          )}
+                          {isPrivateSession && hasActiveTableStack && table.status === 'waiting' && (
+                            <button
+                              type="button"
+                              onClick={() => setBuyInModalState({ mode: 'topup' })}
+                              className="ml-0.5 text-black text-[9px] sm:text-[10px] px-1.5 sm:px-2 py-0.5 rounded-full border border-white/30 transition-colors pointer-events-auto shadow-[0_2px_6px_rgba(0,0,0,0.5)] hover:brightness-110 bg-gradient-to-r from-[#ffd86b] to-[#eaaa08] font-extrabold tracking-tight cursor-pointer whitespace-nowrap shrink-0"
+                              title="Top up table chips from your wallet"
+                            >
+                              +Chips
+                            </button>
+                          )}
                           {isOutOfCoins && (
                             <button 
                               onClick={async () => {
@@ -1020,6 +1074,24 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                </div>
             </div>
           </div>
+          {isPrivateSession && (
+            <button
+              type="button"
+              onClick={() => {
+                if (isHostOfThisTable) setShowHostBankrollModal(true);
+              }}
+              className={cn(
+                'flex text-[9px] sm:text-[11px] font-bold tracking-wider px-2 sm:px-2.5 py-1.5 sm:py-2 rounded-[10px] sm:rounded-[14px] items-center gap-1 border shadow-[0_4px_8px_rgba(0,0,0,0.5)] whitespace-nowrap shrink-0',
+                isHostOfThisTable
+                  ? 'bg-gradient-to-b from-amber-500/30 to-amber-700/30 border-amber-400/50 text-amber-200 hover:brightness-110 cursor-pointer'
+                  : 'bg-black/45 border-white/15 text-slate-200 cursor-default'
+              )}
+              title={isHostOfThisTable ? 'Manage Host Bankroll (Deposit / Withdraw / Settle)' : 'House Bankroll'}
+            >
+              <Landmark className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span className="font-mono">{Math.floor(table.liquidity || 0).toLocaleString()}</span>
+            </button>
+          )}
           <button 
             disabled={isPlayerDealt}
             onClick={() => { 
@@ -1030,7 +1102,7 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
                     }
                 };
                 const userBal = table.userBalances?.[currentUser!.id];
-                if (userBal) {
+                if (userBal && !isPrivateSession) {
                     setConfirmAction({
                         title: "Leave Table",
                         message: "You have Game Coins on this table. Do you want to unlock your funds?",
@@ -1058,6 +1130,27 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
         {/* Right Symmetrical Spacer */}
         <div className="hidden sm:block w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 shrink-0 pointer-events-none" />
       </div>
+
+      {isPrivateSession && table.status === 'paused' && (
+        <div className="w-full max-w-[780px] mx-auto px-3 pt-1.5 z-40">
+          <div className="rounded-xl bg-amber-500/15 border border-amber-400/40 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-200 backdrop-blur-md">
+            <span>
+              {isHostOfThisTable
+                ? 'House bankroll is depleted. Deposit bankroll from your wallet to resume play, or close & settle the table.'
+                : 'Table is paused while the host tops up the house bankroll.'}
+            </span>
+            {isHostOfThisTable && (
+              <button
+                type="button"
+                onClick={() => setShowHostBankrollModal(true)}
+                className="px-3 py-1 rounded-lg bg-[#e5c158] hover:bg-[#f5d97e] text-[#090d0b] font-bold cursor-pointer shrink-0"
+              >
+                Manage Bankroll
+              </button>
+            )}
+          </div>
+        </div>
+      )}
                {showHistory && (
                  <div className="fixed inset-0 z-50 pointer-events-auto bg-black/40 backdrop-blur-sm" onClick={() => setShowHistory(false)}></div>
                )}
@@ -1752,6 +1845,37 @@ export function RegularTableView({ onNavigate, onToggleSidebar, isSidebarOpen }:
            <span className="drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">RTP {calculateBaseRTP(table.settings.winningRule)}</span>
          </button>
        </div>
+
+       {isPrivateSession && buyInModalState && (
+         <PrivateBuyInModal
+           table={table}
+           walletBalance={currentUser.balance}
+           currentTableChips={myUserBal}
+           mode={buyInModalState.mode}
+           onConfirm={async (amount) => {
+             if (buyInModalState.mode === 'sit' && buyInModalState.seatIndex !== undefined) {
+               return joinTable(table.id, buyInModalState.seatIndex, 'Gcoin', amount);
+             }
+             return buyInTableChips(table.id, amount);
+           }}
+           onClose={() => setBuyInModalState(null)}
+         />
+       )}
+
+       {isPrivateSession && isHostOfThisTable && showHostBankrollModal && (
+         <PrivateHostBankrollModal
+           table={table}
+           walletBalance={currentUser.balance}
+           isMidHand={table.status === 'playing'}
+           onDeposit={(amount) => depositLiquidity(table.id, amount)}
+           onWithdraw={(amount) => withdrawLiquidity(table.id, amount)}
+           onCloseTable={async () => {
+             await closeTable(table.id);
+             onNavigate('lobby');
+           }}
+           onClose={() => setShowHostBankrollModal(false)}
+         />
+       )}
 
     </div>
   );

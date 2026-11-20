@@ -6,8 +6,14 @@ import {
   getRandseedGameId,
   getRandseedHostOrigin,
   peekRoomSnapshotState,
+  readAgentPlayerView,
+  classifyAgentPlayerViewUpdate,
+  createAgentPlayerTransition,
   fetchMatchReplay,
   fetchPlayerMatchHistory,
+  type AgentPlayerTransition,
+  type AgentPlayerView,
+  type AgentPlayerViewUpdate,
   type ArchiveHistoryEntry,
   type ArchiveHistoryPage,
   type JsonValue,
@@ -21,7 +27,12 @@ import {
 import { useUIStore } from "@/store/uiStore";
 import { soundManager } from "@/lib/sounds";
 
+export type RoomAgentProof = NonNullable<AgentPlayerTransition["proof"]>;
+
 export type {
+  AgentPlayerTransition,
+  AgentPlayerView,
+  AgentPlayerViewUpdate,
   RoomConnectionStatus,
   RoomMatch,
   RoomPlayer,
@@ -81,6 +92,75 @@ let cachedRoomAllocation: RoomMatch | undefined = undefined;
 let latestRawSnapshot: RoomSnapshot | undefined = undefined;
 let lastDeliveredSnapshotKey: string | null = null;
 let lastSnapshotReceivedAtMs = 0;
+
+export type AgentPlayerViewStatus = "idle" | "ready" | "unavailable";
+let latestAgentPlayerView: AgentPlayerView | null = null;
+let latestAgentPlayerProof: RoomAgentProof | undefined = undefined;
+let latestAgentPlayerViewStatus: AgentPlayerViewStatus = "idle";
+let agentPlayerViewListeners: Array<
+  (transition: AgentPlayerTransition | null, status: AgentPlayerViewStatus) => void
+> = [];
+
+function processSnapshotAgentPlayerView(
+  snapshot: RoomSnapshot,
+  allocation?: RoomMatch
+): void {
+  if (snapshot.agentPlayerViewStatus === "unavailable") {
+    latestAgentPlayerViewStatus = "unavailable";
+    for (const listener of agentPlayerViewListeners) {
+      listener(null, latestAgentPlayerViewStatus);
+    }
+    return;
+  }
+  if (!snapshot.agentPlayer) return;
+  const expectedPlayerId = allocation?.playerId;
+  const expectedRoomId = allocation?.roomId;
+  if (!expectedPlayerId || !expectedRoomId) return;
+
+  try {
+    const view = readAgentPlayerView(snapshot, expectedPlayerId, expectedRoomId);
+    const update = classifyAgentPlayerViewUpdate(latestAgentPlayerView, view);
+    const transition = createAgentPlayerTransition(
+      snapshot,
+      latestAgentPlayerView,
+      expectedPlayerId,
+      expectedRoomId,
+      latestAgentPlayerProof
+    );
+    // Preserve monotonic cursor: never roll back on stale or duplicate frames.
+    if (update.kind !== "stale" && update.kind !== "duplicate") {
+      latestAgentPlayerView = view;
+      latestAgentPlayerProof = transition.proof;
+    }
+    latestAgentPlayerViewStatus = "ready";
+    for (const listener of agentPlayerViewListeners) {
+      listener(transition, latestAgentPlayerViewStatus);
+    }
+  } catch {
+    // Keep gameplay snapshots uninterrupted even if optional Agent projection fails validation.
+    latestAgentPlayerViewStatus = "unavailable";
+    for (const listener of agentPlayerViewListeners) {
+      listener(null, latestAgentPlayerViewStatus);
+    }
+  }
+}
+
+export function getLatestRandseedAgentPlayerView(): AgentPlayerView | null {
+  return latestAgentPlayerView;
+}
+
+export function getRandseedAgentPlayerViewStatus(): AgentPlayerViewStatus {
+  return latestAgentPlayerViewStatus;
+}
+
+export function onRandseedAgentPlayerViewUpdate(
+  listener: (transition: AgentPlayerTransition | null, status: AgentPlayerViewStatus) => void
+): () => void {
+  agentPlayerViewListeners.push(listener);
+  return () => {
+    agentPlayerViewListeners = agentPlayerViewListeners.filter((l) => l !== listener);
+  };
+}
 
 let snapshotListener:
   | ((
@@ -469,6 +549,9 @@ export function disconnectRandseedRoom(): void {
     cachedRoomPlayers = [];
     lastDeliveredSnapshotKey = null;
     lastSnapshotReceivedAtMs = 0;
+    latestAgentPlayerView = null;
+    latestAgentPlayerProof = undefined;
+    latestAgentPlayerViewStatus = "idle";
   }
 }
 
@@ -545,6 +628,14 @@ export async function matchRandseedRoom(
             formatRoomErrorMessage(err, "Failed to connect to the online room.")
           );
         },
+        onAgentPlayerViewUnavailable: () => {
+          // Optional Agent projection unavailable; never fall back to raw gameplay state for Agent APIs,
+          // while keeping live gameplay snapshots completely uninterrupted.
+          latestAgentPlayerViewStatus = "unavailable";
+          for (const listener of agentPlayerViewListeners) {
+            listener(null, latestAgentPlayerViewStatus);
+          }
+        },
         onPlayersChanged: (players) => {
           if (roomClientInstance?.allocation) {
             cachedRoomAllocation = roomClientInstance.allocation;
@@ -563,6 +654,7 @@ export async function matchRandseedRoom(
             if (roomClientInstance?.allocation) {
               cachedRoomAllocation = roomClientInstance.allocation;
             }
+            processSnapshotAgentPlayerView(snapshot, cachedRoomAllocation);
             const players = readSafeRoomPlayers(roomClientInstance, snapshot);
             const nextState = extractSnapshotState(snapshot);
             inspectSnapshotForSocketActionReceipts(nextState, snapshot.tick);
@@ -583,6 +675,7 @@ export async function matchRandseedRoom(
     latestRawSnapshot = snapshot;
     lastSnapshotReceivedAtMs = Date.now();
     cachedRoomAllocation = roomClientInstance.allocation;
+    processSnapshotAgentPlayerView(snapshot, cachedRoomAllocation);
     attachSocketFrameMonitor(roomClientInstance);
     notifyRoomStatusChange("connected", null);
     const players = readSafeRoomPlayers(roomClientInstance, snapshot);
@@ -658,6 +751,12 @@ function formatActionRejectionCode(code?: string): string {
       return "Insufficient Game Coins for this action.";
     case "INSUFFICIENT_LIQUIDITY":
       return "Amount exceeds available table liquidity.";
+    case "HOUSE_INSUFFICIENT_LIQUIDITY":
+      return "Host bankroll cannot cover this wager. Ask the host to add liquidity or lower your bet.";
+    case "INVALID_LIQUIDITY":
+      return "Host bankroll must meet the minimum requirement (Min Bet × 10 × Max Seats).";
+    case "INVALID_BUY_IN":
+      return "Buy-in amount must be at least the table minimum bet and within your wallet balance.";
     case "INVALID_AMOUNT":
       return "Please enter a valid positive amount.";
     case "SEAT_TAKEN":

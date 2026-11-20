@@ -22,6 +22,10 @@ import {
   type RoomConnectionStatus,
   type RoomPlayer,
 } from '../lib/randseedRuntime';
+import {
+  invalidateRandseedAgentObservation,
+  recordHumanBlackjackAction,
+} from '../lib/randseedAgentBridge';
 
 export const DEFAULT_GAME_COINS = 5000;
 
@@ -132,6 +136,18 @@ export interface TableSettings {
   order: 'seat' | 'random';
 }
 
+export interface PrivateSessionSettlement {
+  id: string;
+  tableId: string;
+  tableName: string;
+  role: 'player' | 'host';
+  buyIn: number;
+  cashOut: number;
+  net: number;
+  reason: 'leave_table' | 'table_closed' | 'timeout' | 'disconnect_timeout';
+  timestamp: number;
+}
+
 export interface Table {
   id: string;
   name: string;
@@ -143,10 +159,12 @@ export interface Table {
   visits: number;
   liquidity: number;
   initialLiquidity: number;
+  stakedFromWallet?: number;
   safeAccountAddress: string;
   settings: TableSettings;
   seats: PlayerSeat[]; // array matching maxSeats
   userBalances: Record<string, { balance: number; initialBuyIn: number; currency?: 'Gcoin' | 'Bonus' }>;
+  buyInsByPlayer?: Record<string, number>;
   inviteLink: string;
   status: 'waiting' | 'playing' | 'paused' | 'closed' | 'closing'; // paused if lack of liquidity
   dealerHand: Hand | null;
@@ -680,14 +698,35 @@ function buildPersonalArchiveFromEntries(
   };
 }
 
-function computeClientTableCodeHash(tableId: string, code: string): string {
-  const input = `${tableId}:${code.trim()}:royal_bj_pin`;
-  let h = 2166136261;
-  for (let i = 0; i < input.length; i++) {
-    h ^= input.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return (h >>> 0).toString(16).padStart(8, '0');
+export function isPrivateTableLockedForUser(
+  table: Table | null | undefined,
+  currentUserId: string | null | undefined,
+  unlockedTableIds: Record<string, boolean>
+): boolean {
+  if (!table) return false;
+  const hasPin = Boolean(
+    table.settings.hasTableCode ||
+      (typeof table.settings.tableCode === 'string' &&
+        table.settings.tableCode.trim().length > 0)
+  );
+  if (!hasPin) return false;
+  if (currentUserId && table.houseId === currentUserId) return false;
+  if (unlockedTableIds[table.id]) return false;
+  if (currentUserId && table.seats.some((s) => s.userId === currentUserId)) return false;
+  return true;
+}
+
+export function isPrivateSessionRegularTable(table: Table | null | undefined): boolean {
+  if (!table) return false;
+  return (
+    table.houseId !== 'system' &&
+    table.settings.mode === 'regular' &&
+    Boolean(
+      table.settings.hasTableCode ||
+        (typeof table.settings.tableCode === 'string' &&
+          table.settings.tableCode.trim().length > 0)
+    )
+  );
 }
 
 /**
@@ -915,10 +954,26 @@ function mapRoomStateToTable(
     }));
   }
 
+  const hasPinCode = Boolean(
+    roomState.hasTableCode ??
+      existing?.settings?.hasTableCode ??
+      (typeof roomState.tableCode === 'string' && roomState.tableCode.trim().length > 0)
+  );
+  const resolvedHouseIdForBal =
+    (typeof roomState.houseId === 'string' && roomState.houseId) ||
+    existing?.houseId ||
+    'system';
+  const isPrivateSession = mode === 'regular' && resolvedHouseIdForBal !== 'system' && hasPinCode;
+
+  const buyInsByPlayer: Record<string, number> =
+    roomState.buyInsByPlayer && typeof roomState.buyInsByPlayer === 'object'
+      ? roomState.buyInsByPlayer
+      : {};
+
   const userBalances: Record<
     string,
     { balance: number; initialBuyIn: number; currency?: 'Gcoin' | 'Bonus' }
-  > = { ...(existing?.userBalances || {}) };
+  > = isPrivateSession ? {} : { ...(existing?.userBalances || {}) };
 
   const startingBuyIn =
     mode === 'tournament'
@@ -926,9 +981,13 @@ function mapRoomStateToTable(
       : DEFAULT_GAME_COINS;
 
   for (const [pid, bal] of Object.entries(balances)) {
+    const buyInForPlayer =
+      typeof buyInsByPlayer[pid] === 'number' && buyInsByPlayer[pid] > 0
+        ? buyInsByPlayer[pid]
+        : userBalances[pid]?.initialBuyIn || startingBuyIn;
     userBalances[pid] = {
       balance: Number(bal) || 0,
-      initialBuyIn: userBalances[pid]?.initialBuyIn || startingBuyIn,
+      initialBuyIn: buyInForPlayer,
       currency: 'Gcoin',
     };
   }
@@ -1004,6 +1063,7 @@ function mapRoomStateToTable(
     visits: Number(roomState.visits ?? existing?.visits ?? 1),
     liquidity: Number(roomState.liquidity ?? existing?.liquidity ?? 100000),
     initialLiquidity: Number(roomState.initialLiquidity ?? existing?.initialLiquidity ?? 100000),
+    stakedFromWallet: Number(roomState.stakedFromWallet ?? existing?.stakedFromWallet ?? 0),
     safeAccountAddress: '',
     settings: {
       name: tableName,
@@ -1025,6 +1085,7 @@ function mapRoomStateToTable(
     },
     seats,
     userBalances,
+    buyInsByPlayer,
     inviteLink: `/t/${tableId}`,
     status: resolvedStatus,
     dealerHand,
@@ -1483,6 +1544,7 @@ interface GameStore {
   onlinePlayers: OnlinePlayerEntry[];
   disconnectedPlayerIds: string[];
   unlockedTableIds: Record<string, boolean>;
+  recentPrivateSettlements: PrivateSessionSettlement[];
   roomStatus: RoomConnectionStatus;
   roomError: string | null;
   personalArchive: PersonalArchiveData;
@@ -1501,11 +1563,17 @@ interface GameStore {
   createTable: (settings: TableSettings, liquidity: number) => Promise<string>;
   verifyTableCode: (tableId: string, tableCode: string) => Promise<boolean>;
   updateTableSettings: (tableId: string, settings: Partial<TableSettings>) => Promise<void>;
-  depositLiquidity: (tableId: string, amount: number) => Promise<void>;
+  depositLiquidity: (tableId: string, amount: number) => Promise<ActionOutcome>;
   pauseTable: (tableId: string) => Promise<void>;
   resumeTable: (tableId: string) => Promise<void>;
-  withdrawLiquidity: (tableId: string, amount: number) => Promise<void>;
-  joinTable: (tableId: string, seatIndex: number, currency?: 'Gcoin' | 'Bonus') => Promise<ActionOutcome>;
+  withdrawLiquidity: (tableId: string, amount: number) => Promise<ActionOutcome>;
+  joinTable: (
+    tableId: string,
+    seatIndex: number,
+    currency?: 'Gcoin' | 'Bonus',
+    buyInAmount?: number
+  ) => Promise<ActionOutcome>;
+  buyInTableChips: (tableId: string, amount: number) => Promise<ActionOutcome>;
   observeTable: (tableId: string) => void;
   recordVisit: (tableId: string) => Promise<void>;
   leaveTable: (tableId: string, seatIndex?: number | number[], isTimeout?: boolean) => Promise<ActionOutcome>;
@@ -1792,12 +1860,16 @@ export const useGameStore = create<GameStore>((set, get) => {
       saveClientPersistedAccount(syncedUser, updatedRecords);
     }
 
-    const nextUnlocked = { ...get().unlockedTableIds };
-    const serverUnlocked: string[] = Array.isArray(roomState._privateState?.unlockedTableIds)
-      ? roomState._privateState.unlockedTableIds
-      : [];
-    for (const tid of serverUnlocked) {
-      nextUnlocked[tid] = true;
+    const hasAuthoritativeUnlocks = Array.isArray(roomState._privateState?.unlockedTableIds);
+    const nextUnlocked: Record<string, boolean> = hasAuthoritativeUnlocks
+      ? {}
+      : { ...get().unlockedTableIds };
+    if (hasAuthoritativeUnlocks) {
+      for (const tid of roomState._privateState.unlockedTableIds as string[]) {
+        if (typeof tid === 'string' && tid) {
+          nextUnlocked[tid] = true;
+        }
+      }
     }
     for (const t of Object.values(nextTables)) {
       if (t.houseId === resolvedId) {
@@ -1834,6 +1906,12 @@ export const useGameStore = create<GameStore>((set, get) => {
       }
     }
 
+    const recentPrivateSettlements: PrivateSessionSettlement[] = Array.isArray(
+      roomState._privateState?.recentPrivateSettlements
+    )
+      ? (roomState._privateState.recentPrivateSettlements as PrivateSessionSettlement[])
+      : get().recentPrivateSettlements;
+
     set({
       currentUser: syncedUser,
       isGameOwner: confirmedOwner,
@@ -1842,10 +1920,12 @@ export const useGameStore = create<GameStore>((set, get) => {
       onlinePlayers,
       disconnectedPlayerIds,
       unlockedTableIds: nextUnlocked,
+      recentPrivateSettlements,
       activeTableId: nextActiveId,
       roomStatus: 'connected',
       roomError: null,
     });
+    invalidateRandseedAgentObservation();
 
     if (get().personalArchiveStatus === 'idle') {
       if (!archiveWarmupTimer) {
@@ -2099,6 +2179,7 @@ export const useGameStore = create<GameStore>((set, get) => {
     onlinePlayers: [],
     disconnectedPlayerIds: [],
     unlockedTableIds: {},
+    recentPrivateSettlements: [],
     roomStatus: getRandseedRoomStatus(),
     roomError: getRandseedRoomError(),
     personalArchive: createEmptyPersonalArchive(),
@@ -2378,18 +2459,11 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     verifyTableCode: async (tableId, tableCode) => {
-      const user = get().currentUser;
       const table = get().tables[tableId];
       if (!table || table.status === 'closed') return false;
 
       const submitted = tableCode.trim();
-      const expectedHash = table.settings.tableCodeHash;
-      const isOwner = Boolean(user && user.id === table.houseId);
-      const matchesHash = expectedHash
-        ? computeClientTableCodeHash(tableId, submitted) === expectedHash
-        : true;
-
-      if (!isOwner && !matchesHash) {
+      if (!/^\d{4}$/.test(submitted)) {
         return false;
       }
 
@@ -2420,10 +2494,10 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     depositLiquidity: async (tableId, amount) => {
-      await dispatchConfirmedOnlineAction({
+      return dispatchConfirmedOnlineAction({
         action: 'deposit_liquidity',
         tableId,
-        amount: Number.isFinite(Number(amount)) ? Math.max(0, Number(amount)) : 0,
+        amount: Number.isFinite(Number(amount)) ? Math.max(0, Math.round(Number(amount))) : 0,
       });
     },
 
@@ -2442,15 +2516,17 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     withdrawLiquidity: async (tableId, amount) => {
-      if (amount <= 0) return;
-      await dispatchConfirmedOnlineAction({
+      if (amount <= 0) {
+        return { ok: false, code: 'INVALID_AMOUNT', error: 'Amount must be greater than 0.' };
+      }
+      return dispatchConfirmedOnlineAction({
         action: 'withdraw_liquidity',
         tableId,
-        amount: Number.isFinite(Number(amount)) ? Math.max(0, Number(amount)) : 0,
+        amount: Number.isFinite(Number(amount)) ? Math.max(0, Math.round(Number(amount))) : 0,
       });
     },
 
-    joinTable: async (tableId, seatIndex, _currency = 'Gcoin') => {
+    joinTable: async (tableId, seatIndex, _currency = 'Gcoin', buyInAmount?: number) => {
       const user = get().currentUser;
       if (!user) {
         return {
@@ -2471,6 +2547,10 @@ export const useGameStore = create<GameStore>((set, get) => {
         typeof user.avatar === 'string' && user.avatar.length > 0 && user.avatar.length <= 4096
           ? user.avatar
           : undefined;
+      const safeBuyIn =
+        typeof buyInAmount === 'number' && Number.isFinite(buyInAmount) && buyInAmount > 0
+          ? Math.round(buyInAmount)
+          : undefined;
 
       const promise = dispatchConfirmedOnlineAction({
         action: 'join_seat',
@@ -2478,10 +2558,17 @@ export const useGameStore = create<GameStore>((set, get) => {
         seatIndex,
         playerName: safeName,
         ...(safeAvatar ? { playerAvatar: safeAvatar } : {}),
+        ...(safeBuyIn !== undefined ? { buyInAmount: safeBuyIn } : {}),
       })
         .then((res) => {
           if (res.ok) {
             set({ activeTableId: tableId });
+            recordHumanBlackjackAction({
+              action: 'join_seat',
+              tableId,
+              seatIndex,
+              ...(safeBuyIn !== undefined ? { buyInAmount: safeBuyIn } : {}),
+            });
           }
           return res;
         })
@@ -2493,11 +2580,32 @@ export const useGameStore = create<GameStore>((set, get) => {
       return promise;
     },
 
+    buyInTableChips: async (tableId, amount) => {
+      const safeAmt = Math.round(Number(amount) || 0);
+      if (safeAmt <= 0) {
+        return { ok: false, code: 'INVALID_AMOUNT', error: 'Buy-in amount must be greater than 0.' };
+      }
+      const res = await dispatchConfirmedOnlineAction({
+        action: 'table_buy_in',
+        tableId,
+        amount: safeAmt,
+      });
+      if (res.ok) {
+        recordHumanBlackjackAction({
+          action: 'table_buy_in',
+          tableId,
+          amount: safeAmt,
+        });
+      }
+      return res;
+    },
+
     observeTable: (tableId) => {
       const user = get().currentUser;
       if (!user) return;
       // Switch view immediately without firing a state-mutating tick that would race with join_seat
       set({ activeTableId: tableId });
+      invalidateRandseedAgentObservation();
     },
 
     recordVisit: async (tableId) => {
@@ -2526,18 +2634,26 @@ export const useGameStore = create<GameStore>((set, get) => {
 
       const promise = (async (): Promise<ActionOutcome> => {
         if (Array.isArray(seatIndex)) {
-          return dispatchConfirmedOnlineAction({
+          const res = await dispatchConfirmedOnlineAction({
             action: 'leave_seat',
             tableId,
             seatIndices: seatIndex,
           });
+          if (res.ok) {
+            recordHumanBlackjackAction({ action: 'leave_seat', tableId });
+          }
+          return res;
         }
         if (seatIndex !== undefined) {
-          return dispatchConfirmedOnlineAction({
+          const res = await dispatchConfirmedOnlineAction({
             action: 'leave_seat',
             tableId,
             seatIndex,
           });
+          if (res.ok) {
+            recordHumanBlackjackAction({ action: 'leave_seat', tableId, seatIndex });
+          }
+          return res;
         }
         const res = await dispatchConfirmedOnlineAction({
           action: 'leave_seat',
@@ -2545,6 +2661,7 @@ export const useGameStore = create<GameStore>((set, get) => {
         });
         if (res.ok) {
           set({ activeTableId: null });
+          recordHumanBlackjackAction({ action: 'leave_seat', tableId });
         }
         return res;
       })().finally(() => {
@@ -2599,6 +2716,14 @@ export const useGameStore = create<GameStore>((set, get) => {
       }).then((res) => {
         if (res.ok) {
           markTableStepCompleted(dealStepKey, 4000);
+          recordHumanBlackjackAction({
+            action: 'place_bet',
+            tableId,
+            seatIndex: seatIndices[0] ?? 0,
+            amount,
+            pairBet: sideBets?.pair || 0,
+            plus3Bet: sideBets?.twentyOnePlusThree || 0,
+          });
         }
         return res;
       }).finally(() => {
@@ -2624,6 +2749,7 @@ export const useGameStore = create<GameStore>((set, get) => {
       }).then((res) => {
         if (res.ok) {
           markTableStepCompleted(startKey, 4000);
+          recordHumanBlackjackAction({ action: 'start_game', tableId });
         }
         return res;
       }).finally(() => {
@@ -2634,53 +2760,77 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     hit: async (tableId, seatIndex) => {
-      return dispatchTurnStepAction(tableId, seatIndex, {
+      const res = await dispatchTurnStepAction(tableId, seatIndex, {
         action: 'hit',
         tableId,
         seatIndex,
       });
+      if (res.ok) {
+        recordHumanBlackjackAction({ action: 'hit', tableId, seatIndex });
+      }
+      return res;
     },
 
     stand: async (tableId, seatIndex) => {
-      return dispatchTurnStepAction(tableId, seatIndex, {
+      const res = await dispatchTurnStepAction(tableId, seatIndex, {
         action: 'stand',
         tableId,
         seatIndex,
       });
+      if (res.ok) {
+        recordHumanBlackjackAction({ action: 'stand', tableId, seatIndex });
+      }
+      return res;
     },
 
     doubleDown: async (tableId, seatIndex) => {
-      return dispatchTurnStepAction(tableId, seatIndex, {
+      const res = await dispatchTurnStepAction(tableId, seatIndex, {
         action: 'double_down',
         tableId,
         seatIndex,
       });
+      if (res.ok) {
+        recordHumanBlackjackAction({ action: 'double_down', tableId, seatIndex });
+      }
+      return res;
     },
 
     split: async (tableId, seatIndex) => {
-      return dispatchTurnStepAction(tableId, seatIndex, {
+      const res = await dispatchTurnStepAction(tableId, seatIndex, {
         action: 'split',
         tableId,
         seatIndex,
       });
+      if (res.ok) {
+        recordHumanBlackjackAction({ action: 'split', tableId, seatIndex });
+      }
+      return res;
     },
 
     buyInsurance: async (tableId, seatIndex) => {
-      return dispatchTurnStepAction(tableId, seatIndex, {
+      const res = await dispatchTurnStepAction(tableId, seatIndex, {
         action: 'buy_insurance',
         tableId,
         seatIndex,
       });
+      if (res.ok) {
+        recordHumanBlackjackAction({ action: 'buy_insurance', tableId, seatIndex });
+      }
+      return res;
     },
 
     dealerPlay: async (tableId) => {
       if (tableId === 'table_1') {
         readyRandseedRoom().catch(() => {});
       }
-      return dispatchConfirmedOnlineAction({
+      const res = await dispatchConfirmedOnlineAction({
         action: 'ready_next',
         tableId,
       });
+      if (res.ok) {
+        recordHumanBlackjackAction({ action: 'ready_next', tableId });
+      }
+      return res;
     },
 
     resolveGame: async (_tableId) => {

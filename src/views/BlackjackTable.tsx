@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from '@/lib/router';
-import { useGameStore } from '@/store/gameStore';
+import { useGameStore, isPrivateTableLockedForUser } from '@/store/gameStore';
 import { RegularTableView } from './RegularTableView';
 import { TournamentTableView } from './TournamentTableView';
+import { PrivateTablePinGate } from '@/components/blackjack/PrivateTablePinGate';
 import { Loader2, AlertCircle, RefreshCw, ArrowLeft } from 'lucide-react';
 
 export function BlackjackTable({
@@ -15,14 +16,28 @@ export function BlackjackTable({
   isSidebarOpen?: boolean;
 }) {
   const { id } = useParams();
-  const { tables, activeTableId, roomStatus, roomError, reconnectRoom } = useGameStore();
+  const {
+    tables,
+    activeTableId,
+    currentUser,
+    unlockedTableIds,
+    verifyTableCode,
+    observeTable,
+    roomStatus,
+    roomError,
+    reconnectRoom,
+  } = useGameStore();
   const [isRetrying, setIsRetrying] = useState(false);
 
+  const resolvedTableId = id || activeTableId || '';
+  const table = tables[resolvedTableId];
+  const isLocked = isPrivateTableLockedForUser(table, currentUser?.id, unlockedTableIds);
+
   useEffect(() => {
-    if (id && id !== activeTableId && tables[id]) {
+    if (id && id !== activeTableId && tables[id] && !isLocked) {
       useGameStore.setState({ activeTableId: id });
     }
-  }, [id, activeTableId, tables]);
+  }, [id, activeTableId, tables, isLocked]);
 
   const handleRetry = async () => {
     setIsRetrying(true);
@@ -32,8 +47,6 @@ export function BlackjackTable({
       setIsRetrying(false);
     }
   };
-
-  const table = tables[activeTableId || id || ''];
 
   if (!table) {
     if (roomStatus === 'error' || roomStatus === 'closed') {
@@ -144,6 +157,21 @@ export function BlackjackTable({
         </span>
       </div>
     ) : null;
+
+  if (isLocked) {
+    return (
+      <div className="w-full flex-1 flex flex-col min-h-0">
+        {connectionBanner}
+        <PrivateTablePinGate
+          table={table}
+          variant="page"
+          onVerify={(pin) => verifyTableCode(table.id, pin)}
+          onUnlocked={() => observeTable(table.id)}
+          onCancel={() => onNavigate('lobby')}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="w-full flex-1 flex flex-col min-h-0">

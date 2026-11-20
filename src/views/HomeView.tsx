@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Crown,
@@ -20,9 +20,10 @@ import {
   User,
   Zap,
   Loader2,
-  AlertCircle
+  AlertCircle,
+  Landmark
 } from 'lucide-react';
-import { useGameStore, getRuntimeGameStats, TableSettings, TournamentSettings } from '@/store/gameStore';
+import { useGameStore, isPrivateTableLockedForUser, isPrivateSessionRegularTable, getRuntimeGameStats, TableSettings, TournamentSettings } from '@/store/gameStore';
 import { useUIStore, selectIsMuted } from '@/store/uiStore';
 import { systemConfig } from '@/config/systemConfig';
 import { calculateBaseRTP } from '@/backend/gameRules';
@@ -46,6 +47,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     currentUser,
     isGameOwner,
     onlinePlayers,
+    unlockedTableIds,
     createTable,
     gameRecords,
     setCreatorIdentity,
@@ -69,11 +71,6 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     () => Object.values(tables).filter(t => t.houseId === currentUser?.id && t.status !== 'closed'),
     [tables, currentUser?.id]
   );
-
-  const [headerAvatarError, setHeaderAvatarError] = useState(false);
-  React.useEffect(() => {
-    setHeaderAvatarError(false);
-  }, [currentUser?.avatar]);
 
   // Real online players list enriched with current table info & SDK profile fields
   const realOnlineList = useMemo(() => {
@@ -175,8 +172,15 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
   const [actionTimeLimit, setActionTimeLimit] = useState(systemConfig.actionTimeLimit.normal);
   const [winningRule, setWinningRule] = useState<'standard' | 'dealer_wins_ties'>('standard');
   const [tableCode, setTableCode] = useState('');
+  const [hostBankrollDeposit, setHostBankrollDeposit] = useState(500);
   const [isCreating, setIsCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+
+  const minRequiredBankroll = Math.max(1, minBet) * 10 * Math.max(1, maxSeats);
+
+  useEffect(() => {
+    setHostBankrollDeposit((prev) => (prev < minRequiredBankroll ? minRequiredBankroll : prev));
+  }, [minRequiredBankroll]);
 
   const filteredRooms = useMemo(() => {
     let list = Object.values(tables).filter(t => t.status !== 'closed' && t.status !== 'closing');
@@ -271,10 +275,29 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
       setCreateError('Tournament requires at least one Winning Rule (Survivor Cap or Round Cap).');
       return;
     }
+    const hasTableCode = /^\d{4}$/.test(trimmedCode);
+    const isPrivateRegularBankroll = roomMode === 'regular' && hasTableCode;
+    const minHostDeposit = Math.max(1, minBet) * 10 * Math.max(1, maxSeats);
+    const myWallet = Math.floor(currentUser?.balance || 0);
+    const roundedDeposit = Math.round(Number(hostBankrollDeposit) || 0);
+    if (isPrivateRegularBankroll) {
+      if (roundedDeposit < minHostDeposit) {
+        setCreateError(
+          `Private table host bankroll deposit must be at least ${minHostDeposit.toLocaleString()} Coins (Min Bet ${minBet} × 10 × ${maxSeats} Seats).`
+        );
+        return;
+      }
+      if (roundedDeposit > myWallet) {
+        setCreateError(
+          `Host bankroll deposit (${roundedDeposit.toLocaleString()}) exceeds your wallet balance (${myWallet.toLocaleString()} Coins).`
+        );
+        return;
+      }
+    }
+
     setCreateError(null);
     setIsCreating(true);
 
-    const hasTableCode = /^\d{4}$/.test(trimmedCode);
     const safeMinSeats = Math.max(2, Math.min(minSeats, maxSeats));
     const safeTargetSurvivors = Math.max(1, Math.min(targetSurvivors, safeMinSeats - 1));
 
@@ -316,7 +339,12 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
     };
 
     try {
-      const requiredLiquidity = roomMode === 'tournament' ? 0 : maxBet * maxSeats * 2;
+      const requiredLiquidity =
+        roomMode === 'tournament'
+          ? 0
+          : isPrivateRegularBankroll
+          ? roundedDeposit
+          : Math.max(minHostDeposit, roundedDeposit);
       const newId = await createTable(newSettings, requiredLiquidity);
       setIsCreating(false);
       setShowCreateModal(false);
@@ -353,38 +381,8 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
             </span>
           </div>
 
-          {/* Right Controls: Player Identity (Avatar + Name + Owner) + Game Coins Balance + My Stats + Report */}
+          {/* Right Controls: Game Coins Balance + My Stats + Creator Report */}
           <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0 min-w-0">
-            {currentUser && (
-              <div
-                onClick={() => setShowMyStatsModal(true)}
-                title={`${currentUser.name}${isCreator ? ' · Game Owner' : ''} (Click for My Stats)`}
-                className="flex items-center gap-2 bg-black/45 hover:bg-black/65 border border-white/10 hover:border-[#d4af37]/40 rounded-full pl-1.5 pr-2.5 sm:pr-3 py-1 transition-colors cursor-pointer max-w-[160px] sm:max-w-[230px]"
-              >
-                <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-full bg-gradient-to-br from-[#126b6f] to-[#0a3e40] border border-[#d4af37]/50 overflow-hidden flex items-center justify-center text-white font-bold text-xs shrink-0">
-                  {currentUser.avatar && !headerAvatarError ? (
-                    <img
-                      src={currentUser.avatar}
-                      alt={currentUser.name}
-                      onError={() => setHeaderAvatarError(true)}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    (currentUser.name || 'P').charAt(0).toUpperCase()
-                  )}
-                </div>
-                <span className="text-xs sm:text-sm font-semibold text-white truncate hidden xs:inline sm:inline">
-                  {currentUser.name}
-                </span>
-                {isCreator && (
-                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-[#d4af37]/20 border border-[#d4af37]/45 text-[#ffd86b] text-[10px] font-bold uppercase tracking-wider shrink-0">
-                    <Crown className="w-2.5 h-2.5 shrink-0" />
-                    <span className="hidden md:inline">Owner</span>
-                  </span>
-                )}
-              </div>
-            )}
-
             {currentUser && (
               <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm bg-black/45 border border-white/10 rounded-full px-2.5 sm:px-3.5 py-1.5 sm:py-2 tabular-nums">
                 <CurrencyIcon currency="Chip" className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
@@ -394,6 +392,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 </span>
                 {currentUser.balance <= 0 && (
                   <button
+                    type="button"
                     onClick={() => {
                       soundManager.playChip();
                       refillGameCoins();
@@ -407,29 +406,30 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
               </div>
             )}
 
-            {/* My Stats & Game Stats Entries */}
-            <div className="flex items-center gap-1.5 sm:gap-2">
+            {currentUser && (
               <button
+                type="button"
                 onClick={() => setShowMyStatsModal(true)}
-                title="My Stats (Personal Cross-Table Records)"
-                className="flex items-center gap-1 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold text-[#ffd86b] bg-[#d4af37]/15 hover:bg-[#d4af37]/25 border border-[#d4af37]/40 transition-colors whitespace-nowrap cursor-pointer min-h-[36px]"
+                title="My Stats"
+                className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold text-[#ffd86b] bg-[#d4af37]/12 hover:bg-[#d4af37]/20 border border-[#d4af37]/35 hover:border-[#d4af37]/55 transition-colors whitespace-nowrap cursor-pointer min-h-[36px]"
               >
                 <User className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#ffd86b] shrink-0" />
-                <span className="hidden md:inline">My </span>
-                <span>Stats</span>
+                <span className="hidden sm:inline">My Stats</span>
+                <span className="sm:hidden">Stats</span>
               </button>
+            )}
 
-              {isCreator && (
-                <button
-                  onClick={handleOpenStats}
-                  title="Creator Report"
-                  className="flex items-center gap-1 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 transition-colors whitespace-nowrap cursor-pointer min-h-[36px]"
-                >
-                  <BarChart3 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400 shrink-0" />
-                  <span>Report</span>
-                </button>
-              )}
-            </div>
+            {isCreator && (
+              <button
+                type="button"
+                onClick={handleOpenStats}
+                title="Creator Report"
+                className="flex items-center gap-1 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 transition-colors whitespace-nowrap cursor-pointer min-h-[36px]"
+              >
+                <BarChart3 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400 shrink-0" />
+                <span>Report</span>
+              </button>
+            )}
           </div>
         </header>
 
@@ -1037,6 +1037,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 const totalSeats = room.settings.maxSeats;
                 const isFull = occupiedSeats >= totalSeats;
                 const trn = room.settings.tournament;
+                const isLockedForMe = isPrivateTableLockedForUser(room, currentUser?.id, unlockedTableIds);
 
                 return (
                   <div
@@ -1127,13 +1128,24 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                             </div>
                           </>
                         ) : (
-                          <div className="flex items-center gap-1.5 sm:gap-2">
-                            <CurrencyIcon currency="Chip" className="w-4 h-4 shrink-0" />
-                            <span className="text-slate-400">Bet Limits:</span>
-                            <span className="font-mono font-bold text-white">
-                              {room.settings.minBet} – {room.settings.maxBet}
-                            </span>
-                          </div>
+                          <>
+                            <div className="flex items-center gap-1.5 sm:gap-2">
+                              <CurrencyIcon currency="Chip" className="w-4 h-4 shrink-0" />
+                              <span className="text-slate-400">Bet Limits:</span>
+                              <span className="font-mono font-bold text-white">
+                                {room.settings.minBet} – {room.settings.maxBet}
+                              </span>
+                            </div>
+                            {isPrivateSessionRegularTable(room) && (
+                              <div className="flex items-center gap-1.5">
+                                <Landmark className="w-4 h-4 text-amber-400 shrink-0" />
+                                <span className="text-slate-400">Bankroll:</span>
+                                <span className="font-mono font-bold text-amber-300">
+                                  {Math.floor(room.liquidity || 0).toLocaleString()}
+                                </span>
+                              </div>
+                            )}
+                          </>
                         )}
 
                         <div className="flex items-center gap-1.5 sm:gap-2">
@@ -1161,7 +1173,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                       </div>
                     </div>
 
-                    {/* Right: Single Enter Table Button */}
+                    {/* Right: Single Enter Table / Enter PIN Button */}
                     <button
                       type="button"
                       onClick={(e) => {
@@ -1170,8 +1182,17 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                       }}
                       className="w-full sm:w-auto min-h-[44px] px-4 sm:px-5 py-2.5 sm:py-3 rounded-xl text-sm sm:text-base font-bold text-[#090d0b] bg-[#e5c158] group-hover:bg-[#f5d97e] transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
                     >
-                      <span>Enter Table</span>
-                      <ChevronRight className="w-5 h-5" />
+                      {isLockedForMe ? (
+                        <>
+                          <Lock className="w-4 h-4" />
+                          <span>Enter PIN</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Enter Table</span>
+                          <ChevronRight className="w-5 h-5" />
+                        </>
+                      )}
                     </button>
                   </div>
                 );
@@ -1197,14 +1218,15 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.96, y: 8 }}
               transition={{ duration: 0.15 }}
-              className="w-full max-w-xl rounded-2xl bg-[#121915] border border-[#c6a364]/35 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+              className="w-full max-w-2xl rounded-2xl bg-[#121915] border border-[#c6a364]/35 shadow-2xl overflow-hidden flex flex-col max-h-[92vh]"
             >
-              <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-white/10 flex items-center justify-between bg-black/30">
+              <div className="px-4 sm:px-5 py-3 border-b border-white/10 flex items-center justify-between bg-black/30 shrink-0">
                 <div className="flex items-center gap-2.5">
                   <Crown className="w-5 h-5 text-[#d4af37]" />
                   <h3 className="text-base sm:text-lg font-bold text-white">Create Custom Table</h3>
                 </div>
                 <button
+                  type="button"
                   onClick={() => setShowCreateModal(false)}
                   className="text-slate-400 hover:text-white p-1.5 rounded-lg transition-colors cursor-pointer"
                 >
@@ -1212,13 +1234,13 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 </button>
               </div>
 
-              <div className="p-4 sm:p-6 overflow-y-auto space-y-4 text-sm">
-                <div className="grid grid-cols-2 gap-2 p-1.5 bg-black/40 rounded-xl border border-white/10">
+              <div className="p-4 sm:p-5 overflow-y-auto hide-scrollbar-custom [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] space-y-3 text-sm">
+                <div className="grid grid-cols-2 gap-1.5 p-1 bg-black/40 rounded-xl border border-white/10">
                   <button
                     type="button"
                     onClick={() => setRoomMode('regular')}
                     className={cn(
-                      'py-2.5 px-4 rounded-lg text-sm font-bold transition-colors cursor-pointer',
+                      'py-2 px-4 rounded-lg text-sm font-bold transition-colors cursor-pointer',
                       roomMode === 'regular' ? 'bg-[#d4af37] text-[#090d0b]' : 'text-slate-300 hover:text-white'
                     )}
                   >
@@ -1228,7 +1250,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                     type="button"
                     onClick={() => setRoomMode('tournament')}
                     className={cn(
-                      'py-2.5 px-4 rounded-lg text-sm font-bold transition-colors cursor-pointer',
+                      'py-2 px-4 rounded-lg text-sm font-bold transition-colors cursor-pointer',
                       roomMode === 'tournament' ? 'bg-[#d4af37] text-[#090d0b]' : 'text-slate-300 hover:text-white'
                     )}
                   >
@@ -1236,9 +1258,9 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                   </button>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-sm font-semibold text-slate-300 mb-1.5">
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
                       Table Name
                     </label>
                     <input
@@ -1246,18 +1268,18 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                       placeholder={`e.g. ${currentUser?.name || 'Creator'}'s Table`}
                       value={roomName}
                       onChange={(e) => setRoomName(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/15 text-white text-sm focus:outline-none focus:border-[#d4af37]"
+                      className="w-full px-3.5 py-2 rounded-xl bg-black/40 border border-white/15 text-white text-sm focus:outline-none focus:border-[#d4af37]"
                     />
                   </div>
                   <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="text-sm font-semibold text-slate-300 flex items-center gap-1.5">
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
                         <Lock className="w-3.5 h-3.5 text-amber-400" />
                         <span>Code</span>
                       </label>
                       <span
                         className={cn(
-                          'text-xs font-bold px-2 py-0.5 rounded-md',
+                          'text-[11px] font-bold px-2 py-0.5 rounded-md',
                           tableCode.trim().length > 0
                             ? 'bg-amber-500/20 text-amber-300 border border-amber-400/30'
                             : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/25'
@@ -1271,10 +1293,10 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                         type="text"
                         inputMode="numeric"
                         maxLength={4}
-                        placeholder="4 digits (e.g. 1234)"
+                        placeholder="e.g. 1234"
                         value={tableCode}
                         onChange={(e) => setTableCode(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                        className="w-full px-3.5 py-2.5 pr-16 rounded-xl bg-black/40 border border-white/15 text-amber-300 font-mono font-bold tracking-widest text-sm focus:outline-none focus:border-[#d4af37]"
+                        className="w-full pl-3.5 pr-20 py-2 rounded-xl bg-black/40 border border-white/15 text-amber-300 font-mono font-bold tracking-[0.2em] placeholder:tracking-normal placeholder:font-normal placeholder:text-slate-500 text-sm focus:outline-none focus:border-[#d4af37]"
                       />
                       <button
                         type="button"
@@ -1286,7 +1308,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                             setTableCode(randomPin);
                           }
                         }}
-                        className="absolute right-2 px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-semibold text-slate-200 transition-colors cursor-pointer"
+                        className="absolute right-2 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-semibold text-slate-200 transition-colors cursor-pointer"
                       >
                         {tableCode ? 'Clear' : 'Random'}
                       </button>
@@ -1294,9 +1316,9 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-sm font-semibold text-slate-300 mb-1.5">Max Seats ({maxSeats})</label>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">Max Seats ({maxSeats})</label>
                     <div className="flex items-center gap-2">
                       {[3, 5, 7].map((num) => (
                         <button
@@ -1308,7 +1330,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                             if (targetSurvivors >= num) setTargetSurvivors(Math.max(1, num - 1));
                           }}
                           className={cn(
-                            'flex-1 py-2 rounded-xl text-sm font-mono font-bold border transition-colors cursor-pointer',
+                            'flex-1 py-1.5 rounded-xl text-sm font-mono font-bold border transition-colors cursor-pointer',
                             maxSeats === num
                               ? 'bg-[#d4af37]/20 border-[#d4af37] text-[#f5d97e]'
                               : 'bg-black/30 border-white/10 text-slate-400 hover:text-white'
@@ -1321,7 +1343,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-semibold text-slate-300 mb-1.5">Turn Timer</label>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">Turn Timer</label>
                     <div className="flex items-center gap-2">
                       {[
                         { label: '10s', val: 10 },
@@ -1333,7 +1355,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                           type="button"
                           onClick={() => setActionTimeLimit(t.val)}
                           className={cn(
-                            'flex-1 py-2 rounded-xl text-sm font-mono font-bold border transition-colors cursor-pointer',
+                            'flex-1 py-1.5 rounded-xl text-sm font-mono font-bold border transition-colors cursor-pointer',
                             actionTimeLimit === t.val
                               ? 'bg-[#d4af37]/20 border-[#d4af37] text-[#f5d97e]'
                               : 'bg-black/30 border-white/10 text-slate-400 hover:text-white'
@@ -1347,59 +1369,142 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 </div>
 
                 {roomMode === 'regular' ? (
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-semibold text-slate-300 mb-1.5">
-                        Min Bet (Game Coins) <span className="text-rose-400">*</span>
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        value={minBet}
-                        onChange={(e) => setMinBet(Math.max(1, Number(e.target.value)))}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/15 text-white font-mono text-sm focus:outline-none focus:border-[#d4af37]"
-                      />
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">
+                          Min Bet (Game Coins) <span className="text-rose-400">*</span>
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={minBet}
+                          onChange={(e) => setMinBet(Math.max(1, Number(e.target.value)))}
+                          className="w-full px-3.5 py-2 rounded-xl bg-black/40 border border-white/15 text-white font-mono text-sm focus:outline-none focus:border-[#d4af37]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">
+                          Max Bet (Game Coins) <span className="text-rose-400">*</span>
+                        </label>
+                        <input
+                          type="number"
+                          min={minBet}
+                          value={maxBet}
+                          onChange={(e) => setMaxBet(Math.max(1, Number(e.target.value)))}
+                          className="w-full px-3.5 py-2 rounded-xl bg-black/40 border border-white/15 text-white font-mono text-sm focus:outline-none focus:border-[#d4af37]"
+                        />
+                      </div>
                     </div>
-                    <div>
-                      <label className="block text-sm font-semibold text-slate-300 mb-1.5">
-                        Max Bet (Game Coins) <span className="text-rose-400">*</span>
-                      </label>
-                      <input
-                        type="number"
-                        min={minBet}
-                        value={maxBet}
-                        onChange={(e) => setMaxBet(Math.max(1, Number(e.target.value)))}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/15 text-white font-mono text-sm focus:outline-none focus:border-[#d4af37]"
-                      />
-                    </div>
+
+                    {(() => {
+                      const isPrivateCodeReady = /^\d{4}$/.test(tableCode.trim());
+                      const minDep = minRequiredBankroll;
+                      const availWallet = Math.floor(currentUser?.balance || 0);
+                      const presets = [
+                        { label: 'Min', value: minDep },
+                        { label: '25%', value: Math.max(minDep, Math.floor(availWallet * 0.25)) },
+                        { label: '50%', value: Math.max(minDep, Math.floor(availWallet * 0.5)) },
+                        { label: 'Max', value: Math.max(minDep, availWallet) },
+                      ];
+                      const insufficientForMin = isPrivateCodeReady && availWallet < minDep;
+                      return (
+                        <div className="rounded-xl bg-amber-500/10 border border-amber-400/35 p-3.5 space-y-2.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-sm font-bold text-amber-300 flex items-center gap-1.5">
+                              <Landmark className="w-4 h-4 shrink-0" />
+                              <span>Host Bankroll Deposit</span>
+                            </span>
+                            <span className="text-xs text-slate-300 font-mono">
+                              Wallet: <strong className="text-white">{availWallet.toLocaleString()}</strong>
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-3 px-3 py-1.5 rounded-lg bg-black/35 border border-white/10 text-xs">
+                            <span className="text-slate-400 whitespace-nowrap truncate">
+                              Min Bankroll <span className="font-mono text-slate-300">({minBet} × 10 × {maxSeats} seats)</span>
+                            </span>
+                            <span className="font-mono font-bold text-amber-300 whitespace-nowrap shrink-0">
+                              {minDep.toLocaleString()} Coins
+                            </span>
+                          </div>
+
+                          <div className="space-y-2">
+                            <input
+                              type="number"
+                              min={minDep}
+                              max={isPrivateCodeReady ? Math.max(minDep, availWallet) : undefined}
+                              value={hostBankrollDeposit}
+                              onChange={(e) => setHostBankrollDeposit(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+                              className="w-full px-3.5 py-2 rounded-xl bg-black/50 border border-amber-400/40 text-amber-300 font-mono font-bold text-base focus:outline-none focus:border-[#d4af37]"
+                            />
+                            <div className="grid grid-cols-4 gap-2">
+                              {presets.map((p) => {
+                                const disabled = isPrivateCodeReady && p.value > availWallet;
+                                const isActive = hostBankrollDeposit === p.value && !disabled;
+                                return (
+                                  <button
+                                    key={p.label}
+                                    type="button"
+                                    disabled={disabled}
+                                    onClick={() => setHostBankrollDeposit(p.value)}
+                                    className={cn(
+                                      'py-1.5 px-2 rounded-lg border text-xs font-semibold transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed',
+                                      isActive
+                                        ? 'bg-amber-400/25 border-amber-400 text-amber-200'
+                                        : 'bg-black/40 hover:bg-black/60 border-white/10 text-slate-200'
+                                    )}
+                                  >
+                                    {p.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {insufficientForMin ? (
+                            <p className="text-[11px] text-rose-300 leading-snug">
+                              Wallet balance ({availWallet.toLocaleString()}) is below the minimum required bankroll ({minDep.toLocaleString()}). Lower Min Bet or Max Seats to proceed.
+                            </p>
+                          ) : (
+                            <p className="text-[11px] text-amber-200/85 leading-snug">
+                              {isPrivateCodeReady
+                                ? 'Private Host Bankroll Mode: deposited from your wallet on creation. Players buy in independent table chips and settle back to their wallet when leaving.'
+                                : 'Set your table bankroll (min = Min Bet × 10 × Max Seats). Enter a 4-digit Code above to enable Private Host Bankroll mode with real wallet deposit & leave settlement.'}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 ) : (
-                  <div className="space-y-4 rounded-xl bg-black/30 border border-[#d4af37]/25 p-4">
-                    <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
-                      <span className="text-sm font-bold text-[#f5d97e] flex items-center gap-2">
-                        <Trophy className="w-4 h-4" /> Tournament Ticket & Equal Locked Allowance
+                  <div className="space-y-2.5 rounded-xl bg-black/30 border border-[#d4af37]/25 p-3.5">
+                    <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
+                      <span className="text-xs sm:text-sm font-bold text-[#f5d97e] flex items-center gap-1.5 truncate">
+                        <Trophy className="w-4 h-4 shrink-0" />
+                        <span className="truncate">Tournament Ticket & Equal Locked Allowance</span>
                       </span>
-                      <span className="text-xs text-slate-300">
-                        Est. Pool: {Math.round(ticketPrice * maxSeats * (1 - (hostFeePct + 2) / 100))} Game Coins
+                      <span className="text-xs text-slate-300 whitespace-nowrap shrink-0">
+                        Est. Pool: {Math.round(ticketPrice * maxSeats * (1 - (hostFeePct + 2) / 100))} Coins
                       </span>
                     </div>
 
                     {/* Ticket Price (Game Coins), Equal Locked Tournament Allowance, Min Bet, Min Seats */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                       <div>
-                        <label className="block text-xs font-semibold text-amber-300 mb-1">
-                          Ticket Price (Coins) <span className="text-rose-400">*</span>
+                        <label className="block text-[11px] font-semibold text-amber-300 mb-1 whitespace-nowrap">
+                          Ticket Price <span className="text-rose-400">*</span>
                         </label>
                         <input
                           type="number"
                           min={1}
                           value={ticketPrice}
                           onChange={(e) => setTicketPrice(Math.max(1, Number(e.target.value)))}
-                          className="w-full px-3 py-2 rounded-lg bg-black/50 border border-amber-400/30 text-[#ffc53d] font-mono font-bold text-sm focus:outline-none focus:border-[#d4af37]"
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-black/50 border border-amber-400/30 text-[#ffc53d] font-mono font-bold text-sm focus:outline-none focus:border-[#d4af37]"
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-emerald-300 mb-1">
+                        <label className="block text-[11px] font-semibold text-emerald-300 mb-1 whitespace-nowrap">
                           Locked Allowance <span className="text-rose-400">*</span>
                         </label>
                         <input
@@ -1407,11 +1512,11 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                           min={100}
                           value={startingChips}
                           onChange={(e) => setStartingChips(Math.max(100, Number(e.target.value)))}
-                          className="w-full px-3 py-2 rounded-lg bg-black/50 border border-emerald-400/30 text-emerald-300 font-mono font-bold text-sm focus:outline-none focus:border-[#d4af37]"
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-black/50 border border-emerald-400/30 text-emerald-300 font-mono font-bold text-sm focus:outline-none focus:border-[#d4af37]"
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-slate-300 mb-1">
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1 whitespace-nowrap">
                           Min Bet <span className="text-rose-400">*</span>
                         </label>
                         <input
@@ -1419,11 +1524,11 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                           min={1}
                           value={minBetChips}
                           onChange={(e) => setMinBetChips(Math.max(1, Number(e.target.value)))}
-                          className="w-full px-3 py-2 rounded-lg bg-black/50 border border-white/15 text-white font-mono text-sm focus:outline-none focus:border-[#d4af37]"
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-black/50 border border-white/15 text-white font-mono text-sm focus:outline-none focus:border-[#d4af37]"
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-slate-300 mb-1">
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1 whitespace-nowrap">
                           Min Seats (2–{maxSeats}) <span className="text-rose-400">*</span>
                         </label>
                         <input
@@ -1436,21 +1541,21 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                             setMinSeats(val);
                             if (targetSurvivors >= val) setTargetSurvivors(Math.max(1, val - 1));
                           }}
-                          className="w-full px-3 py-2 rounded-lg bg-black/50 border border-white/15 text-white font-mono text-sm focus:outline-none focus:border-[#d4af37]"
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-black/50 border border-white/15 text-white font-mono text-sm focus:outline-none focus:border-[#d4af37]"
                         />
                       </div>
                     </div>
 
                     {/* Win Conditions: Survivor Cap & Round Cap */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                       <div
                         className={cn(
-                          'p-3 rounded-xl border transition-colors',
+                          'p-2.5 rounded-xl border transition-colors',
                           isSurvivorCap ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-black/20 border-white/10 opacity-60'
                         )}
                       >
-                        <div className="flex items-center justify-between mb-2">
-                          <label className="flex items-center gap-2 font-semibold text-white cursor-pointer">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="flex items-center gap-2 text-xs font-semibold text-white cursor-pointer">
                             <input
                               type="checkbox"
                               checked={isSurvivorCap}
@@ -1459,7 +1564,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                             />
                             <span>Survivor Cap</span>
                           </label>
-                          <span className="text-xs text-emerald-300 font-mono">Knockout</span>
+                          <span className="text-[11px] text-emerald-300 font-mono">Knockout</span>
                         </div>
                         <div className="flex items-center justify-between gap-2 text-xs text-slate-300">
                           <span>End at Top N Survivors:</span>
@@ -1472,19 +1577,19 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                             onChange={(e) =>
                               setTargetSurvivors(Math.max(1, Math.min(Math.max(1, minSeats - 1), Number(e.target.value))))
                             }
-                            className="w-16 px-2 py-1 rounded bg-black/50 border border-white/15 text-white font-mono text-center text-sm"
+                            className="w-16 px-2 py-1 rounded bg-black/50 border border-white/15 text-white font-mono text-center text-xs"
                           />
                         </div>
                       </div>
 
                       <div
                         className={cn(
-                          'p-3 rounded-xl border transition-colors',
+                          'p-2.5 rounded-xl border transition-colors',
                           isHardCapRounds ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-black/20 border-white/10 opacity-60'
                         )}
                       >
-                        <div className="flex items-center justify-between mb-2">
-                          <label className="flex items-center gap-2 font-semibold text-white cursor-pointer">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="flex items-center gap-2 text-xs font-semibold text-white cursor-pointer">
                             <input
                               type="checkbox"
                               checked={isHardCapRounds}
@@ -1493,7 +1598,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                             />
                             <span>Round Cap</span>
                           </label>
-                          <span className="text-xs text-emerald-300 font-mono">Max Hands</span>
+                          <span className="text-[11px] text-emerald-300 font-mono">Max Hands</span>
                         </div>
                         <div className="flex items-center justify-between gap-2 text-xs text-slate-300">
                           <span>Max Rounds:</span>
@@ -1504,15 +1609,15 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                             max={1000}
                             value={maxRounds}
                             onChange={(e) => setMaxRounds(Math.max(3, Math.min(1000, Number(e.target.value))))}
-                            className="w-16 px-2 py-1 rounded bg-black/50 border border-white/15 text-white font-mono text-center text-sm"
+                            className="w-16 px-2 py-1 rounded bg-black/50 border border-white/15 text-white font-mono text-center text-xs"
                           />
                         </div>
                       </div>
                     </div>
 
                     {/* Escalation Rules: Forced Ante & Double Blinds */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div className="p-2.5 rounded-xl bg-black/25 border border-white/10 flex items-center justify-between gap-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div className="p-2 rounded-xl bg-black/25 border border-white/10 flex items-center justify-between gap-2">
                         <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
                           <input
                             type="checkbox"
@@ -1533,7 +1638,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                         />
                       </div>
 
-                      <div className="p-2.5 rounded-xl bg-black/25 border border-white/10 flex items-center justify-between gap-2">
+                      <div className="p-2 rounded-xl bg-black/25 border border-white/10 flex items-center justify-between gap-2">
                         <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
                           <input
                             type="checkbox"
@@ -1556,9 +1661,9 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                     </div>
 
                     {/* Prize Distribution Mode & Host Fee */}
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                       <div className="sm:col-span-2">
-                        <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">
                           Prize Pool Payout Rule
                         </label>
                         <div className="grid grid-cols-2 gap-2">
@@ -1566,7 +1671,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                             type="button"
                             onClick={() => setPrizeDistribution('survivorPaytable')}
                             className={cn(
-                              'py-2 px-3 rounded-lg text-xs font-semibold border transition-colors cursor-pointer',
+                              'py-1.5 px-2.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer',
                               prizeDistribution === 'survivorPaytable'
                                 ? 'bg-[#d4af37]/20 border-[#d4af37] text-[#f5d97e]'
                                 : 'bg-black/30 border-white/10 text-slate-400 hover:text-white'
@@ -1578,7 +1683,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                             type="button"
                             onClick={() => setPrizeDistribution('splitByChips')}
                             className={cn(
-                              'py-2 px-3 rounded-lg text-xs font-semibold border transition-colors cursor-pointer',
+                              'py-1.5 px-2.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer',
                               prizeDistribution === 'splitByChips'
                                 ? 'bg-[#d4af37]/20 border-[#d4af37] text-[#f5d97e]'
                                 : 'bg-black/30 border-white/10 text-slate-400 hover:text-white'
@@ -1589,7 +1694,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                         </div>
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">
                           Host Fee (%)
                         </label>
                         <input
@@ -1598,7 +1703,7 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                           max={20}
                           value={hostFeePct}
                           onChange={(e) => setHostFeePct(Math.max(0, Math.min(20, Number(e.target.value))))}
-                          className="w-full px-3 py-2 rounded-lg bg-black/50 border border-white/15 text-white font-mono text-sm focus:outline-none focus:border-[#d4af37]"
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-black/50 border border-white/15 text-white font-mono text-sm focus:outline-none focus:border-[#d4af37]"
                         />
                       </div>
                     </div>
@@ -1606,28 +1711,28 @@ export function HomeView({ onSelectTable, onNavigate }: HomeViewProps) {
                 )}
 
                 {createError && (
-                  <div className="text-sm text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-xl px-4 py-2.5">
+                  <div className="text-xs sm:text-sm text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3.5 py-2">
                     {createError}
                   </div>
                 )}
+              </div>
 
-                <div className="pt-4 border-t border-white/10 flex items-center justify-end gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setShowCreateModal(false)}
-                    className="px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 transition-colors cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleCreateRoom}
-                    disabled={isCreating}
-                    className="px-6 py-2.5 rounded-xl text-sm font-bold text-[#090d0b] bg-gradient-to-b from-[#f5d97e] to-[#c69c3a] hover:from-[#fae396] hover:to-[#d4ab46] transition-all cursor-pointer disabled:opacity-50"
-                  >
-                    {isCreating ? 'Creating...' : 'Create & Enter'}
-                  </button>
-                </div>
+              <div className="px-4 sm:px-5 py-3 border-t border-white/10 bg-black/25 flex items-center justify-end gap-3 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(false)}
+                  className="px-4 py-2 rounded-xl text-sm font-semibold text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCreateRoom}
+                  disabled={isCreating}
+                  className="px-6 py-2 rounded-xl text-sm font-bold text-[#090d0b] bg-gradient-to-b from-[#f5d97e] to-[#c69c3a] hover:from-[#fae396] hover:to-[#d4ab46] transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {isCreating ? 'Creating...' : 'Create & Enter'}
+                </button>
               </div>
             </motion.div>
           </div>

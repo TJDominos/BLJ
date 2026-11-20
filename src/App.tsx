@@ -1,16 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams, useLocation } from './lib/router';
 import { BlackjackTable } from './views/BlackjackTable';
 import { HomeView } from './views/HomeView';
 import { HostTableView } from './views/host/HostTableView';
 import { ManageTablesView } from './views/host/ManageTablesView';
-import { useGameStore } from './store/gameStore';
+import { useGameStore, isPrivateTableLockedForUser, type PrivateSessionSettlement } from './store/gameStore';
 import { LiveTablesSidebar } from './components/blackjack/LiveTablesSidebar';
 import { AnimatePresence } from 'motion/react';
 
 import { ConfirmModal } from './components/blackjack/ConfirmModal';
+import { PrivateTablePinGate } from './components/blackjack/PrivateTablePinGate';
+import { PrivateSettlementReceiptBanner } from './components/blackjack/PrivateTableFinanceModals';
 import { initRandseedRuntime } from './lib/randseedRuntime';
-import { Lock, X } from 'lucide-react';
+import { initRandseedAgentBridge, stopRandseedAgentBridge } from './lib/randseedAgentBridge';
 
 function GameLayout() {
   const [showSidebar, setShowSidebar] = useState(false);
@@ -22,6 +24,7 @@ function GameLayout() {
     tables,
     activeTableId,
     unlockedTableIds,
+    recentPrivateSettlements,
     verifyTableCode,
     unlockTableBalance,
     leaveTable,
@@ -32,15 +35,47 @@ function GameLayout() {
   const routeState = useLocation();
   const [confirmAction, setConfirmAction] = useState<any>(null);
 
-  // Private table 4-digit code prompt state
+  // Private table 4-digit PIN gate modal state
   const [pendingCodeTableId, setPendingCodeTableId] = useState<string | null>(null);
-  const [codeInput, setCodeInput] = useState('');
-  const [codeError, setCodeError] = useState<string | null>(null);
-  const [isVerifyingCode, setIsVerifyingCode] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [activeSettlementToast, setActiveSettlementToast] = useState<PrivateSessionSettlement | null>(null);
+  const seenSettlementIdsRef = useRef<Set<string>>(new Set());
+  const initializedSettlementRef = useRef(false);
+
+  useEffect(() => {
+    if (!Array.isArray(recentPrivateSettlements)) return;
+    if (!initializedSettlementRef.current) {
+      if (currentUser && currentUser.id !== 'connecting_player') {
+        for (const s of recentPrivateSettlements) {
+          if (s?.id) seenSettlementIdsRef.current.add(s.id);
+        }
+        initializedSettlementRef.current = true;
+      }
+      return;
+    }
+    const newestUnseen = recentPrivateSettlements.find(
+      (s) => s?.id && !seenSettlementIdsRef.current.has(s.id)
+    );
+    if (newestUnseen) {
+      seenSettlementIdsRef.current.add(newestUnseen.id);
+      setActiveSettlementToast(newestUnseen);
+    }
+  }, [recentPrivateSettlements, currentUser?.id]);
+
+  useEffect(() => {
+    if (!activeSettlementToast) return;
+    const timer = setTimeout(() => {
+      setActiveSettlementToast((cur) => (cur?.id === activeSettlementToast.id ? null : cur));
+    }, 8000);
+    return () => clearTimeout(timer);
+  }, [activeSettlementToast]);
 
   useEffect(() => {
     initRandseedRuntime();
+    initRandseedAgentBridge();
+    return () => {
+      stopRandseedAgentBridge();
+    };
   }, []);
 
   useEffect(() => {
@@ -96,14 +131,7 @@ function GameLayout() {
 
   const isTableLockedForUser = (tableId: string): boolean => {
     const t = tables[tableId];
-    if (!t) return false;
-    const isPrivate = !t.settings.isPublic || Boolean(t.settings.hasTableCode);
-    if (!isPrivate) return false;
-    if (currentUser && t.houseId === currentUser.id) return false;
-    if (unlockedTableIds[tableId]) return false;
-    if (currentUser && t.seats.some(s => s.userId === currentUser.id)) return false;
-    if (currentUser && t.userBalances?.[currentUser.id]) return false;
-    return true;
+    return isPrivateTableLockedForUser(t, currentUser?.id, unlockedTableIds);
   };
 
   const shouldPromptCreatorCloseOnLeave = (tableId: string | null): boolean => {
@@ -124,17 +152,13 @@ function GameLayout() {
     return remainingHumanPlayersCount === 0;
   };
 
-  // Sync activeTableId with URL param if on a table view
+  // Sync activeTableId with URL param if on a table view (only after private PIN gate passes)
   useEffect(() => {
     const pathMatch = routeState.routePath.match(/^\/t\/([\w_-]+)/);
     if (pathMatch && pathMatch[1]) {
       const tableId = pathMatch[1];
       if (tables[tableId]) {
         if (isTableLockedForUser(tableId)) {
-          setPendingCodeTableId(tableId);
-          setCodeInput('');
-          setCodeError(null);
-          navigate('/', { replace: true });
           return;
         }
         if (activeTableId !== tableId) {
@@ -255,34 +279,11 @@ function GameLayout() {
 
   const handleTableSelect = (id: string) => {
     if (isTableLockedForUser(id)) {
+      setShowSidebar(false);
       setPendingCodeTableId(id);
-      setCodeInput('');
-      setCodeError(null);
       return;
     }
     proceedToTable(id);
-  };
-
-  const handleVerifyTableCodeSubmit = async (e?: React.SyntheticEvent) => {
-    e?.preventDefault();
-    if (!pendingCodeTableId || isVerifyingCode) return;
-    const trimmed = codeInput.trim();
-    if (!/^\d{4}$/.test(trimmed)) {
-      setCodeError('Please enter a 4-digit Code (0-9).');
-      return;
-    }
-    setIsVerifyingCode(true);
-    setCodeError(null);
-    const ok = await verifyTableCode(pendingCodeTableId, trimmed);
-    setIsVerifyingCode(false);
-    if (ok) {
-      const targetId = pendingCodeTableId;
-      setPendingCodeTableId(null);
-      setCodeInput('');
-      proceedToTable(targetId);
-    } else {
-      setCodeError('Incorrect 4-digit Code. Please try again.');
-    }
   };
 
   return (
@@ -325,71 +326,26 @@ function GameLayout() {
           <ConfirmModal action={confirmAction} onClose={() => setConfirmAction(null)} />
         )}
 
-        {/* Private Table 4-Digit Code Modal */}
+        {activeSettlementToast && (
+          <PrivateSettlementReceiptBanner
+            settlement={activeSettlementToast}
+            onDismiss={() => setActiveSettlementToast(null)}
+          />
+        )}
+
+        {/* Private Table 4-Digit PIN Gate Modal */}
         {pendingCodeTableId && tables[pendingCodeTableId] && (
-          <div
-            className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) setPendingCodeTableId(null);
+          <PrivateTablePinGate
+            table={tables[pendingCodeTableId]}
+            variant="modal"
+            onVerify={(pin) => verifyTableCode(pendingCodeTableId, pin)}
+            onUnlocked={() => {
+              const targetId = pendingCodeTableId;
+              setPendingCodeTableId(null);
+              proceedToTable(targetId);
             }}
-          >
-            <div className="w-full max-w-sm rounded-2xl bg-[#121915] border border-[#c6a364]/40 shadow-2xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between bg-black/30">
-                <div className="flex items-center gap-2">
-                  <Lock className="w-5 h-5 text-amber-400" />
-                  <h3 className="text-base font-bold text-white">Code</h3>
-                </div>
-                <button
-                  onClick={() => setPendingCodeTableId(null)}
-                  className="text-slate-400 hover:text-white p-1 rounded-lg transition-colors cursor-pointer"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-              <div className="p-5 space-y-4 text-sm">
-                <p className="text-slate-300 leading-relaxed">
-                  Enter the 4-digit Code to join <span className="font-bold text-white">{tables[pendingCodeTableId].name}</span>:
-                </p>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={4}
-                  autoFocus
-                  placeholder="0000"
-                  value={codeInput}
-                  onChange={(e) => setCodeInput(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && codeInput.length === 4 && !isVerifyingCode) {
-                      void handleVerifyTableCodeSubmit(e);
-                    }
-                  }}
-                  className="w-full px-4 py-3 rounded-xl bg-black/50 border border-amber-400/40 text-amber-300 font-mono text-2xl font-bold tracking-[0.5em] text-center focus:outline-none focus:border-[#d4af37]"
-                />
-                {codeError && (
-                  <div className="text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-lg px-3 py-2 text-xs text-center">
-                    {codeError}
-                  </div>
-                )}
-                <div className="flex justify-end gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setPendingCodeTableId(null)}
-                    className="px-4 py-2 rounded-xl text-slate-300 bg-white/5 hover:bg-white/10 cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleVerifyTableCodeSubmit}
-                    disabled={isVerifyingCode || codeInput.length !== 4}
-                    className="px-5 py-2 rounded-xl font-bold text-[#090d0b] bg-[#e5c158] hover:bg-[#f5d97e] disabled:opacity-50 cursor-pointer"
-                  >
-                    {isVerifyingCode ? 'Verifying...' : 'Unlock & Enter'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+            onCancel={() => setPendingCodeTableId(null)}
+          />
         )}
 
         <AnimatePresence>
